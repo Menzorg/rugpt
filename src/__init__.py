@@ -1,0 +1,1 @@
+"""RuGPT - Corporate AI Assistant"""

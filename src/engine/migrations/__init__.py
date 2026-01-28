@@ -1,0 +1,1 @@
+"""RuGPT Database Migrations"""
