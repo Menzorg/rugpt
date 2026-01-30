@@ -62,12 +62,14 @@ class TokenPayload(BaseModel):
 # Helpers
 # ============================================
 
-def create_token(user_id: UUID, org_id: UUID) -> str:
+def create_token(user_id: UUID, org_id: UUID, email: str = None, is_admin: bool = False) -> str:
     """Create JWT token for user"""
     expiration = datetime.utcnow() + timedelta(hours=Config.JWT_EXPIRATION_HOURS)
     payload = {
         "user_id": str(user_id),
         "org_id": str(org_id),
+        "email": email,
+        "is_admin": is_admin,
         "exp": expiration
     }
     return jwt.encode(payload, Config.JWT_SECRET, algorithm=Config.JWT_ALGORITHM)
@@ -135,8 +137,8 @@ async def login(request: LoginRequest):
         logger.info(f"Login failed: user inactive {request.email}")
         return LoginResponse(success=False, message="Account is deactivated")
 
-    # Create token
-    token = create_token(user.id, user.org_id)
+    # Create token with all user data
+    token = create_token(user.id, user.org_id, user.email, user.is_admin)
 
     # Update last seen
     await users_service.update_last_seen(user.id)
@@ -190,8 +192,8 @@ async def register(request: RegisterRequest):
         logger.info(f"Registration failed: {e}")
         return LoginResponse(success=False, message=str(e))
 
-    # Create token
-    token = create_token(user.id, user.org_id)
+    # Create token with all user data
+    token = create_token(user.id, user.org_id, user.email, user.is_admin)
 
     logger.info(f"User registered: {user.email}")
 

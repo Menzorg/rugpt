@@ -39,6 +39,7 @@ class UpdateUserRequest(BaseModel):
     email: Optional[EmailStr] = None
     avatar_url: Optional[str] = None
     is_admin: Optional[bool] = None
+    role_id: Optional[str] = None  # Assign/unassign role
 
 
 class ChangePasswordRequest(BaseModel):
@@ -60,6 +61,7 @@ class UserResponse(BaseModel):
     username: str
     email: str
     role_id: Optional[str]
+    role_name: Optional[str] = None  # Name of assigned role
     is_admin: bool
     is_active: bool
     avatar_url: Optional[str]
@@ -80,7 +82,22 @@ async def list_users(current_user: dict = Depends(get_current_user)):
     users_service = UsersService(engine.user_storage)
 
     users = await users_service.list_users(current_user["org_id"])
-    return [UserResponse(**u.to_dict()) for u in users]
+
+    # Build role_id -> role_name mapping
+    role_ids = {u.role_id for u in users if u.role_id}
+    role_names = {}
+    for role_id in role_ids:
+        role = await engine.role_storage.get_by_id(role_id)
+        if role:
+            role_names[role_id] = role.name
+
+    # Add role_name to response
+    result = []
+    for u in users:
+        data = u.to_dict()
+        data["role_name"] = role_names.get(u.role_id) if u.role_id else None
+        result.append(UserResponse(**data))
+    return result
 
 
 @router.post("", response_model=UserResponse)
@@ -89,7 +106,11 @@ async def create_user(
     request: CreateUserRequest,
     current_user: dict = Depends(get_current_user)
 ):
-    """Create a new user (admin only)"""
+    """Create a new user (admin only)
+
+    Note: Руководителей (is_admin=true) можно создавать только через CLI/SQL.
+    API всегда создаёт обычных пользователей.
+    """
     engine = get_engine_service()
 
     # Check if current user is admin
@@ -108,10 +129,17 @@ async def create_user(
             username=request.username,
             email=request.email,
             password=request.password,
-            is_admin=request.is_admin,
+            is_admin=False,  # Руководителей создавать только через CLI/SQL
             role_id=role_id
         )
-        return UserResponse(**new_user.to_dict())
+        # Get role name if role assigned
+        data = new_user.to_dict()
+        if new_user.role_id:
+            role = await engine.role_storage.get_by_id(new_user.role_id)
+            data["role_name"] = role.name if role else None
+        else:
+            data["role_name"] = None
+        return UserResponse(**data)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -138,7 +166,15 @@ async def get_user(
     if user.org_id != current_user["org_id"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    return UserResponse(**user.to_dict())
+    # Get role name if role assigned
+    data = user.to_dict()
+    if user.role_id:
+        role = await engine.role_storage.get_by_id(user.role_id)
+        data["role_name"] = role.name if role else None
+    else:
+        data["role_name"] = None
+
+    return UserResponse(**data)
 
 
 @router.get("/username/{username}", response_model=UserResponse)
@@ -154,7 +190,15 @@ async def get_user_by_username(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return UserResponse(**user.to_dict())
+    # Get role name if role assigned
+    data = user.to_dict()
+    if user.role_id:
+        role = await engine.role_storage.get_by_id(user.role_id)
+        data["role_name"] = role.name if role else None
+    else:
+        data["role_name"] = None
+
+    return UserResponse(**data)
 
 
 @router.patch("/{user_id}", response_model=UserResponse)
@@ -172,6 +216,13 @@ async def update_user(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
+    # Get target user and verify org_id
+    target_user = await engine.user_storage.get_by_id(user_uuid)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target_user.org_id != current_user["org_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     # Check permissions
     current = await engine.user_storage.get_by_id(current_user["user_id"])
     is_self = user_uuid == current_user["user_id"]
@@ -184,6 +235,23 @@ async def update_user(
     if request.is_admin is not None and not is_admin:
         raise HTTPException(status_code=403, detail="Only admins can change admin status")
 
+    # Only admins can change role
+    if request.role_id is not None and not is_admin:
+        raise HTTPException(status_code=403, detail="Only admins can assign roles")
+
+    # Validate role if provided
+    role_id = None
+    if request.role_id:
+        try:
+            role_id = UUID(request.role_id)
+            role = await engine.role_storage.get_by_id(role_id)
+            if not role:
+                raise HTTPException(status_code=404, detail="Role not found")
+            if role.org_id != current_user["org_id"]:
+                raise HTTPException(status_code=403, detail="Role belongs to different organization")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid role ID")
+
     try:
         updated = await users_service.update_user(
             user_id=user_uuid,
@@ -195,7 +263,22 @@ async def update_user(
         )
         if not updated:
             raise HTTPException(status_code=404, detail="User not found")
-        return UserResponse(**updated.to_dict())
+
+        # Assign/unassign role if specified
+        if request.role_id is not None:
+            await users_service.assign_role(user_uuid, role_id)
+            # Re-fetch user to get updated role_id
+            updated = await users_service.get_user(user_uuid)
+
+        # Get role name if role assigned
+        data = updated.to_dict()
+        if updated.role_id:
+            role = await engine.role_storage.get_by_id(updated.role_id)
+            data["role_name"] = role.name if role else None
+        else:
+            data["role_name"] = None
+
+        return UserResponse(**data)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -247,6 +330,13 @@ async def assign_role(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
+    # Verify target user exists and belongs to same org
+    target_user = await engine.user_storage.get_by_id(user_uuid)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target_user.org_id != current_user["org_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     role_id = UUID(request.role_id) if request.role_id else None
 
     # Verify role exists if provided
@@ -287,6 +377,13 @@ async def deactivate_user(
     # Can't deactivate self
     if user_uuid == current_user["user_id"]:
         raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
+
+    # Verify target user exists and belongs to same org
+    target_user = await engine.user_storage.get_by_id(user_uuid)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target_user.org_id != current_user["org_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
 
     users_service = UsersService(engine.user_storage)
     result = await users_service.deactivate_user(user_uuid)
