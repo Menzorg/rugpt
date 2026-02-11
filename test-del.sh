@@ -137,6 +137,15 @@ echo -e "${YELLOW}Удаление данных...${NC}"
 
 if [ "$DELETE_ALL" == "true" ]; then
     # Удаляем ВСЕ в правильном порядке (FK constraints)
+    echo "  Удаление логов уведомлений..."
+    run_sql "DELETE FROM notification_log;" > /dev/null
+
+    echo "  Удаление каналов уведомлений..."
+    run_sql "DELETE FROM notification_channels;" > /dev/null
+
+    echo "  Удаление календарных событий..."
+    run_sql "DELETE FROM calendar_events;" > /dev/null
+
     echo "  Удаление сообщений..."
     run_sql "DELETE FROM messages;" > /dev/null
 
@@ -153,6 +162,15 @@ if [ "$DELETE_ALL" == "true" ]; then
     run_sql "DELETE FROM organizations;" > /dev/null
 else
     # Удаляем только тестовые данные
+    echo "  Удаление логов уведомлений..."
+    run_sql "DELETE FROM notification_log WHERE user_id IN (SELECT id FROM users WHERE org_id = '$TEST_ORG_ID');" > /dev/null
+
+    echo "  Удаление каналов уведомлений..."
+    run_sql "DELETE FROM notification_channels WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
+    echo "  Удаление календарных событий..."
+    run_sql "DELETE FROM calendar_events WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
     echo "  Удаление сообщений..."
     run_sql "DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE org_id = '$TEST_ORG_ID');" > /dev/null
 

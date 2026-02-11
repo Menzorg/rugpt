@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # test-init.sh
-# Создает тестовую организацию и руководителя для RuGPT
+# Создает тестовую организацию, руководителя, роли и тестовых пользователей для RuGPT
 #
 # Usage: ./test-init.sh
 #
@@ -44,9 +44,23 @@ TEST_ADMIN_USERNAME="ivan_petrovich"
 TEST_ADMIN_EMAIL="admin@testcompany.ru"
 TEST_ADMIN_PASSWORD="test123"
 
+TEST_USER1_NAME="Анна Юрьевна"
+TEST_USER1_USERNAME="anna_lawyer"
+TEST_USER1_EMAIL="anna@testcompany.ru"
+TEST_USER1_PASSWORD="test123"
+
+TEST_USER2_NAME="Пётр Смешнов"
+TEST_USER2_USERNAME="petr_humor"
+TEST_USER2_EMAIL="petr@testcompany.ru"
+TEST_USER2_PASSWORD="test123"
+
 # Генерируем UUID
 ORG_ID=$(cat /proc/sys/kernel/random/uuid)
 ADMIN_ID=$(cat /proc/sys/kernel/random/uuid)
+ROLE_LAWYER_ID=$(cat /proc/sys/kernel/random/uuid)
+ROLE_HUMORIST_ID=$(cat /proc/sys/kernel/random/uuid)
+USER1_ID=$(cat /proc/sys/kernel/random/uuid)
+USER2_ID=$(cat /proc/sys/kernel/random/uuid)
 
 echo -e "${YELLOW}=== RuGPT Test Data Initialization ===${NC}"
 echo ""
@@ -133,6 +147,108 @@ VALUES (
 " > /dev/null
 echo -e "${GREEN}OK: $TEST_ADMIN_NAME ($ADMIN_ID)${NC}"
 
+# Создаем роль "Юрист"
+echo -e "${YELLOW}Создание роли 'Юрист'...${NC}"
+run_sql "
+INSERT INTO roles (id, org_id, name, code, description, system_prompt, model_name,
+                   agent_type, agent_config, tools, prompt_file, is_active, created_at, updated_at)
+VALUES (
+    '$ROLE_LAWYER_ID',
+    '$ORG_ID',
+    'Юрист',
+    'lawyer',
+    'Корпоративный юрист-ассистент',
+    'You are a corporate lawyer assistant. Help with legal questions, contract review, and compliance matters.',
+    'qwen2.5:7b',
+    'simple',
+    '{}',
+    '[]',
+    'lawyer.md',
+    true,
+    NOW(),
+    NOW()
+);
+" > /dev/null
+echo -e "${GREEN}OK: Юрист ($ROLE_LAWYER_ID)${NC}"
+
+# Создаем роль "Юморист"
+echo -e "${YELLOW}Создание роли 'Юморист'...${NC}"
+run_sql "
+INSERT INTO roles (id, org_id, name, code, description, system_prompt, model_name,
+                   agent_type, agent_config, tools, prompt_file, is_active, created_at, updated_at)
+VALUES (
+    '$ROLE_HUMORIST_ID',
+    '$ORG_ID',
+    'Юморист',
+    'humorist',
+    'Корпоративный юморист-ассистент',
+    'You are a corporate humor assistant. Answer questions with humor and positivity.',
+    'qwen2.5:7b',
+    'simple',
+    '{}',
+    '[]',
+    'humorist.md',
+    true,
+    NOW(),
+    NOW()
+);
+" > /dev/null
+echo -e "${GREEN}OK: Юморист ($ROLE_HUMORIST_ID)${NC}"
+
+# Создаем пользователя-юриста
+echo -e "${YELLOW}Создание пользователя '$TEST_USER1_NAME'...${NC}"
+USER1_HASH=$(python3 -c "
+import bcrypt
+password = '$TEST_USER1_PASSWORD'.encode('utf-8')
+salt = bcrypt.gensalt(rounds=12)
+hashed = bcrypt.hashpw(password, salt)
+print(hashed.decode('utf-8'))
+")
+run_sql "
+INSERT INTO users (id, org_id, name, username, email, password_hash, role_id, is_admin, is_active, created_at, updated_at)
+VALUES (
+    '$USER1_ID',
+    '$ORG_ID',
+    '$TEST_USER1_NAME',
+    '$TEST_USER1_USERNAME',
+    '$TEST_USER1_EMAIL',
+    '$USER1_HASH',
+    '$ROLE_LAWYER_ID',
+    false,
+    true,
+    NOW(),
+    NOW()
+);
+" > /dev/null
+echo -e "${GREEN}OK: $TEST_USER1_NAME ($USER1_ID) -> роль Юрист${NC}"
+
+# Создаем пользователя-юмориста
+echo -e "${YELLOW}Создание пользователя '$TEST_USER2_NAME'...${NC}"
+USER2_HASH=$(python3 -c "
+import bcrypt
+password = '$TEST_USER2_PASSWORD'.encode('utf-8')
+salt = bcrypt.gensalt(rounds=12)
+hashed = bcrypt.hashpw(password, salt)
+print(hashed.decode('utf-8'))
+")
+run_sql "
+INSERT INTO users (id, org_id, name, username, email, password_hash, role_id, is_admin, is_active, created_at, updated_at)
+VALUES (
+    '$USER2_ID',
+    '$ORG_ID',
+    '$TEST_USER2_NAME',
+    '$TEST_USER2_USERNAME',
+    '$TEST_USER2_EMAIL',
+    '$USER2_HASH',
+    '$ROLE_HUMORIST_ID',
+    false,
+    true,
+    NOW(),
+    NOW()
+);
+" > /dev/null
+echo -e "${GREEN}OK: $TEST_USER2_NAME ($USER2_ID) -> роль Юморист${NC}"
+
 echo ""
 echo -e "${GREEN}=== Тестовые данные созданы ===${NC}"
 echo ""
@@ -141,7 +257,7 @@ echo "  ID:   $ORG_ID"
 echo "  Имя:  $TEST_ORG_NAME"
 echo "  Slug: $TEST_ORG_SLUG"
 echo ""
-echo "Руководитель:"
+echo "Руководитель (admin):"
 echo "  ID:       $ADMIN_ID"
 echo "  Имя:      $TEST_ADMIN_NAME"
 echo "  Username: $TEST_ADMIN_USERNAME"
@@ -149,6 +265,14 @@ echo "  Email:    $TEST_ADMIN_EMAIL"
 echo "  Пароль:   $TEST_ADMIN_PASSWORD"
 echo "  isAdmin:  true"
 echo ""
-echo -e "${YELLOW}Для входа используйте:${NC}"
+echo "Роли:"
+echo "  Юрист:    $ROLE_LAWYER_ID (code: lawyer, prompt: lawyer.md)"
+echo "  Юморист:  $ROLE_HUMORIST_ID (code: humorist, prompt: humorist.md)"
+echo ""
+echo "Пользователи:"
+echo "  $TEST_USER1_NAME: $TEST_USER1_EMAIL / $TEST_USER1_PASSWORD -> Юрист"
+echo "  $TEST_USER2_NAME: $TEST_USER2_EMAIL / $TEST_USER2_PASSWORD -> Юморист"
+echo ""
+echo -e "${YELLOW}Для входа (admin) используйте:${NC}"
 echo "  Email:    $TEST_ADMIN_EMAIL"
 echo "  Password: $TEST_ADMIN_PASSWORD"
