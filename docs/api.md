@@ -8,7 +8,7 @@ http://localhost:8100/api/v1
 
 ## Аутентификация
 
-Все endpoints (кроме `/auth/login`, `/auth/register`, `/health`) требуют JWT токен в заголовке:
+Все endpoints (кроме `/auth/login`, `/auth/register`, `/health`, `/notifications/telegram/webhook`) требуют JWT токен в заголовке:
 
 ```
 Authorization: Bearer <token>
@@ -132,7 +132,7 @@ Authorization: Bearer <token>
   "email": "john@example.com",
   "password": "password123",
   "is_admin": false,
-  "role_id": "uuid"  // optional
+  "role_id": "uuid"
 }
 ```
 
@@ -144,17 +144,6 @@ Authorization: Bearer <token>
 
 ### PATCH /users/{user_id}
 Обновить пользователя.
-
-**Request:**
-```json
-{
-  "name": "New Name",
-  "username": "new_username",
-  "email": "new@example.com",
-  "avatar_url": "https://...",
-  "is_admin": true
-}
-```
 
 ### POST /users/{user_id}/password
 Сменить пароль (только свой).
@@ -173,7 +162,7 @@ Authorization: Bearer <token>
 **Request:**
 ```json
 {
-  "role_id": "uuid"  // или null для снятия
+  "role_id": "uuid"
 }
 ```
 
@@ -184,21 +173,28 @@ Authorization: Bearer <token>
 
 ## Roles
 
+> **Роли предсозданы** через миграции/seed. CRUD (создание/обновление/удаление) через API отсутствует. Доступно только чтение и управление кешем промптов.
+
 ### GET /roles
 Список ролей в организации.
 
-### POST /roles
-Создать роль (admin only).
-
-**Request:**
+**Response:**
 ```json
-{
-  "name": "Юрист",
-  "code": "lawyer",
-  "system_prompt": "Ты корпоративный юрист...",
-  "description": "Помощь с правовыми вопросами",
-  "model_name": "qwen2.5:7b"
-}
+[
+  {
+    "id": "uuid",
+    "name": "Юрист",
+    "code": "lawyer",
+    "description": "Помощь с правовыми вопросами",
+    "system_prompt": "...",
+    "agent_type": "simple",
+    "agent_config": {},
+    "tools": ["calendar_create", "calendar_query"],
+    "prompt_file": "lawyer.md",
+    "model_name": "qwen2.5:7b",
+    "is_active": true
+  }
+]
 ```
 
 ### GET /roles/{role_id}
@@ -210,17 +206,25 @@ Authorization: Bearer <token>
 ### GET /roles/{role_id}/users
 Получить пользователей с этой ролью.
 
-### PATCH /roles/{role_id}
-Обновить роль (admin only).
+### POST /roles/admin/cache/prompts/clear
+Сбросить кеш всех промптов.
 
-### DELETE /roles/{role_id}
-Деактивировать роль (admin only).
+**Response:**
+```json
+{
+  "success": true,
+  "message": "All prompt cache cleared"
+}
+```
+
+### POST /roles/admin/cache/prompts/clear/{role_code}
+Сбросить кеш промпта конкретной роли.
 
 ---
 
 ## Chats
 
-### GET /chats
+### GET /chats/my
 Список чатов текущего пользователя.
 
 ### GET /chats/main
@@ -264,27 +268,20 @@ Authorization: Bearer <token>
 ```json
 {
   "content": "Привет @@lawyer, проверь договор",
-  "reply_to_id": "uuid"  // optional
+  "reply_to_id": "uuid"
 }
 ```
 
 **Response:**
 ```json
 {
-  "message": { /* отправленное сообщение */ },
-  "ai_responses": [ /* AI-ответы на @@ mentions */ ]
+  "message": { },
+  "ai_responses": [ ]
 }
 ```
 
 ### PATCH /chats/{chat_id}/messages/{message_id}
 Редактировать сообщение.
-
-**Request:**
-```json
-{
-  "content": "Новый текст"
-}
-```
 
 ### DELETE /chats/{chat_id}/messages/{message_id}
 Удалить сообщение (soft delete).
@@ -294,6 +291,172 @@ Authorization: Bearer <token>
 
 ### GET /chats/pending-validation
 Получить непроверенные AI-ответы для текущего пользователя.
+
+---
+
+## Calendar
+
+### GET /calendar/events
+Список событий в организации.
+
+**Response:**
+```json
+[
+  {
+    "id": "uuid",
+    "role_id": "uuid",
+    "org_id": "uuid",
+    "title": "Проверка договора",
+    "description": "Ежемесячная проверка",
+    "event_type": "recurring",
+    "scheduled_at": null,
+    "cron_expression": "0 10 1 * *",
+    "next_trigger_at": "2026-03-01T10:00:00",
+    "last_triggered_at": "2026-02-01T10:00:00",
+    "trigger_count": 5,
+    "source_chat_id": null,
+    "source_message_id": null,
+    "metadata": {},
+    "created_by_user_id": "uuid",
+    "is_active": true,
+    "created_at": "2026-01-15T10:00:00",
+    "updated_at": "2026-02-01T10:00:00"
+  }
+]
+```
+
+### POST /calendar/events
+Создать событие.
+
+**Request:**
+```json
+{
+  "role_id": "uuid",
+  "title": "Напоминание о дедлайне",
+  "description": "Сдача отчёта",
+  "event_type": "one_time",
+  "scheduled_at": "2026-03-15T09:00:00"
+}
+```
+
+Для рекуррентных событий:
+```json
+{
+  "role_id": "uuid",
+  "title": "Еженедельный обзор",
+  "event_type": "recurring",
+  "cron_expression": "0 10 * * 1"
+}
+```
+
+### GET /calendar/events/{event_id}
+Получить событие.
+
+### PATCH /calendar/events/{event_id}
+Обновить событие.
+
+**Request:**
+```json
+{
+  "title": "Новое название",
+  "description": "Новое описание",
+  "scheduled_at": "2026-04-01T09:00:00",
+  "cron_expression": "0 10 * * 5",
+  "metadata": {"key": "value"}
+}
+```
+
+### DELETE /calendar/events/{event_id}
+Деактивировать событие.
+
+### GET /calendar/roles/{role_id}/events
+Получить события для конкретной роли.
+
+---
+
+## Notifications
+
+### GET /notifications/channels
+Каналы уведомлений текущего пользователя.
+
+**Response:**
+```json
+[
+  {
+    "id": "uuid",
+    "user_id": "uuid",
+    "org_id": "uuid",
+    "channel_type": "telegram",
+    "config": {"chat_id": "123456789"},
+    "is_enabled": true,
+    "is_verified": true,
+    "priority": 10,
+    "created_at": "...",
+    "updated_at": "..."
+  }
+]
+```
+
+### POST /notifications/channels
+Зарегистрировать канал уведомлений.
+
+**Request:**
+```json
+{
+  "channel_type": "telegram",
+  "config": {"chat_id": "123456789"},
+  "priority": 10
+}
+```
+
+Для email:
+```json
+{
+  "channel_type": "email",
+  "config": {"email": "user@company.com"},
+  "priority": 5
+}
+```
+
+### DELETE /notifications/channels/{channel_type}
+Удалить канал уведомлений.
+
+### POST /notifications/channels/{channel_type}/verify
+Подтвердить канал (после привязки).
+
+### POST /notifications/telegram/webhook
+Telegram Bot webhook. Не требует авторизации.
+
+Обрабатывает `/start <user_id>` — автоматически привязывает Telegram-аккаунт к пользователю:
+1. Пользователь открывает `t.me/rugpt_bot?start=<user_id>`
+2. Бот получает chat_id пользователя
+3. Создаётся и верифицируется канал telegram с priority=10
+4. Пользователю отправляется подтверждение
+
+### GET /notifications/log
+Лог доставки уведомлений текущего пользователя.
+
+**Query params:**
+- `limit` — количество (default: 50, max: 200)
+
+**Response:**
+```json
+[
+  {
+    "id": "uuid",
+    "user_id": "uuid",
+    "channel_type": "telegram",
+    "event_id": "uuid",
+    "role_id": "uuid",
+    "content": "Reminder: Проверка договора",
+    "status": "sent",
+    "attempts": 1,
+    "error_message": null,
+    "created_at": "...",
+    "updated_at": "..."
+  }
+]
+```
 
 ---
 

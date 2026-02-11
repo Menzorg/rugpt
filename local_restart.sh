@@ -20,7 +20,8 @@ case "$SERVICE" in
 esac
 
 # Переходим в директорию проекта
-cd /root/rugpt
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 # Функция остановки Engine
 stop_engine() {
@@ -62,7 +63,7 @@ print('✅ Миграции выполнены')
 " 2>/dev/null || echo "⚠️ Миграции уже выполнены или ошибка"
 
     # Запускаем Engine в screen
-    screen -dmS rugpt-engine bash -c 'cd /root/rugpt && source venv/bin/activate && python -m src.engine.run; exec bash'
+    screen -dmS rugpt-engine bash -c "cd $SCRIPT_DIR && source venv/bin/activate && python -m src.engine.run; exec bash"
 
     # Ждем запуска
     echo "⏳ Ожидаем запуска Engine..."

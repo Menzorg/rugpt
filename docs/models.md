@@ -11,11 +11,11 @@
 ```python
 @dataclass
 class Organization:
-    id: UUID                        # Уникальный ID
+    id: UUID
     name: str                       # "Acme Corp"
     slug: str                       # "acme-corp" (URL-safe)
-    description: Optional[str]      # Описание
-    is_active: bool                 # Активна/деактивирована
+    description: Optional[str]
+    is_active: bool
     created_at: datetime
     updated_at: datetime
 ```
@@ -31,19 +31,17 @@ class Organization:
 
 **Файл:** `src/engine/models/user.py`
 
-Пользователь системы.
-
 ```python
 @dataclass
 class User:
     id: UUID
-    org_id: UUID                    # Организация
+    org_id: UUID
     name: str                       # "Роман Петрович"
     username: str                   # "roman_petrovich" (для @ mentions)
-    email: str                      # Уникальный email
+    email: str
     password_hash: Optional[str]    # bcrypt hash
     role_id: Optional[UUID]         # Назначенная AI-роль
-    is_admin: bool                  # Администратор организации
+    is_admin: bool
     is_active: bool
     avatar_url: Optional[str]
     created_at: datetime
@@ -51,51 +49,130 @@ class User:
     last_seen_at: Optional[datetime]
 ```
 
-**Особенности:**
-- `username` — уникален в пределах организации
-- `email` — глобально уникален
-- `role_id` — ссылка на AI-роль (может быть None)
-- `is_admin` — может управлять организацией
-
 **Mentions:**
 - `@roman_petrovich` — нотификация пользователю (MentionType.USER)
 - `@@roman_petrovich` — вызов AI-роли пользователя (MentionType.AI_ROLE)
 
 ---
 
-## Role (AI-Роль)
+## Role (AI-Агент)
 
 **Файл:** `src/engine/models/role.py`
 
-AI-агент с определённым поведением.
+AI-агент с определённым поведением, инструментами и типом графа.
 
 ```python
 @dataclass
 class Role:
     id: UUID
-    org_id: UUID                    # Организация
+    org_id: UUID
     name: str                       # "Юрист"
     code: str                       # "lawyer" (уникален в org)
     description: Optional[str]
-    system_prompt: str              # Системный промпт
-    rag_collection: Optional[str]   # Коллекция RAG (будущее)
+    system_prompt: str              # Fallback промпт (в БД)
+    rag_collection: Optional[str]
     model_name: str                 # "qwen2.5:7b"
+    agent_type: str                 # "simple" | "chain" | "multi_agent"
+    agent_config: dict              # Конфигурация графа (JSONB)
+    tools: List[str]                # ["calendar_create", "rag_search", ...]
+    prompt_file: Optional[str]      # "lawyer.md" — путь к файлу промпта
     is_active: bool
     created_at: datetime
     updated_at: datetime
 ```
 
-**Примеры ролей:**
-- **Юрист** (`lawyer`) — помощь с договорами, правовыми вопросами
-- **Бухгалтер** (`accountant`) — финансовые вопросы, отчётность
-- **HR** (`hr`) — кадровые вопросы, политики компании
+**Роли предсозданы** через миграции/seed. CRUD через API убран.
 
-**Workflow @@ упоминания:**
-1. Пользователь пишет `@@roman_petrovich, проверь договор`
-2. Система находит User → Role (Юрист)
-3. LLM генерирует ответ с system_prompt роли
-4. Ответ сохраняется с `ai_validated=false`
-5. Роман Петрович может подтвердить/исправить ответ
+**agent_type:**
+- `simple` — прямой вызов LLM (без tools) или ReAct agent (с tools)
+- `chain` — последовательные шаги из `agent_config["steps"]`
+- `multi_agent` — LangGraph StateGraph из `agent_config["graph"]`
+
+**prompt_file:**
+- Путь к файлу в `src/engine/prompts/` (напр. `lawyer.md`)
+- Приоритет: prompt_file > system_prompt (fallback)
+- Файлы кешируются через PromptCache, сброс через admin API
+
+---
+
+## CalendarEvent (Календарное событие)
+
+**Файл:** `src/engine/models/calendar_event.py`
+
+```python
+@dataclass
+class CalendarEvent:
+    id: UUID
+    role_id: UUID                   # Роль-агент для проактивного запуска
+    org_id: UUID
+    title: str
+    description: Optional[str]
+    event_type: str                 # "one_time" | "recurring"
+    scheduled_at: Optional[datetime]    # Для one_time
+    cron_expression: Optional[str]      # Для recurring ("0 10 * * 4")
+    next_trigger_at: Optional[datetime] # Предвычисленное время
+    last_triggered_at: Optional[datetime]
+    trigger_count: int
+    source_chat_id: Optional[UUID]      # Откуда событие создано
+    source_message_id: Optional[UUID]
+    metadata: dict                      # Доп. данные (JSONB)
+    created_by_user_id: Optional[UUID]
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+```
+
+**event_type:**
+- `one_time` — срабатывает один раз в `scheduled_at`, затем деактивируется
+- `recurring` — cron-выражение, после срабатывания пересчитывается `next_trigger_at` через croniter
+
+---
+
+## NotificationChannel (Канал уведомлений)
+
+**Файл:** `src/engine/models/notification.py`
+
+```python
+@dataclass
+class NotificationChannel:
+    id: UUID
+    user_id: UUID
+    org_id: UUID
+    channel_type: str               # "telegram" | "email"
+    config: dict                    # {"chat_id": "..."} или {"email": "..."}
+    is_enabled: bool
+    is_verified: bool               # Подтверждён ли канал
+    priority: int                   # Выше = пробуется первым
+    created_at: datetime
+    updated_at: datetime
+```
+
+**Каналы:**
+- `telegram` — config: `{"chat_id": "123456"}`, привязка через /start
+- `email` — config: `{"email": "user@company.com"}`
+- UNIQUE(user_id, channel_type) — один канал каждого типа на пользователя
+
+---
+
+## NotificationLog (Лог уведомлений)
+
+**Файл:** `src/engine/models/notification.py`
+
+```python
+@dataclass
+class NotificationLog:
+    id: UUID
+    user_id: UUID
+    channel_type: str
+    event_id: Optional[UUID]        # Календарное событие
+    role_id: Optional[UUID]         # Роль-агент
+    content: str                    # Текст уведомления
+    status: str                     # "pending" | "sent" | "failed"
+    attempts: int
+    error_message: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+```
 
 ---
 
@@ -103,21 +180,19 @@ class Role:
 
 **Файл:** `src/engine/models/chat.py`
 
-Чат/беседа.
-
 ```python
 class ChatType(str, Enum):
-    MAIN = "main"       # Личный чат пользователя с AI
-    DIRECT = "direct"   # Прямой чат между 2 пользователями
-    GROUP = "group"     # Групповой чат
+    MAIN = "main"
+    DIRECT = "direct"
+    GROUP = "group"
 
 @dataclass
 class Chat:
     id: UUID
     org_id: UUID
     type: ChatType
-    name: Optional[str]             # Название (для GROUP)
-    participants: List[UUID]        # Участники
+    name: Optional[str]
+    participants: List[UUID]
     created_by: Optional[UUID]
     is_active: bool
     created_at: datetime
@@ -125,56 +200,43 @@ class Chat:
     last_message_at: Optional[datetime]
 ```
 
-**Типы чатов:**
-- **MAIN** — создаётся автоматически при создании пользователя. Пользователь + его AI-роль.
-- **DIRECT** — между двумя пользователями
-- **GROUP** — несколько участников
-
 ---
 
 ## Message (Сообщение)
 
 **Файл:** `src/engine/models/message.py`
 
-Сообщение в чате.
-
 ```python
 class SenderType(str, Enum):
-    USER = "user"           # Сообщение от человека
-    AI_ROLE = "ai_role"     # Ответ AI-роли
+    USER = "user"
+    AI_ROLE = "ai_role"
 
 class MentionType(str, Enum):
-    USER = "user"           # @ — нотификация
-    AI_ROLE = "ai_role"     # @@ — вызов AI
+    USER = "user"
+    AI_ROLE = "ai_role"
 
 @dataclass
 class Mention:
     type: MentionType
-    user_id: UUID           # Упомянутый пользователь
-    username: str           # Username в момент упоминания
-    position: int           # Позиция в тексте
+    user_id: UUID
+    username: str
+    position: int
 
 @dataclass
 class Message:
     id: UUID
     chat_id: UUID
     sender_type: SenderType
-    sender_id: UUID             # User ID (для AI — владелец роли)
+    sender_id: UUID
     content: str
     mentions: List[Mention]
     reply_to_id: Optional[UUID]
-    ai_validated: bool          # AI-ответ подтверждён пользователем
-    ai_edited: bool             # AI-ответ был отредактирован
+    ai_validated: bool
+    ai_edited: bool
     is_deleted: bool
     created_at: datetime
     updated_at: datetime
 ```
-
-**AI Response Flow:**
-1. Сообщение с `sender_type=AI_ROLE` создаётся с `ai_validated=false`
-2. Пользователь (владелец роли) видит ответ
-3. Может подтвердить → `ai_validated=true`
-4. Может отредактировать → `ai_edited=true`
 
 ---
 
@@ -183,13 +245,18 @@ class Message:
 ```
 Organization (1)
     │
-    ├── Role (*)        # Роли принадлежат организации
-    │
-    ├── User (*)        # Пользователи принадлежат организации
+    ├── Role (*)            # AI-агенты организации
     │       │
-    │       └── Role (0..1)  # Пользователь может иметь роль
+    │       └── CalendarEvent (*)   # События привязаны к роли
     │
-    └── Chat (*)        # Чаты принадлежат организации
+    ├── User (*)            # Пользователи организации
+    │       │
+    │       ├── Role (0..1)         # Назначенная роль
+    │       └── NotificationChannel (*)  # Каналы уведомлений
+    │
+    └── Chat (*)            # Чаты организации
             │
-            └── Message (*)  # Сообщения в чате
+            └── Message (*)         # Сообщения в чате
+
+NotificationLog — лог доставки (user_id, event_id, role_id)
 ```

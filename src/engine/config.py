@@ -6,6 +6,12 @@ Configuration class for the RuGPT corporate AI assistant engine.
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote_plus
+from dotenv import load_dotenv
+
+# Load .env file from project root
+_env_path = Path(__file__).parent.parent.parent / ".env"
+load_dotenv(_env_path)
 
 
 class Config:
@@ -22,10 +28,11 @@ class Config:
     DB_USER = os.getenv("DB_USER", "postgres")
     DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
-    # PostgreSQL DSN
+    # PostgreSQL DSN (use get_postgres_dsn() method for proper password escaping)
+    _db_password_escaped = quote_plus(DB_PASSWORD) if DB_PASSWORD else ""
     POSTGRES_DSN = os.getenv(
         "POSTGRES_DSN",
-        f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+        f"postgresql://{DB_USER}:{_db_password_escaped}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
         if DB_PASSWORD else f"postgresql://{DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     )
 
@@ -58,9 +65,23 @@ class Config:
     # Password hashing
     PASSWORD_SALT_ROUNDS = int(os.getenv("PASSWORD_SALT_ROUNDS", "12"))
 
+    # Scheduler settings
+    SCHEDULER_POLL_INTERVAL = os.getenv("SCHEDULER_POLL_INTERVAL", "30")
+    SCHEDULER_ENABLED = os.getenv("SCHEDULER_ENABLED", "true").lower() == "true"
+
+    # Telegram Bot
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+    # SMTP (Email notifications)
+    SMTP_HOST = os.getenv("SMTP_HOST", "")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+
     @staticmethod
     def get_postgres_dsn() -> str:
         """Get PostgreSQL DSN with password handling"""
         if Config.DB_PASSWORD:
-            return f"postgresql://{Config.DB_USER}:{Config.DB_PASSWORD}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"
+            password = quote_plus(Config.DB_PASSWORD)
+            return f"postgresql://{Config.DB_USER}:{password}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"
         return f"postgresql://{Config.DB_USER}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"

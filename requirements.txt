@@ -21,6 +21,19 @@ pydantic[email]>=2.5.0
 # Environment
 python-dotenv>=1.0.0
 
+# LLM / Agent framework
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-ollama>=0.2.0
+langchain-community>=0.3.0
+langgraph>=0.2.0
+
+# Scheduling
+croniter>=2.0.0
+
+# Notifications
+aiosmtplib>=3.0.0
+
 # Development
 pytest>=7.4.0
 pytest-asyncio>=0.23.0

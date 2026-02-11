@@ -21,7 +21,9 @@ from .routes import (
     organizations_router,
     users_router,
     roles_router,
-    chats_router
+    chats_router,
+    calendar_router,
+    notifications_router
 )
 
 # Configure logging
@@ -85,6 +87,8 @@ app.include_router(organizations_router, prefix="/api/v1", tags=["organizations"
 app.include_router(users_router, prefix="/api/v1", tags=["users"])
 app.include_router(roles_router, prefix="/api/v1", tags=["roles"])
 app.include_router(chats_router, tags=["chats"])
+app.include_router(calendar_router, prefix="/api/v1", tags=["calendar"])
+app.include_router(notifications_router, prefix="/api/v1", tags=["notifications"])
 
 
 @app.get("/")

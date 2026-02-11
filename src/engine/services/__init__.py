@@ -9,6 +9,10 @@ from .users_service import UsersService
 from .roles_service import RolesService
 from .chat_service import ChatService
 from .mention_service import MentionService
+from .prompt_cache import PromptCache
+from .calendar_service import CalendarService
+from .scheduler_service import SchedulerService
+from .notification_service import NotificationService
 
 __all__ = [
     'EngineService',
@@ -17,4 +21,8 @@ __all__ = [
     'RolesService',
     'ChatService',
     'MentionService',
+    'PromptCache',
+    'CalendarService',
+    'SchedulerService',
+    'NotificationService',
 ]

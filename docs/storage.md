@@ -83,6 +83,10 @@ class RoleStorage(BaseStorage):
     async def exists_by_code(code: str, org_id: UUID, exclude_id?: UUID) -> bool
 ```
 
+**Особенности:**
+- Обрабатывает новые колонки: `agent_type`, `agent_config` (JSONB), `tools` (JSONB), `prompt_file`
+- JSONB поля парсятся при чтении из БД
+
 ---
 
 ## ChatStorage
@@ -136,6 +140,61 @@ class MessageStorage(BaseStorage):
 
 ---
 
+## CalendarStorage
+
+**Файл:** `src/engine/storage/calendar_storage.py`
+
+```python
+class CalendarStorage(BaseStorage):
+    async def create(event: CalendarEvent) -> CalendarEvent
+    async def get_by_id(event_id: UUID) -> CalendarEvent?
+    async def list_by_org(org_id: UUID, active_only: bool) -> List[CalendarEvent]
+    async def list_by_role(role_id: UUID, active_only: bool) -> List[CalendarEvent]
+    async def get_due_events(now: datetime) -> List[CalendarEvent]
+    async def update(event: CalendarEvent) -> CalendarEvent
+    async def deactivate(event_id: UUID) -> bool
+```
+
+**Особенности:**
+- `get_due_events()` — выбирает события с `next_trigger_at <= now AND is_active = true`
+- `metadata` хранится как JSONB
+
+---
+
+## NotificationChannelStorage
+
+**Файл:** `src/engine/storage/notification_channel_storage.py`
+
+```python
+class NotificationChannelStorage(BaseStorage):
+    async def create(channel: NotificationChannel) -> NotificationChannel
+    async def get_by_user_and_type(user_id: UUID, channel_type: str) -> NotificationChannel?
+    async def list_by_user(user_id: UUID, enabled_only: bool) -> List[NotificationChannel]
+    async def update(channel: NotificationChannel) -> NotificationChannel
+    async def delete_by_user_and_type(user_id: UUID, channel_type: str) -> bool
+```
+
+**Особенности:**
+- `list_by_user()` сортирует по priority DESC (высший приоритет первым)
+- UNIQUE(user_id, channel_type) — один канал каждого типа на пользователя
+- `config` хранится как JSONB
+
+---
+
+## NotificationLogStorage
+
+**Файл:** `src/engine/storage/notification_log_storage.py`
+
+```python
+class NotificationLogStorage(BaseStorage):
+    async def create(log_entry: NotificationLog) -> NotificationLog
+    async def update_status(log_id: UUID, status: str, attempts: int, error_message?: str) -> NotificationLog?
+    async def list_by_user(user_id: UUID, limit: int) -> List[NotificationLog]
+    async def list_by_event(event_id: UUID) -> List[NotificationLog]
+```
+
+---
+
 ## Схема базы данных
 
 ```sql
@@ -150,7 +209,7 @@ CREATE TABLE organizations (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Роли
+-- Роли (AI-агенты)
 CREATE TABLE roles (
     id UUID PRIMARY KEY,
     org_id UUID REFERENCES organizations(id),
@@ -160,6 +219,10 @@ CREATE TABLE roles (
     system_prompt TEXT NOT NULL,
     rag_collection VARCHAR(255),
     model_name VARCHAR(100) DEFAULT 'qwen2.5:7b',
+    agent_type VARCHAR(20) NOT NULL DEFAULT 'simple',
+    agent_config JSONB DEFAULT '{}',
+    tools JSONB DEFAULT '[]',
+    prompt_file VARCHAR(255),
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -213,6 +276,58 @@ CREATE TABLE messages (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Календарные события
+CREATE TABLE calendar_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    role_id UUID NOT NULL REFERENCES roles(id),
+    org_id UUID NOT NULL REFERENCES organizations(id),
+    title VARCHAR(500) NOT NULL,
+    description TEXT,
+    event_type VARCHAR(20) NOT NULL DEFAULT 'one_time',
+    scheduled_at TIMESTAMP WITH TIME ZONE,
+    cron_expression VARCHAR(100),
+    next_trigger_at TIMESTAMP WITH TIME ZONE,
+    last_triggered_at TIMESTAMP WITH TIME ZONE,
+    trigger_count INTEGER DEFAULT 0,
+    source_chat_id UUID,
+    source_message_id UUID,
+    metadata JSONB DEFAULT '{}',
+    created_by_user_id UUID,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Каналы уведомлений
+CREATE TABLE notification_channels (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    org_id UUID NOT NULL REFERENCES organizations(id),
+    channel_type VARCHAR(20) NOT NULL,
+    config JSONB DEFAULT '{}',
+    is_enabled BOOLEAN DEFAULT true,
+    is_verified BOOLEAN DEFAULT false,
+    priority INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(user_id, channel_type)
+);
+
+-- Лог уведомлений
+CREATE TABLE notification_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL,
+    channel_type VARCHAR(20) NOT NULL,
+    event_id UUID,
+    role_id UUID,
+    content TEXT,
+    status VARCHAR(20) DEFAULT 'pending',
+    attempts INTEGER DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
 ```
 
 ---
@@ -244,4 +359,17 @@ CREATE INDEX idx_messages_chat ON messages(chat_id);
 CREATE INDEX idx_messages_created ON messages(chat_id, created_at DESC);
 CREATE INDEX idx_messages_ai_pending ON messages(sender_id, ai_validated)
     WHERE sender_type = 'ai_role' AND ai_validated = false;
+
+-- Calendar Events
+CREATE INDEX idx_calendar_events_role ON calendar_events(role_id);
+CREATE INDEX idx_calendar_events_org ON calendar_events(org_id);
+CREATE INDEX idx_calendar_events_due ON calendar_events(next_trigger_at)
+    WHERE is_active = true AND next_trigger_at IS NOT NULL;
+
+-- Notification Channels
+CREATE INDEX idx_notification_channels_user ON notification_channels(user_id);
+
+-- Notification Log
+CREATE INDEX idx_notification_log_user ON notification_log(user_id, created_at DESC);
+CREATE INDEX idx_notification_log_event ON notification_log(event_id);
 ```

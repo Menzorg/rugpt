@@ -3,6 +3,7 @@ Role Storage
 
 PostgreSQL storage for AI roles.
 """
+import json
 import logging
 from datetime import datetime
 from typing import Optional, List
@@ -22,15 +23,18 @@ class RoleStorage(BaseStorage):
         query = """
             INSERT INTO roles (
                 id, org_id, name, code, description, system_prompt,
-                rag_collection, model_name, is_active, created_at, updated_at
+                rag_collection, model_name, agent_type, agent_config,
+                tools, prompt_file, is_active, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             RETURNING *
         """
         row = await self.fetchrow(
             query,
             role.id, role.org_id, role.name, role.code, role.description,
             role.system_prompt, role.rag_collection, role.model_name,
+            role.agent_type, json.dumps(role.agent_config),
+            json.dumps(role.tools), role.prompt_file,
             role.is_active, role.created_at, role.updated_at
         )
         return self._row_to_role(row)
@@ -66,14 +70,18 @@ class RoleStorage(BaseStorage):
         query = """
             UPDATE roles
             SET name = $2, code = $3, description = $4, system_prompt = $5,
-                rag_collection = $6, model_name = $7, is_active = $8, updated_at = $9
+                rag_collection = $6, model_name = $7, agent_type = $8,
+                agent_config = $9, tools = $10, prompt_file = $11,
+                is_active = $12, updated_at = $13
             WHERE id = $1
             RETURNING *
         """
         row = await self.fetchrow(
             query,
             role.id, role.name, role.code, role.description, role.system_prompt,
-            role.rag_collection, role.model_name, role.is_active, role.updated_at
+            role.rag_collection, role.model_name, role.agent_type,
+            json.dumps(role.agent_config), json.dumps(role.tools),
+            role.prompt_file, role.is_active, role.updated_at
         )
         return self._row_to_role(row)
 
@@ -99,6 +107,15 @@ class RoleStorage(BaseStorage):
 
     def _row_to_role(self, row) -> Role:
         """Convert database row to Role"""
+        # agent_config and tools come as JSONB — asyncpg returns dicts/lists
+        agent_config = row["agent_config"] if row["agent_config"] else {}
+        tools = row["tools"] if row["tools"] else []
+        # If asyncpg returned a string (shouldn't, but be safe), parse it
+        if isinstance(agent_config, str):
+            agent_config = json.loads(agent_config)
+        if isinstance(tools, str):
+            tools = json.loads(tools)
+
         return Role(
             id=row["id"],
             org_id=row["org_id"],
@@ -108,6 +125,10 @@ class RoleStorage(BaseStorage):
             system_prompt=row["system_prompt"],
             rag_collection=row["rag_collection"],
             model_name=row["model_name"],
+            agent_type=row["agent_type"],
+            agent_config=agent_config,
+            tools=tools,
+            prompt_file=row["prompt_file"],
             is_active=row["is_active"],
             created_at=row["created_at"],
             updated_at=row["updated_at"]

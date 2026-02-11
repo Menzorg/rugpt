@@ -1,120 +1,136 @@
 # RuGPT LLM Integration
 
-Интеграция с Large Language Models.
+Интеграция с Large Language Models через агентную систему.
 
 ## Архитектура
 
 ```
-ChatService
+ChatService / SchedulerService
     │
-    └── LLMProvider
+    └── AIService
             │
-            ├── OllamaProvider (local)
-            │       │
-            │       ├── Ollama API (/api/chat)
-            │       └── OpenAI-compatible (/v1/chat/completions)
-            │
-            └── (future) OpenAIProvider (fallback)
+            └── AgentExecutor (LangChain/LangGraph)
+                    │
+                    ├── simple (без tools) → ChatOllama.invoke()
+                    ├── simple (с tools) → LangGraph ReAct agent
+                    ├── chain → Последовательные шаги
+                    └── multi_agent → LangGraph StateGraph
+                            │
+                            └── ChatOllama → Ollama API
+                                    │
+                                    ├── /api/chat (Ollama native)
+                                    └── /v1/chat/completions (OpenAI-compatible)
+
+Legacy (для health checks):
+    └── OllamaProvider → HTTP запросы к Ollama
 ```
 
-## BaseLLMProvider
+## AgentExecutor
 
-**Файл:** `src/engine/llm/providers/base.py`
+**Файл:** `src/engine/agents/executor.py`
 
-Абстрактный базовый класс для LLM провайдеров.
+Центральный компонент для вызова LLM. Заменил прямые HTTP-вызовы через OllamaProvider.
 
 ```python
-@dataclass
-class LLMMessage:
-    role: str       # "system", "user", "assistant"
-    content: str
+class AgentExecutor:
+    def __init__(self, base_url, default_model, prompt_cache, tool_registry)
 
-@dataclass
-class LLMResponse:
-    content: str            # Сгенерированный текст
-    model: str              # Использованная модель
-    tokens_used: int        # Количество токенов
-    finish_reason: str      # "stop", "error", "timeout"
+    async def execute(role, messages, temperature=0.7, max_tokens=2048) -> AgentResult
+```
 
-class BaseLLMProvider(ABC):
-    @abstractmethod
-    async def generate(
-        messages: List[LLMMessage],
-        model?: str,
-        temperature: float = 0.7,
-        max_tokens: int = 2048
-    ) -> LLMResponse
+**Как работает:**
+1. Получает `role.agent_type` → выбирает граф
+2. `prompt_cache.get_prompt(role)` → системный промпт из файла/кеша
+3. `tool_registry.resolve(role.tools)` → список инструментов
+4. `ChatOllama(model=role.model_name)` → LLM
+5. Выполняет граф → `AgentResult`
 
-    @abstractmethod
+**Графы:**
+- `simple.py` — прямой вызов или ReAct agent
+- `chain.py` — последовательные шаги из `agent_config["steps"]`
+- `multi_agent.py` — StateGraph из `agent_config["graph"]`
+
+---
+
+## Инструменты (Tools)
+
+**Файл:** `src/engine/agents/tools/`
+
+Инструменты доступны агентам через `role.tools`:
+
+| Tool | Файл | Описание | Статус |
+|------|-------|----------|--------|
+| `calendar_create` | calendar_tool.py | Создать событие | Работает |
+| `calendar_query` | calendar_tool.py | Запрос событий | Работает |
+| `rag_search` | rag_tool.py | Поиск по документам | Stub |
+| `web_search` | web_tool.py | Веб-поиск | Stub |
+| `role_call` | role_call_tool.py | Вызов другой роли | Stub |
+
+Calendar tools используют factory pattern:
+```python
+def create_calendar_tools(calendar_service):
+    # Возвращает (create_tool, query_tool) с замыканием на CalendarService
+```
+
+---
+
+## PromptCache
+
+**Файл:** `src/engine/services/prompt_cache.py`
+
+Промпты хранятся в файлах, не в БД. Git-версионирование.
+
+```
+src/engine/prompts/
+├── lawyer.md       # Системный промпт юриста
+├── accountant.md   # Бухгалтер
+├── hr.md           # HR
+└── chu.md          # Общий помощник
+```
+
+**Приоритет:**
+1. `role.prompt_file` → кеш → файл с диска
+2. `role.system_prompt` → текст из БД (fallback)
+
+---
+
+## OllamaProvider (Legacy)
+
+**Файл:** `src/engine/llm/providers/ollama.py`
+
+Оригинальный провайдер, теперь используется только для health checks и model listing.
+
+```python
+class OllamaProvider(BaseLLMProvider):
+    async def generate(messages, model?, temperature, max_tokens) -> LLMResponse
     async def health_check() -> bool
-
-    @abstractmethod
     async def list_models() -> List[str]
 ```
 
 ---
 
-## OllamaProvider
+## Проактивный запуск
 
-**Файл:** `src/engine/llm/providers/ollama.py`
-
-Провайдер для локальных моделей через Ollama или vLLM.
+SchedulerService вызывает AgentExecutor напрямую (без AIService) для проактивных уведомлений:
 
 ```python
-class OllamaProvider(BaseLLMProvider):
-    def __init__(
-        base_url: str = "http://localhost:11434",
-        default_model: str = "qwen2.5:7b",
-        timeout: float = 120.0
-    )
+# В SchedulerService._build_notification_content():
+messages = [{"role": "user", "content": f'Сработало событие: "{event.title}"...'}]
+result = await self.agent_executor.execute(role=role, messages=messages)
+# result.content → текст уведомления
 ```
 
-**Поддерживаемые API:**
-1. **Ollama Native** — `/api/chat`
-2. **OpenAI-compatible** — `/v1/chat/completions` (для vLLM)
+---
 
-**Конфигурация** (через .env):
+## Конфигурация
+
+**Через .env:**
 ```env
 LLM_BASE_URL=http://localhost:11434
 DEFAULT_MODEL=qwen2.5:7b
+OPENAI_API_KEY=            # Fallback (optional)
+OPENAI_MODEL=gpt-4o-mini
 ```
-
----
-
-## Использование в ChatService
-
-```python
-# При обработке @@ mention
-async def _generate_ai_response(chat_id, mentioned_user_id, original_message, org_id):
-    # 1. Получить пользователя и его роль
-    user = await user_storage.get_by_id(mentioned_user_id)
-    role = await role_storage.get_by_id(user.role_id)
-
-    # 2. Подготовить сообщения для LLM
-    messages = [
-        LLMMessage(role="system", content=role.system_prompt),
-        LLMMessage(role="user", content=original_message.content)
-    ]
-
-    # 3. Сгенерировать ответ
-    llm = OllamaProvider()
-    response = await llm.generate(
-        messages=messages,
-        model=role.model_name
-    )
-
-    # 4. Сохранить AI-ответ
-    ai_message = Message(
-        chat_id=chat_id,
-        sender_type=SenderType.AI_ROLE,
-        sender_id=mentioned_user_id,
-        content=response.content,
-        ai_validated=False
-    )
-    return await message_storage.create(ai_message)
-```
-
----
 
 ## Модели
 
@@ -130,78 +146,23 @@ async def _generate_ai_response(chat_id, mentioned_user_id, original_message, or
 
 ---
 
-## Конфигурация ролей
-
-Каждая роль может использовать свою модель:
-
-```python
-Role(
-    name="Юрист",
-    code="lawyer",
-    system_prompt="""Ты корпоративный юрист.
-    Помогай с:
-    - Анализом договоров
-    - Правовыми вопросами
-    - Соблюдением законодательства
-    Отвечай чётко, ссылайся на законы.""",
-    model_name="qwen2.5:72b"  # Для юриста нужна мощная модель
-)
-
-Role(
-    name="Техподдержка",
-    code="support",
-    system_prompt="Ты сотрудник техподдержки...",
-    model_name="qwen2.5:7b"  # Простые запросы, быстрая модель
-)
-```
-
----
-
-## Примеры system prompt
-
-### Юрист
-```
-Ты корпоративный юрист компании. Твои задачи:
-- Анализ и проверка договоров
-- Консультации по правовым вопросам
-- Помощь с соблюдением законодательства
-
-При ответе:
-- Будь точен и конкретен
-- Ссылайся на конкретные статьи законов
-- Предупреждай о рисках
-- Если не уверен — скажи об этом
-```
-
-### Бухгалтер
-```
-Ты корпоративный бухгалтер. Твои задачи:
-- Консультации по бухгалтерскому учёту
-- Помощь с налоговыми вопросами
-- Разъяснение финансовой отчётности
-
-При ответе:
-- Ссылайся на стандарты бухучёта
-- Указывай применимые налоговые ставки
-- Предупреждай о сроках сдачи отчётности
-```
-
-### HR
-```
-Ты HR-специалист компании. Твои задачи:
-- Консультации по кадровым вопросам
-- Помощь с трудовым законодательством
-- Разъяснение корпоративных политик
-
-При ответе:
-- Будь вежлив и поддерживающ
-- Ссылайся на ТК РФ при необходимости
-- Учитывай корпоративную культуру
-```
-
----
-
 ## Будущее развитие
+
+### Kafka для очередей запросов к LLM
+
+```
+Engine (FastAPI)                    GPU Server
+    │                                   │
+    ├── produce: llm.requests ─────────►│ Ollama/vLLM
+    │                                   │
+    │◄── consume: llm.responses ────────┤
+    │                                   │
+```
+
+**Зачем:**
+- Асинхронная обработка — API не блокируется на ожидании LLM
+- Масштабирование через consumer groups — несколько GPU-воркеров
+- AI streaming — постепенная отдача ответа пользователю
 
 ### RAG (Retrieval-Augmented Generation)
 ```
@@ -210,8 +171,4 @@ Role.rag_collection → Vector DB (ChromaDB/Milvus)
                           └── Documents (PDF, DOCX, Excel)
 ```
 
-**Flow:**
-1. Пользователь спрашивает
-2. Поиск релевантных документов в RAG
-3. Добавление контекста в prompt
-4. Генерация ответа LLM
+Tool `rag_search` подготовлен как stub, будет реализован в Фазе 5.

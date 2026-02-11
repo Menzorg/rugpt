@@ -2,6 +2,7 @@
 Roles Routes
 
 Endpoints for AI role management.
+Roles are predefined — only GET endpoints and admin cache management.
 """
 import logging
 from typing import Optional, List
@@ -19,26 +20,8 @@ router = APIRouter(prefix="/roles", tags=["roles"])
 
 
 # ============================================
-# Request/Response Models
+# Response Models
 # ============================================
-
-class CreateRoleRequest(BaseModel):
-    """Create role request"""
-    name: str
-    code: str
-    system_prompt: str
-    description: Optional[str] = None
-    model_name: str = "qwen2.5:7b"
-
-
-class UpdateRoleRequest(BaseModel):
-    """Update role request"""
-    name: Optional[str] = None
-    code: Optional[str] = None
-    description: Optional[str] = None
-    system_prompt: Optional[str] = None
-    model_name: Optional[str] = None
-
 
 class RoleResponse(BaseModel):
     """Role response"""
@@ -50,60 +33,40 @@ class RoleResponse(BaseModel):
     system_prompt: str
     rag_collection: Optional[str]
     model_name: str
+    agent_type: str
+    agent_config: dict
+    tools: list
+    prompt_file: Optional[str]
     is_active: bool
     created_at: str
     updated_at: str
 
 
-class RoleUsersResponse(BaseModel):
-    """Role with assigned users"""
-    role: RoleResponse
-    users: List[dict]
+# ============================================
+# Helper
+# ============================================
+
+def _get_roles_service() -> RolesService:
+    """Get RolesService with PromptCache"""
+    engine = get_engine_service()
+    return RolesService(
+        engine.role_storage,
+        engine.user_storage,
+        engine.prompt_cache,
+    )
 
 
 # ============================================
-# Routes
+# Routes: Read-only
 # ============================================
 
 @router.get("", response_model=List[RoleResponse])
 @router.get("/", response_model=List[RoleResponse])
 async def list_roles(current_user: dict = Depends(get_current_user)):
     """List roles in current organization"""
-    engine = get_engine_service()
-    roles_service = RolesService(engine.role_storage, engine.user_storage)
-
+    roles_service = _get_roles_service()
     roles = await roles_service.list_roles(current_user["org_id"])
     return [RoleResponse(**r.to_dict()) for r in roles]
-
-
-@router.post("", response_model=RoleResponse)
-@router.post("/", response_model=RoleResponse)
-async def create_role(
-    request: CreateRoleRequest,
-    current_user: dict = Depends(get_current_user)
-):
-    """Create a new AI role (admin only)"""
-    engine = get_engine_service()
-
-    # Check if current user is admin
-    user = await engine.user_storage.get_by_id(current_user["user_id"])
-    if not user or not user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-
-    roles_service = RolesService(engine.role_storage, engine.user_storage)
-
-    try:
-        role = await roles_service.create_role(
-            org_id=current_user["org_id"],
-            name=request.name,
-            code=request.code,
-            system_prompt=request.system_prompt,
-            description=request.description,
-            model_name=request.model_name
-        )
-        return RoleResponse(**role.to_dict())
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/{role_id}", response_model=RoleResponse)
@@ -112,8 +75,7 @@ async def get_role(
     current_user: dict = Depends(get_current_user)
 ):
     """Get role by ID"""
-    engine = get_engine_service()
-    roles_service = RolesService(engine.role_storage, engine.user_storage)
+    roles_service = _get_roles_service()
 
     try:
         role_uuid = UUID(role_id)
@@ -124,7 +86,6 @@ async def get_role(
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
 
-    # Check org access
     if role.org_id != current_user["org_id"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -137,8 +98,7 @@ async def get_role_by_code(
     current_user: dict = Depends(get_current_user)
 ):
     """Get role by code in current organization"""
-    engine = get_engine_service()
-    roles_service = RolesService(engine.role_storage, engine.user_storage)
+    roles_service = _get_roles_service()
 
     role = await roles_service.get_role_by_code(code, current_user["org_id"])
     if not role:
@@ -153,8 +113,7 @@ async def get_role_users(
     current_user: dict = Depends(get_current_user)
 ):
     """Get users assigned to a role"""
-    engine = get_engine_service()
-    roles_service = RolesService(engine.role_storage, engine.user_storage)
+    roles_service = _get_roles_service()
 
     try:
         role_uuid = UUID(role_id)
@@ -175,74 +134,48 @@ async def get_role_users(
     }
 
 
-@router.patch("/{role_id}", response_model=RoleResponse)
-async def update_role(
-    role_id: str,
-    request: UpdateRoleRequest,
+# ============================================
+# Routes: Admin — Prompt Cache Management
+# ============================================
+
+@router.post("/admin/cache/prompts/clear")
+async def clear_all_prompt_cache(
     current_user: dict = Depends(get_current_user)
 ):
-    """Update role (admin only)"""
+    """Clear entire prompt cache (admin only)"""
     engine = get_engine_service()
 
-    # Check if current user is admin
     user = await engine.user_storage.get_by_id(current_user["user_id"])
     if not user or not user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
 
-    try:
-        role_uuid = UUID(role_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid role ID")
+    roles_service = _get_roles_service()
+    roles_service.clear_prompt_cache()
 
-    # Check role belongs to org
-    role = await engine.role_storage.get_by_id(role_uuid)
-    if not role:
-        raise HTTPException(status_code=404, detail="Role not found")
-    if role.org_id != current_user["org_id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    roles_service = RolesService(engine.role_storage, engine.user_storage)
-
-    try:
-        updated = await roles_service.update_role(
-            role_id=role_uuid,
-            name=request.name,
-            code=request.code,
-            description=request.description,
-            system_prompt=request.system_prompt,
-            model_name=request.model_name
-        )
-        return RoleResponse(**updated.to_dict())
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "message": "All prompt caches cleared"}
 
 
-@router.delete("/{role_id}")
-async def deactivate_role(
-    role_id: str,
+@router.post("/admin/cache/prompts/clear/{role_code}")
+async def clear_role_prompt_cache(
+    role_code: str,
     current_user: dict = Depends(get_current_user)
 ):
-    """Deactivate role (admin only)"""
+    """Clear prompt cache for a specific role (admin only)"""
     engine = get_engine_service()
 
-    # Check if current user is admin
     user = await engine.user_storage.get_by_id(current_user["user_id"])
     if not user or not user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
 
-    try:
-        role_uuid = UUID(role_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid role ID")
+    roles_service = _get_roles_service()
 
-    # Check role belongs to org
-    role = await engine.role_storage.get_by_id(role_uuid)
+    # Find role to get prompt_file
+    role = await roles_service.get_role_by_code(role_code, current_user["org_id"])
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
-    if role.org_id != current_user["org_id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
 
-    roles_service = RolesService(engine.role_storage, engine.user_storage)
-    await roles_service.deactivate_role(role_uuid)
+    if role.prompt_file:
+        roles_service.clear_prompt_cache(role.prompt_file)
+        return {"success": True, "message": f"Prompt cache cleared for {role_code}"}
 
-    return {"success": True, "message": "Role deactivated"}
+    return {"success": True, "message": f"Role {role_code} has no prompt_file, nothing to clear"}

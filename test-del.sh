@@ -19,7 +19,15 @@ NC='\033[0m' # No Color
 
 # Загружаем переменные окружения
 if [ -f .env ]; then
-    export $(grep -v '^#' .env | xargs)
+    while IFS='=' read -r key value; do
+        # Пропускаем комментарии и пустые строки
+        [[ $key =~ ^#.*$ ]] && continue
+        [[ -z $key ]] && continue
+        # Убираем кавычки если есть
+        value="${value%\"}"
+        value="${value#\"}"
+        export "$key=$value"
+    done < .env
 fi
 
 # Параметры БД

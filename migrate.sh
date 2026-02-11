@@ -9,7 +9,15 @@ cd "$SCRIPT_DIR"
 
 # Load environment variables
 if [ -f ".env" ]; then
-    export $(grep -v '^#' .env | xargs)
+    while IFS='=' read -r key value; do
+        # Skip comments and empty lines
+        [[ $key =~ ^#.*$ ]] && continue
+        [[ -z $key ]] && continue
+        # Remove quotes if present
+        value="${value%\"}"
+        value="${value#\"}"
+        export "$key=$value"
+    done < .env
 fi
 
 # Default values
@@ -17,6 +25,10 @@ DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-rugpt}"
 DB_USER="${DB_USER:-postgres}"
+DB_PASSWORD="${DB_PASSWORD:-}"
+
+# Export password for psql
+export PGPASSWORD="$DB_PASSWORD"
 
 echo "==================================="
 echo "RuGPT Database Migration"

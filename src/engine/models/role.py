@@ -6,7 +6,7 @@ Roles are AI personas with specific system prompts and capabilities.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID, uuid4
 
 
@@ -36,6 +36,10 @@ class Role:
     system_prompt: str = ""                          # System prompt for the AI
     rag_collection: Optional[str] = None             # RAG collection name (for future)
     model_name: str = "qwen2.5:7b"                   # LLM model to use
+    agent_type: str = "simple"                        # Agent type: simple, chain, multi_agent
+    agent_config: dict = field(default_factory=dict)  # Agent configuration (graph, steps)
+    tools: List[str] = field(default_factory=list)    # Tool names: ["calendar", "rag_search", ...]
+    prompt_file: Optional[str] = None                 # Path to prompt file: "lawyer.md"
     is_active: bool = True                           # Active/inactive status
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
@@ -51,6 +55,10 @@ class Role:
             "system_prompt": self.system_prompt,
             "rag_collection": self.rag_collection,
             "model_name": self.model_name,
+            "agent_type": self.agent_type,
+            "agent_config": self.agent_config,
+            "tools": self.tools,
+            "prompt_file": self.prompt_file,
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
@@ -68,6 +76,10 @@ class Role:
             system_prompt=data.get("system_prompt", ""),
             rag_collection=data.get("rag_collection"),
             model_name=data.get("model_name", "qwen2.5:7b"),
+            agent_type=data.get("agent_type", "simple"),
+            agent_config=data.get("agent_config", {}),
+            tools=data.get("tools", []),
+            prompt_file=data.get("prompt_file"),
             is_active=data.get("is_active", True),
             created_at=datetime.fromisoformat(data["created_at"]) if isinstance(data.get("created_at"), str) else data.get("created_at", datetime.utcnow()),
             updated_at=datetime.fromisoformat(data["updated_at"]) if isinstance(data.get("updated_at"), str) else data.get("updated_at", datetime.utcnow()),
