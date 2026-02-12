@@ -22,7 +22,7 @@ def rag_search(query: str, collection: str = "") -> str:
         collection: Optional RAG collection name to search in
     """
     emb = OllamaEmbeddings(model='nomic-embed-text-v2-moe:latest', base_url='http://localhost:11434')
-    client = PGVector(Config.get_vector_dsn(),embedding_function=emb,collection_name=collection)
+    client = PGVector(connection=Config.get_vector_dsn(),embeddings=emb,collection_name=collection)
     
     logger.info(f"rag_search called: query={query}, collection={collection}")
     
