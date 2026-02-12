@@ -24,7 +24,7 @@ class ToolRegistry:
     """
 
     def __init__(self):
-        self._tools: Dict[str, BaseTool] = {rag_search}
+        self._tools: Dict[str, BaseTool] = {"rag_search": rag_search}
 
     def register(self, name: str, tool: BaseTool):
         """Register a tool by name"""
