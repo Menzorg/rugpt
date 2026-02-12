@@ -8,6 +8,8 @@ import logging
 from typing import Dict, List, Optional
 from langchain_core.tools import BaseTool
 
+from .rag_tool import rag_search
+
 logger = logging.getLogger("rugpt.agents.tools.registry")
 
 
@@ -22,7 +24,7 @@ class ToolRegistry:
     """
 
     def __init__(self):
-        self._tools: Dict[str, BaseTool] = {}
+        self._tools: Dict[str, BaseTool] = {rag_search}
 
     def register(self, name: str, tool: BaseTool):
         """Register a tool by name"""

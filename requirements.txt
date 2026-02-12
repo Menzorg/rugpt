@@ -38,4 +38,5 @@ aiosmtplib>=3.0.0
 pytest>=7.4.0
 pytest-asyncio>=0.23.0
 
-pgvector>=0.4.1 
+pgvector>=0.4.1
+langchain-postgres>=0.0.16

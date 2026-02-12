@@ -6,7 +6,7 @@ LangChain tool for document search via RAG collection.
 import logging
 from langchain_core.tools import tool
 
-from langchain_community.vectorstores.pgvector import PGVector
+from langchain_postgres import PGVector
 from langchain_ollama.embeddings import OllamaEmbeddings
 
 from ...config import Config
