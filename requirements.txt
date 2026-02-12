@@ -28,6 +28,9 @@ langchain-ollama>=0.2.0
 langchain-community>=0.3.0
 langgraph>=0.2.0
 
+# Vector store
+langchain-postgres>=0.0.16
+
 # Scheduling
 croniter>=2.0.0
 
@@ -37,6 +40,3 @@ aiosmtplib>=3.0.0
 # Development
 pytest>=7.4.0
 pytest-asyncio>=0.23.0
-
-pgvector>=0.4.1
-langchain-postgres>=0.0.16
