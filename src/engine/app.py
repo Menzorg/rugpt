@@ -28,7 +28,7 @@ from .routes import (
 
 # Configure logging
 logging.basicConfig(
-    filename="events.log"
+    filename="events.log",
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
