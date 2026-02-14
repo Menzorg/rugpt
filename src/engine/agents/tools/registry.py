@@ -8,6 +8,8 @@ import logging
 from typing import Dict, List, Optional
 from langchain_core.tools import BaseTool
 
+from .rag_tool import rag_search
+
 logger = logging.getLogger("rugpt.agents.tools.registry")
 
 

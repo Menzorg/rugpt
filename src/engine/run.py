@@ -31,7 +31,8 @@ def run():
         "src.engine.app:app",
         host=host,
         port=port,
-        reload=os.getenv("DEBUG", "false").lower() == "true"
+        reload=os.getenv("DEBUG", "false").lower() == "true",
+        
     )
 
 

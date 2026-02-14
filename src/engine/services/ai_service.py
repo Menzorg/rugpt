@@ -225,7 +225,8 @@ class AIService:
         # Recent chat history (last 10 messages)
         history = await self.message_storage.list_by_chat(message.chat_id, limit=10)
 
-        for msg in reversed(history):
+        # Add history (oldest first)
+        for msg in history:
             if msg.id == message.id:
                 continue
             role_name = "assistant" if msg.sender_type == SenderType.AI_ROLE else "user"

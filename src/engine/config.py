@@ -28,6 +28,8 @@ class Config:
     DB_USER = os.getenv("DB_USER", "postgres")
     DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
+    VECTOR_PORT = os.getenv("VECTOR_PORT", "7432")
+
     # PostgreSQL DSN (use get_postgres_dsn() method for proper password escaping)
     _db_password_escaped = quote_plus(DB_PASSWORD) if DB_PASSWORD else ""
     POSTGRES_DSN = os.getenv(
@@ -85,3 +87,11 @@ class Config:
             password = quote_plus(Config.DB_PASSWORD)
             return f"postgresql://{Config.DB_USER}:{password}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"
         return f"postgresql://{Config.DB_USER}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"
+
+    @staticmethod
+    def get_vector_dsn() -> str:
+        """Get PostgreSQL DSN with password handling"""
+        if Config.DB_PASSWORD:
+            password = quote_plus(Config.DB_PASSWORD)
+            return f"postgresql://{Config.DB_USER}:{password}@{Config.DB_HOST}:{Config.VECTOR_PORT}/{Config.DB_NAME}"
+        return f"postgresql://{Config.DB_USER}@{Config.DB_HOST}:{Config.VECTOR_PORT}/{Config.DB_NAME}"
