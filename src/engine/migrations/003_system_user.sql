@@ -43,77 +43,69 @@ DECLARE
 BEGIN
     RAISE NOTICE 'Creating universal AI assistant roles in RuGPT organization';
 
-    -- Create GPT-4 Assistant role
+    -- Create GPT-OSS 20B Assistant role
     INSERT INTO roles (org_id, name, code, description, system_prompt, model_name, agent_type, tools, prompt_file, is_active)
     VALUES (
         rugpt_org_id,
-        'GPT-4 Ассистент',
-        'admin_gpt4',
-        'Универсальный AI-помощник на базе GPT-4 для руководителей',
+        'GPT-OSS 20B Ассистент',
+        'admin_oss20',
+        'Универсальный AI-помощник на базе GPT-OSS 20B для руководителей',
         'Вы — персональный AI-ассистент руководителя компании.',
-        'gpt-4',
+        'gpt-oss:20b',
         'simple',
         '["calendar_create", "calendar_query", "rag_search", "web_search", "role_call"]'::jsonb,
         'admin_assistant.md',
         true
     )
-    ON CONFLICT (org_id, code) DO UPDATE
-    SET
-        name = EXCLUDED.name,
-        description = EXCLUDED.description,
-        model_name = EXCLUDED.model_name,
-        prompt_file = EXCLUDED.prompt_file,
-        tools = EXCLUDED.tools,
-        updated_at = NOW()
+    ON CONFLICT (org_id, code) DO NOTHING
     RETURNING id INTO role_gpt4_id;
 
-    -- Create Qwen Assistant role
+    -- If already exists, fetch the id
+    IF role_gpt4_id IS NULL THEN
+        SELECT id INTO role_gpt4_id FROM roles WHERE org_id = rugpt_org_id AND code = 'admin_oss20';
+    END IF;
+
+    -- Create Qwen3 Assistant role
     INSERT INTO roles (org_id, name, code, description, system_prompt, model_name, agent_type, tools, prompt_file, is_active)
     VALUES (
         rugpt_org_id,
-        'Qwen Ассистент',
-        'admin_qwen',
-        'Универсальный AI-помощник на базе Qwen для руководителей',
+        'Qwen3 Ассистент',
+        'admin_qwen3',
+        'Универсальный AI-помощник на базе Qwen3 для руководителей',
         'Вы — персональный AI-ассистент руководителя компании.',
-        'qwen2.5:7b',
+        'qwen3:14b',
         'simple',
         '["calendar_create", "calendar_query", "rag_search", "web_search", "role_call"]'::jsonb,
         'admin_assistant.md',
         true
     )
-    ON CONFLICT (org_id, code) DO UPDATE
-    SET
-        name = EXCLUDED.name,
-        description = EXCLUDED.description,
-        model_name = EXCLUDED.model_name,
-        prompt_file = EXCLUDED.prompt_file,
-        tools = EXCLUDED.tools,
-        updated_at = NOW()
+    ON CONFLICT (org_id, code) DO NOTHING
     RETURNING id INTO role_qwen_id;
 
-    -- Create Claude Assistant role
+    IF role_qwen_id IS NULL THEN
+        SELECT id INTO role_qwen_id FROM roles WHERE org_id = rugpt_org_id AND code = 'admin_qwen3';
+    END IF;
+
+    -- Create GLM-4.7 Flash Assistant role
     INSERT INTO roles (org_id, name, code, description, system_prompt, model_name, agent_type, tools, prompt_file, is_active)
     VALUES (
         rugpt_org_id,
-        'Claude Ассистент',
-        'admin_claude',
-        'Универсальный AI-помощник на базе Claude для руководителей',
+        'GLM-4.7 Flash Ассистент',
+        'admin_glm',
+        'Универсальный AI-помощник на базе GLM-4.7 Flash для руководителей',
         'Вы — персональный AI-ассистент руководителя компании.',
-        'claude-3',
+        'glm-4.7-flash',
         'simple',
         '["calendar_create", "calendar_query", "rag_search", "web_search", "role_call"]'::jsonb,
         'admin_assistant.md',
         true
     )
-    ON CONFLICT (org_id, code) DO UPDATE
-    SET
-        name = EXCLUDED.name,
-        description = EXCLUDED.description,
-        model_name = EXCLUDED.model_name,
-        prompt_file = EXCLUDED.prompt_file,
-        tools = EXCLUDED.tools,
-        updated_at = NOW()
+    ON CONFLICT (org_id, code) DO NOTHING
     RETURNING id INTO role_claude_id;
+
+    IF role_claude_id IS NULL THEN
+        SELECT id INTO role_claude_id FROM roles WHERE org_id = rugpt_org_id AND code = 'admin_glm';
+    END IF;
 
     RAISE NOTICE 'Created roles - GPT-4: %, Qwen: %, Claude: %', role_gpt4_id, role_qwen_id, role_claude_id;
 
@@ -123,98 +115,38 @@ BEGIN
 
     RAISE NOTICE 'Creating system users in RuGPT organization';
 
-    -- System user for GPT-4
+    -- System user for GPT-OSS 20B
     INSERT INTO users (
-        org_id,
-        name,
-        username,
-        email,
-        password_hash,
-        role_id,
-        is_admin,
-        is_system,
-        is_active
+        org_id, name, username, email, password_hash,
+        role_id, is_admin, is_system, is_active
     )
     VALUES (
-        rugpt_org_id,
-        'AI GPT-4',
-        'ai_gpt4',
-        'ai-gpt4@rugpt.system',
-        NULL,  -- No password (system users can't login)
-        role_gpt4_id,
-        false,
-        true,
-        true
+        rugpt_org_id, 'AI GPT-OSS 20B', 'ai_oss20', 'ai-gpt4@rugpt.system', NULL,
+        role_gpt4_id, false, true, true
     )
-    ON CONFLICT (email) DO UPDATE
-    SET
-        name = EXCLUDED.name,
-        username = EXCLUDED.username,
-        role_id = EXCLUDED.role_id,
-        is_system = EXCLUDED.is_system,
-        updated_at = NOW();
+    ON CONFLICT (email) DO NOTHING;
 
-    -- System user for Qwen
+    -- System user for Qwen3
     INSERT INTO users (
-        org_id,
-        name,
-        username,
-        email,
-        password_hash,
-        role_id,
-        is_admin,
-        is_system,
-        is_active
+        org_id, name, username, email, password_hash,
+        role_id, is_admin, is_system, is_active
     )
     VALUES (
-        rugpt_org_id,
-        'AI Qwen',
-        'ai_qwen',
-        'ai-qwen@rugpt.system',
-        NULL,
-        role_qwen_id,
-        false,
-        true,
-        true
+        rugpt_org_id, 'AI Qwen3', 'ai_qwen3', 'ai-qwen@rugpt.system', NULL,
+        role_qwen_id, false, true, true
     )
-    ON CONFLICT (email) DO UPDATE
-    SET
-        name = EXCLUDED.name,
-        username = EXCLUDED.username,
-        role_id = EXCLUDED.role_id,
-        is_system = EXCLUDED.is_system,
-        updated_at = NOW();
+    ON CONFLICT (email) DO NOTHING;
 
-    -- System user for Claude
+    -- System user for GLM-4.7 Flash
     INSERT INTO users (
-        org_id,
-        name,
-        username,
-        email,
-        password_hash,
-        role_id,
-        is_admin,
-        is_system,
-        is_active
+        org_id, name, username, email, password_hash,
+        role_id, is_admin, is_system, is_active
     )
     VALUES (
-        rugpt_org_id,
-        'AI Claude',
-        'ai_claude',
-        'ai-claude@rugpt.system',
-        NULL,
-        role_claude_id,
-        false,
-        true,
-        true
+        rugpt_org_id, 'AI GLM-4.7 Flash', 'ai_glm', 'ai-claude@rugpt.system', NULL,
+        role_claude_id, false, true, true
     )
-    ON CONFLICT (email) DO UPDATE
-    SET
-        name = EXCLUDED.name,
-        username = EXCLUDED.username,
-        role_id = EXCLUDED.role_id,
-        is_system = EXCLUDED.is_system,
-        updated_at = NOW();
+    ON CONFLICT (email) DO NOTHING;
 
     RAISE NOTICE 'System users created successfully';
 END $$;
