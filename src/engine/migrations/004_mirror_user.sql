@@ -26,7 +26,7 @@ BEGIN
         true,       -- is_system = true
         true,
         NOW(), NOW()
-    );
+    ) ON CONFLICT (email) DO NOTHING;
 
     RAISE NOTICE 'Created mirror system user: % (AI Помощник)', mirror_user_id;
 END $$;
