@@ -1,11 +1,13 @@
 """
 AI Service
 
-Service for generating AI responses to @@ mentions.
+Service for generating AI responses.
+Core rule: system user → their role responds (mirror → sender's role).
 """
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID
 
@@ -47,6 +49,34 @@ class AIService:
         self.prompt_cache = prompt_cache
         self.agent_executor = agent_executor
 
+    async def try_auto_respond(
+        self,
+        message: Message,
+        chat_id: UUID,
+        sender_id: UUID,
+    ) -> Optional[Message]:
+        """
+        Auto-respond if chat has a system user participant.
+        Called when message has no @@ mentions.
+
+        Finds system user among chat participants → generate_response().
+        """
+        chat = await self.chat_storage.get_by_id(chat_id)
+        if not chat:
+            return None
+
+        for pid in chat.participants:
+            if pid == sender_id:
+                continue
+            participant = await self.user_storage.get_by_id(pid)
+            if participant and participant.is_system:
+                return await self.generate_response(
+                    message=message,
+                    responder_id=participant.id,
+                )
+
+        return None
+
     async def process_ai_mentions(
         self,
         message: Message,
@@ -54,141 +84,158 @@ class AIService:
     ) -> List[Message]:
         """
         Process @@ mentions in a message and generate AI responses.
-
         Returns list of AI response messages.
         """
         ai_mentions = [m for m in message.mentions if m.type == MentionType.AI_ROLE]
-
         if not ai_mentions:
             return []
 
         responses = []
-
         for mention in ai_mentions:
-            response = await self.generate_response_for_mention(
+            response = await self.generate_response(
                 message=message,
-                mention=mention,
-                org_id=org_id
+                responder_id=mention.user_id,
+                strip_username=mention.username,
             )
             if response:
                 responses.append(response)
 
         return responses
 
-    async def generate_response_for_mention(
+    async def generate_response(
         self,
         message: Message,
-        mention: Mention,
-        org_id: UUID
+        responder_id: UUID,
+        strip_username: Optional[str] = None,
     ) -> Optional[Message]:
         """
-        Generate AI response for a specific @@ mention.
+        Generate AI response from a responder user.
 
-        1. Find the mentioned user
-        2. Get their assigned role
-        3. Generate response using role's system prompt and model
-        4. Save and return the AI message
+        Core rule:
+        - System user with role → respond using that role
+        - System user without role (mirror) → respond using SENDER's role
+        - Regular user with role → respond using that role
+
+        Args:
+            message: The user message to respond to
+            responder_id: User ID of who should respond (system user or regular user)
+            strip_username: If set, strip @@username from message content before sending to LLM
         """
-        # Find mentioned user
-        user = await self.user_storage.get_by_id(mention.user_id)
-        if not user:
-            logger.warning(f"User {mention.user_id} not found for AI mention")
+        # Find responder
+        responder = await self.user_storage.get_by_id(responder_id)
+        if not responder:
+            logger.warning(f"Responder {responder_id} not found")
             return None
 
-        # Get user's assigned role
-        if not user.role_id:
-            logger.warning(f"User {mention.user_id} has no assigned role")
-            return None
-
-        role = await self.role_storage.get_by_id(user.role_id)
+        # Determine role
+        role = await self._resolve_role(responder, message.sender_id)
         if not role:
-            logger.warning(f"Role {user.role_id} not found")
             return None
 
         if not role.is_active:
             logger.warning(f"Role {role.id} is inactive")
             return None
 
-        # Build conversation context as dicts for AgentExecutor
-        conv_messages = await self._build_conversation_messages(
-            message=message,
-            mention=mention
-        )
+        # Build conversation context
+        conv_messages = await self._build_conversation(message, strip_username)
 
-        # Generate response via AgentExecutor (or fallback to old OllamaProvider)
+        # Generate
         try:
-            if self.agent_executor:
-                agent_result = await self.agent_executor.execute(
-                    role=role,
-                    messages=conv_messages,
-                    temperature=0.7,
-                    max_tokens=256,
-                )
+            response_content = await self._call_llm(role, conv_messages)
+            if response_content is None:
+                return None
 
-                if agent_result.finish_reason == "error":
-                    logger.error(f"Agent error: {agent_result.error}")
-                    return None
-
-                response_content = agent_result.content
-            else:
-                # Fallback: old OllamaProvider path
-                llm_messages = self._dicts_to_llm_messages(conv_messages, role)
-                llm_response = await self.llm.generate(
-                    messages=llm_messages,
-                    model=role.model_name,
-                    temperature=0.7,
-                    max_tokens=256,
-                )
-                if llm_response.finish_reason == "error":
-                    logger.error(f"LLM error: {llm_response.content}")
-                    return None
-                response_content = llm_response.content
-
-            # Create AI message (unvalidated)
             ai_message = await self._create_ai_message(
                 chat_id=message.chat_id,
-                sender_id=mention.user_id,
+                sender_id=responder_id,
                 content=response_content,
-                reply_to_id=message.id
+                reply_to_id=message.id,
             )
 
             logger.info(
-                f"Generated AI response from {role.name} ({role.model_name}): "
+                f"AI response from {role.name} ({role.model_name}): "
                 f"{len(response_content)} chars"
             )
-
             return ai_message
 
         except Exception as e:
             logger.error(f"Failed to generate AI response: {e}")
             return None
 
-    async def _build_conversation_messages(
+    async def _resolve_role(self, responder, sender_id: UUID) -> Optional[Role]:
+        """
+        Resolve which role to use for response.
+        Mirror (is_system + no role) → sender's role.
+        """
+        if responder.role_id:
+            role = await self.role_storage.get_by_id(responder.role_id)
+            if not role:
+                logger.warning(f"Role {responder.role_id} not found")
+            return role
+
+        if responder.is_system:
+            # Mirror: use sender's role
+            sender = await self.user_storage.get_by_id(sender_id)
+            if not sender or not sender.role_id:
+                logger.warning(f"Mirror: sender {sender_id} has no role")
+                return None
+            role = await self.role_storage.get_by_id(sender.role_id)
+            if not role:
+                logger.warning(f"Role {sender.role_id} not found")
+            return role
+
+        logger.warning(f"User {responder.id} has no role")
+        return None
+
+    async def _call_llm(self, role: Role, conv_messages: List[dict]) -> Optional[str]:
+        """Call LLM via AgentExecutor or fallback to OllamaProvider."""
+        if self.agent_executor:
+            result = await self.agent_executor.execute(
+                role=role,
+                messages=conv_messages,
+                temperature=0.7,
+                max_tokens=256,
+            )
+            if result.finish_reason == "error":
+                logger.error(f"Agent error: {result.error}")
+                return None
+            return result.content
+
+        # Fallback: old OllamaProvider
+        llm_messages = self._dicts_to_llm_messages(conv_messages, role)
+        response = await self.llm.generate(
+            messages=llm_messages,
+            model=role.model_name,
+            temperature=0.7,
+            max_tokens=256,
+        )
+        if response.finish_reason == "error":
+            logger.error(f"LLM error: {response.content}")
+            return None
+        return response.content
+
+    async def _build_conversation(
         self,
         message: Message,
-        mention: Mention,
+        strip_username: Optional[str] = None,
     ) -> List[dict]:
-        """Build conversation as list of {"role": str, "content": str} dicts.
-        Used by AgentExecutor (system prompt is handled by executor via PromptCache).
-        """
+        """Build conversation as list of {"role": str, "content": str} dicts."""
         messages = []
 
-        # Get recent chat history for context (last 10 messages)
-        history = await self.message_storage.list_by_chat(
-            message.chat_id,
-            limit=10
-        )
+        # Recent chat history (last 10 messages)
+        history = await self.message_storage.list_by_chat(message.chat_id, limit=10)
 
-        # Add history (oldest first)
         for msg in reversed(history):
             if msg.id == message.id:
                 continue
             role_name = "assistant" if msg.sender_type == SenderType.AI_ROLE else "user"
             messages.append({"role": role_name, "content": msg.content})
 
-        # Add current message (extract content after @@ mention)
-        user_content = self._extract_content_for_ai(message.content, mention.username)
-        messages.append({"role": "user", "content": user_content})
+        # Current message
+        content = message.content
+        if strip_username:
+            content = self._strip_mention(content, strip_username)
+        messages.append({"role": "user", "content": content})
 
         return messages
 
@@ -205,9 +252,8 @@ class AIService:
             llm_messages.append(LLMMessage(role=msg["role"], content=msg["content"]))
         return llm_messages
 
-    def _extract_content_for_ai(self, content: str, username: str) -> str:
-        """Extract the message content for AI (remove @@ mention prefix)"""
-        import re
+    def _strip_mention(self, content: str, username: str) -> str:
+        """Remove @@username from message content."""
         pattern = re.compile(rf'@@{re.escape(username)}\s*', re.IGNORECASE)
         cleaned = pattern.sub('', content).strip()
         return cleaned if cleaned else content
@@ -231,7 +277,7 @@ class AIService:
             content=content,
             mentions=[],
             reply_to_id=reply_to_id,
-            ai_validated=False,  # Requires user validation
+            ai_validated=False,
             ai_edited=False,
             is_deleted=False,
             created_at=datetime.utcnow(),
@@ -240,7 +286,6 @@ class AIService:
 
         created = await self.message_storage.create(message)
         await self.chat_storage.update_last_message(chat_id)
-
         return created
 
     async def check_llm_health(self) -> bool:

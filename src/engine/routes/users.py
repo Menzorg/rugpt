@@ -63,6 +63,7 @@ class UserResponse(BaseModel):
     role_id: Optional[str]
     role_name: Optional[str] = None  # Name of assigned role
     is_admin: bool
+    is_system: bool = False  # Is system user (AI assistant for admins)
     is_active: bool
     avatar_url: Optional[str]
     created_at: str
@@ -73,6 +74,37 @@ class UserResponse(BaseModel):
 # ============================================
 # Routes
 # ============================================
+
+@router.get("/system", response_model=List[UserResponse])
+async def get_system_users(current_user: dict = Depends(get_current_user)):
+    """
+    Get all system users (AI assistants for admins).
+    Returns list of system users from RuGPT organization:
+    - AI GPT-4 (model: gpt-4)
+    - AI Qwen (model: qwen2.5:7b)
+    - AI Claude (model: claude-3)
+
+    Admins can choose which system user to chat with, effectively choosing the AI model.
+    """
+    engine = get_engine_service()
+
+    system_users = await engine.user_storage.get_system_users()
+    if not system_users:
+        return []
+
+    # Build response with role information
+    result = []
+    for user in system_users:
+        data = user.to_dict()
+        if user.role_id:
+            role = await engine.role_storage.get_by_id(user.role_id)
+            data["role_name"] = role.name if role else None
+        else:
+            data["role_name"] = None
+        result.append(UserResponse(**data))
+
+    return result
+
 
 @router.get("", response_model=List[UserResponse])
 @router.get("/", response_model=List[UserResponse])

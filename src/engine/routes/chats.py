@@ -10,7 +10,6 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from ..services.engine_service import get_engine_service, EngineService
-from ..models.message import MentionType
 
 router = APIRouter(prefix="/api/v1/chats", tags=["chats"])
 
@@ -91,17 +90,6 @@ async def list_my_chats(
     """List current user's chats"""
     chats = await engine.chat_service.list_user_chats(user_id)
     return [ChatResponse(**chat.to_dict()) for chat in chats]
-
-
-@router.get("/main", response_model=ChatResponse)
-async def get_main_chat(
-    user_id: UUID,  # In real app, get from JWT
-    org_id: UUID,
-    engine: EngineService = Depends(get_engine)
-):
-    """Get or create user's main chat"""
-    chat = await engine.chat_service.get_or_create_main_chat(user_id, org_id)
-    return ChatResponse(**chat.to_dict())
 
 
 @router.post("/direct", response_model=ChatResponse)
@@ -231,6 +219,10 @@ async def send_message(
     if ai_mentions:
         ai_messages = await engine.ai_service.process_ai_mentions(message, org_id)
         ai_responses = [MessageResponse(**msg.to_dict()) for msg in ai_messages]
+    else:
+        ai_msg = await engine.ai_service.try_auto_respond(message, chat_id, user_id)
+        if ai_msg:
+            ai_responses = [MessageResponse(**ai_msg.to_dict())]
 
     return SendMessageResponse(
         user_message=MessageResponse(**message.to_dict()),

@@ -41,16 +41,6 @@ class ChatStorage(BaseStorage):
         row = await self.fetchrow(query, chat_id)
         return self._row_to_chat(row) if row else None
 
-    async def get_main_chat(self, user_id: UUID) -> Optional[Chat]:
-        """Get user's main chat"""
-        query = """
-            SELECT * FROM chats
-            WHERE type = 'main' AND $1 = ANY(participants)
-            LIMIT 1
-        """
-        row = await self.fetchrow(query, str(user_id))
-        return self._row_to_chat(row) if row else None
-
     async def get_direct_chat(self, user1_id: UUID, user2_id: UUID) -> Optional[Chat]:
         """Get direct chat between two users"""
         query = """

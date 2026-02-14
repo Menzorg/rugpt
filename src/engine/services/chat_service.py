@@ -23,29 +23,6 @@ class ChatService:
         self.chat_storage = chat_storage
         self.message_storage = message_storage
 
-    async def create_main_chat(self, user_id: UUID, org_id: UUID) -> Chat:
-        """Create main chat for user"""
-        chat = Chat(
-            id=uuid4(),
-            org_id=org_id,
-            type=ChatType.MAIN,
-            name=None,
-            participants=[user_id],
-            created_by=user_id,
-            is_active=True,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
-        )
-        return await self.chat_storage.create(chat)
-
-    async def get_or_create_main_chat(self, user_id: UUID, org_id: UUID) -> Chat:
-        """Get or create user's main chat"""
-        chat = await self.chat_storage.get_main_chat(user_id)
-        if not chat:
-            chat = await self.create_main_chat(user_id, org_id)
-            logger.info(f"Created main chat {chat.id} for user {user_id}")
-        return chat
-
     async def create_direct_chat(
         self,
         user1_id: UUID,

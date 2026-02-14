@@ -60,7 +60,13 @@ class MentionService:
         mentions = []
 
         for mention_type, username, position in parsed:
+            # First try to find user in the sender's organization
             user = await self.user_storage.get_by_username(username, org_id)
+
+            # Fallback: try system users (@@mirror, @@ai_gpt4, etc.)
+            if not user:
+                user = await self.user_storage.get_system_user_by_username(username)
+
             if user:
                 mentions.append(Mention(
                     type=mention_type,

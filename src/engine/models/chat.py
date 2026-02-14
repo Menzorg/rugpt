@@ -12,8 +12,7 @@ from uuid import UUID, uuid4
 
 class ChatType(str, Enum):
     """Types of chats in the system"""
-    MAIN = "main"         # User's personal chat with their AI role
-    DIRECT = "direct"     # Direct message between two users
+    DIRECT = "direct"     # Direct message between two users (including user ↔ system user)
     GROUP = "group"       # Group chat (multiple users)
 
 
@@ -23,24 +22,22 @@ class Chat:
     Chat entity - represents a conversation.
 
     Chat types:
-    1. MAIN - Each user has their own main chat with their AI role
-       - Created automatically when user is created
-       - User + AI role as participants
-    2. DIRECT - Direct messages between two users
-       - Both users can see the conversation
+    1. DIRECT - Chat between two users
+       - User ↔ User: regular conversation
+       - User ↔ System user (mirror): AI responds using user's role
+       - Admin ↔ System user (AI GPT-4 etc): AI responds using system user's role
        - Can use @ and @@ mentions
-    3. GROUP - Group conversation (optional, for future)
+    2. GROUP - Group conversation
        - Multiple users
        - Can use @ and @@ mentions
 
     Participants: List of user IDs in this chat
-    For MAIN chat: [user_id] (AI role is implied via user.role_id)
     For DIRECT: [user1_id, user2_id]
     For GROUP: [user1_id, user2_id, ..., userN_id]
     """
     id: UUID = field(default_factory=uuid4)
     org_id: UUID = field(default_factory=uuid4)     # Organization this chat belongs to
-    type: ChatType = ChatType.MAIN                   # Chat type
+    type: ChatType = ChatType.DIRECT                 # Chat type
     name: Optional[str] = None                       # Chat name (for groups)
     participants: List[UUID] = field(default_factory=list)  # User IDs
     created_by: Optional[UUID] = None                # User who created the chat
@@ -74,7 +71,7 @@ class Chat:
         return cls(
             id=UUID(data["id"]) if isinstance(data.get("id"), str) else data.get("id", uuid4()),
             org_id=UUID(data["org_id"]) if isinstance(data.get("org_id"), str) else data.get("org_id", uuid4()),
-            type=ChatType(data["type"]) if isinstance(data.get("type"), str) else data.get("type", ChatType.MAIN),
+            type=ChatType(data["type"]) if isinstance(data.get("type"), str) else data.get("type", ChatType.DIRECT),
             name=data.get("name"),
             participants=participants,
             created_by=UUID(data["created_by"]) if data.get("created_by") and isinstance(data["created_by"], str) else data.get("created_by"),
