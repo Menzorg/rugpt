@@ -23,7 +23,7 @@ class MessageStorage(BaseStorage):
         query = """
             INSERT INTO messages (
                 id, chat_id, sender_type, sender_id, content, mentions,
-                reply_to_id, ai_validated, ai_edited, is_deleted,
+                reply_to_id, ai_is_valid, ai_edited, is_deleted,
                 created_at, updated_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -34,7 +34,7 @@ class MessageStorage(BaseStorage):
             query,
             message.id, message.chat_id, message.sender_type.value,
             message.sender_id, message.content, mentions_json,
-            message.reply_to_id, message.ai_validated, message.ai_edited,
+            message.reply_to_id, message.ai_is_valid, message.ai_edited,
             message.is_deleted, message.created_at, message.updated_at
         )
         return self._row_to_message(row)
@@ -72,13 +72,13 @@ class MessageStorage(BaseStorage):
             rows = await self.fetch(query, chat_id, limit)
         return [self._row_to_message(row) for row in reversed(rows)]
 
-    async def list_unvalidated(self, user_id: UUID) -> List[Message]:
-        """List AI messages that need validation by user"""
+    async def list_pending_review(self, user_id: UUID) -> List[Message]:
+        """List AI messages pending review by user (ai_is_valid IS NULL)"""
         query = """
             SELECT * FROM messages
             WHERE sender_type = 'ai_role'
               AND sender_id = $1
-              AND ai_validated = false
+              AND ai_is_valid IS NULL
               AND is_deleted = false
             ORDER BY created_at DESC
         """
@@ -91,7 +91,7 @@ class MessageStorage(BaseStorage):
         mentions_json = json.dumps([m.to_dict() for m in message.mentions])
         query = """
             UPDATE messages
-            SET content = $2, mentions = $3, ai_validated = $4,
+            SET content = $2, mentions = $3, ai_is_valid = $4,
                 ai_edited = $5, updated_at = $6
             WHERE id = $1
             RETURNING *
@@ -99,7 +99,7 @@ class MessageStorage(BaseStorage):
         row = await self.fetchrow(
             query,
             message.id, message.content, mentions_json,
-            message.ai_validated, message.ai_edited, message.updated_at
+            message.ai_is_valid, message.ai_edited, message.updated_at
         )
         return self._row_to_message(row)
 
@@ -109,7 +109,7 @@ class MessageStorage(BaseStorage):
         if edited_content:
             query = """
                 UPDATE messages
-                SET ai_validated = true, ai_edited = true,
+                SET ai_is_valid = true, ai_edited = true,
                     content = $2, updated_at = $3
                 WHERE id = $1 AND sender_type = 'ai_role'
                 RETURNING *
@@ -118,11 +118,23 @@ class MessageStorage(BaseStorage):
         else:
             query = """
                 UPDATE messages
-                SET ai_validated = true, updated_at = $2
+                SET ai_is_valid = true, updated_at = $2
                 WHERE id = $1 AND sender_type = 'ai_role'
                 RETURNING *
             """
             row = await self.fetchrow(query, message_id, now)
+        return self._row_to_message(row) if row else None
+
+    async def reject(self, message_id: UUID) -> Optional[Message]:
+        """Reject AI message (set ai_is_valid = false)"""
+        now = datetime.utcnow()
+        query = """
+            UPDATE messages
+            SET ai_is_valid = false, updated_at = $2
+            WHERE id = $1 AND sender_type = 'ai_role'
+            RETURNING *
+        """
+        row = await self.fetchrow(query, message_id, now)
         return self._row_to_message(row) if row else None
 
     async def delete(self, message_id: UUID) -> bool:
@@ -152,7 +164,7 @@ class MessageStorage(BaseStorage):
             content=row["content"],
             mentions=mentions,
             reply_to_id=row["reply_to_id"],
-            ai_validated=row["ai_validated"],
+            ai_is_valid=row["ai_is_valid"],
             ai_edited=row["ai_edited"],
             is_deleted=row["is_deleted"],
             created_at=row["created_at"],

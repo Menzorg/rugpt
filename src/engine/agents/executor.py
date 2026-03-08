@@ -76,6 +76,15 @@ class AgentExecutor:
         tools = self.tool_registry.resolve(role.tools) if role.tools else []
         llm = self._create_llm(model, temperature)
 
+        # TODO: Load correction rules via RAG and append to system_prompt
+        # When RAG is implemented, this will search for relevant rules
+        # based on the user's question and inject them into the prompt:
+        #
+        # rules = await self.correction_rule_service.search_relevant(role.id, messages)
+        # if rules:
+        #     rules_block = "\n".join(f"- {r.rule_text}" for r in rules if r.rule_text)
+        #     system_prompt += f"\n\n## Correction Rules\n{rules_block}"
+
         logger.info(
             f"Executing agent: role={role.code}, type={role.agent_type}, "
             f"model={model}, tools={len(tools)}"

@@ -65,7 +65,7 @@ class Message:
     - AI_ROLE: AI responding as a user's role (triggered by @@ mention)
 
     For AI responses:
-    - ai_validated: Whether the user has confirmed the AI response
+    - ai_is_valid: None=pending review, True=approved, False=rejected
     - reply_to_id: ID of message this is replying to (for @@ responses)
     """
     id: UUID = field(default_factory=uuid4)
@@ -75,7 +75,7 @@ class Message:
     content: str = ""                                 # Message text
     mentions: List[Mention] = field(default_factory=list)  # Mentions in this message
     reply_to_id: Optional[UUID] = None               # Reply to message ID
-    ai_validated: bool = False                        # AI response validated by user
+    ai_is_valid: Optional[bool] = None                 # None=pending, True=approved, False=rejected
     ai_edited: bool = False                           # AI response was edited by user
     is_deleted: bool = False                          # Soft delete flag
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -91,7 +91,7 @@ class Message:
             "content": self.content,
             "mentions": [m.to_dict() for m in self.mentions],
             "reply_to_id": str(self.reply_to_id) if self.reply_to_id else None,
-            "ai_validated": self.ai_validated,
+            "ai_is_valid": self.ai_is_valid,
             "ai_edited": self.ai_edited,
             "is_deleted": self.is_deleted,
             "created_at": self.created_at.isoformat(),
@@ -113,7 +113,7 @@ class Message:
             content=data.get("content", ""),
             mentions=mentions,
             reply_to_id=UUID(data["reply_to_id"]) if data.get("reply_to_id") and isinstance(data["reply_to_id"], str) else data.get("reply_to_id"),
-            ai_validated=data.get("ai_validated", False),
+            ai_is_valid=data.get("ai_is_valid"),
             ai_edited=data.get("ai_edited", False),
             is_deleted=data.get("is_deleted", False),
             created_at=datetime.fromisoformat(data["created_at"]) if isinstance(data.get("created_at"), str) else data.get("created_at", datetime.utcnow()),

@@ -21,6 +21,8 @@ from ..storage.task_storage import TaskStorage
 from ..storage.task_poll_storage import TaskPollStorage
 from ..storage.task_report_storage import TaskReportStorage
 from ..storage.user_file_storage import UserFileStorage
+from ..storage.correction_rule_storage import CorrectionRuleStorage
+from ..storage.device_storage import DeviceStorage
 from ..storage.storage_adapter import LocalStorageAdapter
 from .chat_service import ChatService
 from .mention_service import MentionService
@@ -34,6 +36,7 @@ from .task_service import TaskService
 from .task_poll_service import TaskPollService
 from .task_report_service import TaskReportService
 from .file_service import FileService
+from .correction_rule_service import CorrectionRuleService
 from ..notifications.telegram_sender import TelegramSender
 from ..notifications.email_sender import EmailSender
 from ..llm.providers.ollama import OllamaProvider
@@ -72,6 +75,8 @@ class EngineService:
         self.task_poll_storage = TaskPollStorage(self.postgres_dsn)
         self.task_report_storage = TaskReportStorage(self.postgres_dsn)
         self.user_file_storage = UserFileStorage(self.postgres_dsn)
+        self.correction_rule_storage = CorrectionRuleStorage(self.postgres_dsn)
+        self.device_storage = DeviceStorage(self.postgres_dsn)
 
         # Initialize LLM provider (kept for health checks / model listing)
         self.llm_provider = OllamaProvider()
@@ -195,6 +200,16 @@ class EngineService:
             agent_executor=self.agent_executor,
         )
 
+        # Initialize correction rule service
+        self.correction_rule_service = CorrectionRuleService(
+            correction_rule_storage=self.correction_rule_storage,
+            message_storage=self.message_storage,
+            role_storage=self.role_storage,
+            user_storage=self.user_storage,
+            chat_service=self.chat_service,
+            agent_executor=self.agent_executor,
+        )
+
         self._initialized = False
         logger.info("EngineService created")
 
@@ -220,6 +235,8 @@ class EngineService:
         await self.task_poll_storage.init()
         await self.task_report_storage.init()
         await self.user_file_storage.init()
+        await self.correction_rule_storage.init()
+        await self.device_storage.init()
 
         # Start background scheduler
         await self.scheduler_service.start()
@@ -244,6 +261,8 @@ class EngineService:
         await self.task_poll_storage.close()
         await self.task_report_storage.close()
         await self.user_file_storage.close()
+        await self.correction_rule_storage.close()
+        await self.device_storage.close()
         await self.scheduler_service.stop()
         await self.notification_service.close()
         await self.ai_service.close()

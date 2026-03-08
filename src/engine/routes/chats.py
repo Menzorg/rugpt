@@ -34,6 +34,10 @@ class ValidateMessageRequest(BaseModel):
     edited_content: Optional[str] = None
 
 
+class RejectMessageRequest(BaseModel):
+    correction_text: str
+
+
 class ChatResponse(BaseModel):
     id: str
     org_id: str
@@ -65,7 +69,7 @@ class MessageResponse(BaseModel):
     content: str
     mentions: List[MentionResponse]
     reply_to_id: Optional[str]
-    ai_validated: bool
+    ai_is_valid: Optional[bool]
     ai_edited: bool
     is_deleted: bool
     created_at: str
@@ -269,11 +273,58 @@ async def delete_message(
     return {"success": True}
 
 
-@router.get("/unvalidated", response_model=List[MessageResponse])
-async def get_unvalidated_messages(
+@router.get("/pending-review", response_model=List[MessageResponse])
+async def get_pending_review_messages(
     user_id: UUID,  # In real app, get from JWT
     engine: EngineService = Depends(get_engine)
 ):
-    """Get AI messages pending validation by user"""
-    messages = await engine.chat_service.get_unvalidated_messages(user_id)
+    """Get AI messages pending review by user (ai_is_valid IS NULL)"""
+    messages = await engine.chat_service.get_pending_review_messages(user_id)
     return [MessageResponse(**msg.to_dict()) for msg in messages]
+
+
+# Keep old endpoint for backward compatibility
+@router.get("/unvalidated", response_model=List[MessageResponse])
+async def get_unvalidated_messages(
+    user_id: UUID,
+    engine: EngineService = Depends(get_engine)
+):
+    """Deprecated: use /pending-review instead"""
+    messages = await engine.chat_service.get_pending_review_messages(user_id)
+    return [MessageResponse(**msg.to_dict()) for msg in messages]
+
+
+class CorrectionRuleResponse(BaseModel):
+    id: str
+    role_id: str
+    org_id: str
+    original_message_id: str
+    ai_message_id: str
+    chat_id: str
+    user_question: str
+    ai_answer: str
+    correction_text: str
+    rule_text: Optional[str]
+    created_by_user_id: str
+    is_active: bool
+    created_at: str
+    updated_at: str
+
+    class Config:
+        from_attributes = True
+
+
+@router.post("/messages/{message_id}/reject", response_model=CorrectionRuleResponse)
+async def reject_message(
+    message_id: UUID,
+    request: RejectMessageRequest,
+    user_id: UUID,  # In real app, get from JWT
+    engine: EngineService = Depends(get_engine)
+):
+    """Reject AI message and create correction rule"""
+    rule = await engine.correction_rule_service.reject_and_create_rule(
+        ai_message_id=message_id,
+        user_id=user_id,
+        correction_text=request.correction_text,
+    )
+    return CorrectionRuleResponse(**rule.to_dict())

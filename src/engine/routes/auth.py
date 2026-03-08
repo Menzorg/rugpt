@@ -28,6 +28,8 @@ class LoginRequest(BaseModel):
     """Login request body"""
     email: EmailStr
     password: str
+    device_public_key: Optional[str] = None
+    device_name: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
@@ -39,6 +41,7 @@ class LoginResponse(BaseModel):
     name: Optional[str] = None
     username: Optional[str] = None
     is_admin: bool = False
+    device_id: Optional[str] = None
     message: Optional[str] = None
 
 
@@ -140,6 +143,16 @@ async def login(request: LoginRequest):
     # Create token with all user data
     token = create_token(user.id, user.org_id, user.email, user.is_admin)
 
+    # Register device if public key provided
+    device_id = None
+    if request.device_public_key:
+        device_id = await engine.device_storage.register_device(
+            user_id=user.id,
+            device_public_key=request.device_public_key,
+            device_name=request.device_name,
+        )
+        logger.info(f"Device registered for {user.email}: {device_id}")
+
     # Update last seen
     await users_service.update_last_seen(user.id)
 
@@ -152,7 +165,8 @@ async def login(request: LoginRequest):
         org_id=str(user.org_id),
         name=user.name,
         username=user.username,
-        is_admin=user.is_admin
+        is_admin=user.is_admin,
+        device_id=device_id,
     )
 
 
@@ -225,3 +239,45 @@ async def refresh_token(current_user: dict = Depends(get_current_user)):
     """Refresh JWT token"""
     token = create_token(current_user["user_id"], current_user["org_id"])
     return {"token": token}
+
+
+class VerifySignatureRequest(BaseModel):
+    """Request to verify a device signature"""
+    user_id: str
+    payload: str
+    signature: str
+
+
+@router.post("/verify-signature")
+async def verify_signature(request: VerifySignatureRequest):
+    """
+    Verify device signature for a user.
+    Used by WebClient backend to verify request signatures.
+    """
+    from ..services.crypto_service import verify_device_signature
+
+    engine = get_engine_service()
+    user_id = UUID(request.user_id)
+
+    # Get all active device public keys for user
+    public_keys = await engine.device_storage.get_all_public_keys(user_id)
+
+    if not public_keys:
+        return {"valid": False, "error": "No device keys registered"}
+
+    # Try each key until one works
+    for pk in public_keys:
+        if verify_device_signature(pk, request.payload, request.signature):
+            # Update last_used
+            await engine.device_storage.update_last_used(user_id, pk)
+            return {"valid": True}
+
+    return {"valid": False, "error": "Invalid signature"}
+
+
+@router.get("/devices")
+async def get_user_devices(current_user: dict = Depends(get_current_user)):
+    """Get all devices for current user"""
+    engine = get_engine_service()
+    devices = await engine.device_storage.get_user_devices(current_user["user_id"])
+    return {"devices": devices}

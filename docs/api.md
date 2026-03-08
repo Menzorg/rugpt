@@ -287,10 +287,25 @@ Authorization: Bearer <token>
 Удалить сообщение (soft delete).
 
 ### POST /chats/{chat_id}/messages/{message_id}/validate
-Подтвердить AI-ответ.
+Подтвердить AI-ответ (ai_is_valid = true).
 
-### GET /chats/pending-validation
-Получить непроверенные AI-ответы для текущего пользователя.
+### POST /chats/messages/{message_id}/reject
+Отклонить AI-ответ и создать правило коррекции.
+
+**Request:**
+```json
+{
+  "correction_text": "Неверный срок исковой давности, для трудовых споров — 3 месяца"
+}
+```
+
+**Response:** CorrectionRule object. Также отправляет correction_text в чат от имени пользователя и генерирует rule_text через LLM.
+
+### GET /chats/pending-review
+Получить AI-ответы ожидающие проверки (ai_is_valid IS NULL).
+
+### GET /chats/unvalidated
+Deprecated: используйте /pending-review.
 
 ---
 

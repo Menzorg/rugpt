@@ -108,7 +108,7 @@ class ChatService:
             content=content,
             mentions=mentions or [],
             reply_to_id=reply_to_id,
-            ai_validated=sender_type == SenderType.USER,  # User messages auto-validated
+            ai_is_valid=True if sender_type == SenderType.USER else None,  # User=auto-valid, AI=pending
             ai_edited=False,
             is_deleted=False,
             created_at=datetime.utcnow(),
@@ -137,15 +137,22 @@ class ChatService:
         message_id: UUID,
         edited_content: Optional[str] = None
     ) -> Optional[Message]:
-        """Validate AI message (optionally with edits)"""
+        """Approve AI message (optionally with edits)"""
         message = await self.message_storage.validate(message_id, edited_content)
         if message:
-            logger.info(f"AI message {message_id} validated (edited={edited_content is not None})")
+            logger.info(f"AI message {message_id} approved (edited={edited_content is not None})")
         return message
 
-    async def get_unvalidated_messages(self, user_id: UUID) -> List[Message]:
-        """Get AI messages pending validation by user"""
-        return await self.message_storage.list_unvalidated(user_id)
+    async def reject_ai_message(self, message_id: UUID) -> Optional[Message]:
+        """Reject AI message (set ai_is_valid = false)"""
+        message = await self.message_storage.reject(message_id)
+        if message:
+            logger.info(f"AI message {message_id} rejected")
+        return message
+
+    async def get_pending_review_messages(self, user_id: UUID) -> List[Message]:
+        """Get AI messages pending review by user"""
+        return await self.message_storage.list_pending_review(user_id)
 
     async def delete_message(self, message_id: UUID) -> bool:
         """Delete message"""

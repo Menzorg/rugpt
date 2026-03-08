@@ -277,7 +277,7 @@ class AIService:
             content=content,
             mentions=[],
             reply_to_id=reply_to_id,
-            ai_validated=False,
+            ai_is_valid=None,
             ai_edited=False,
             is_deleted=False,
             created_at=datetime.utcnow(),

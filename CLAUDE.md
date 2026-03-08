@@ -101,7 +101,8 @@ src/engine/
 │   ├── 006_task_polls.sql
 │   ├── 007_task_reports.sql
 │   ├── 008_in_app_notifications.sql
-│   └── 009_user_files.sql
+│   ├── 009_user_files.sql
+│   └── 010_correction_rules.sql
 │
 └── utils/
 ```
@@ -169,7 +170,7 @@ Base URL: `http://127.0.0.1:8100/api/v1`
 
 ## БД
 
-PostgreSQL, база `rugpt`. Таблицы: organizations, users, roles, chats, messages, calendar_events, notification_channels, notification_log, tasks, task_polls, task_reports, in_app_notifications, user_files.
+PostgreSQL, база `rugpt`. Таблицы: organizations, users, roles, chats, messages, calendar_events, notification_channels, notification_log, tasks, task_polls, task_reports, in_app_notifications, user_files, correction_rules.
 Миграции в `src/engine/migrations/` (001-009). Soft delete через is_active/is_deleted.
 
 ## LLM
