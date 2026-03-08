@@ -94,7 +94,14 @@ src/engine/
 │
 ├── migrations/         # SQL миграции
 │   ├── 001_initial.sql
-│   └── 002_role_evolution.sql
+│   ├── 002_role_evolution.sql
+│   ├── 003_system_user.sql
+│   ├── 004_mirror_user.sql
+│   ├── 005_tasks.sql
+│   ├── 006_task_polls.sql
+│   ├── 007_task_reports.sql
+│   ├── 008_in_app_notifications.sql
+│   └── 009_user_files.sql
 │
 └── utils/
 ```
@@ -121,7 +128,7 @@ uvicorn src.engine.app:app --host 127.0.0.1 --port 8100 --reload
 
 Base URL: `http://127.0.0.1:8100/api/v1`
 
-Основные роуты: `/auth/*`, `/users/*`, `/roles/*`, `/chats/*`, `/organizations/*`, `/calendar/*`, `/notifications/*`, `/health`
+Основные роуты: `/auth/*`, `/users/*`, `/roles/*`, `/chats/*`, `/organizations/*`, `/calendar/*`, `/notifications/*`, `/in-app-notifications/*`, `/tasks/*`, `/task-polls/*`, `/task-reports/*`, `/files/*`, `/health`
 
 ## Сеть
 
@@ -144,7 +151,7 @@ Base URL: `http://127.0.0.1:8100/api/v1`
 - Промпты в файлах (`src/engine/prompts/*.md`), не в БД — git-версионирование
 - PromptCache — in-memory кеш, сброс через admin API без рестарта
 - AgentExecutor — маршрутизация по `role.agent_type` (simple/chain/multi_agent)
-- ToolRegistry — реестр инструментов (calendar, rag, web, role_call)
+- ToolRegistry — реестр инструментов (calendar, task, rag, web, role_call)
 - LangChain (ChatOllama) + LangGraph (StateGraph) для оркестрации
 
 ### Календарь + Планировщик
@@ -162,8 +169,8 @@ Base URL: `http://127.0.0.1:8100/api/v1`
 
 ## БД
 
-PostgreSQL, база `rugpt`. Таблицы: organizations, users, roles, chats, messages, calendar_events, notification_channels, notification_log.
-Миграции в `src/engine/migrations/`. Soft delete через is_active/is_deleted.
+PostgreSQL, база `rugpt`. Таблицы: organizations, users, roles, chats, messages, calendar_events, notification_channels, notification_log, tasks, task_polls, task_reports, in_app_notifications, user_files.
+Миграции в `src/engine/migrations/` (001-009). Soft delete через is_active/is_deleted.
 
 ## LLM
 

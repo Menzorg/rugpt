@@ -23,7 +23,12 @@ from .routes import (
     roles_router,
     chats_router,
     calendar_router,
-    notifications_router
+    notifications_router,
+    in_app_notifications_router,
+    tasks_router,
+    task_polls_router,
+    task_reports_router,
+    files_router,
 )
 
 # Configure logging
@@ -89,6 +94,11 @@ app.include_router(roles_router, prefix="/api/v1", tags=["roles"])
 app.include_router(chats_router, tags=["chats"])
 app.include_router(calendar_router, prefix="/api/v1", tags=["calendar"])
 app.include_router(notifications_router, prefix="/api/v1", tags=["notifications"])
+app.include_router(in_app_notifications_router, prefix="/api/v1", tags=["in-app-notifications"])
+app.include_router(tasks_router, prefix="/api/v1", tags=["tasks"])
+app.include_router(task_polls_router, prefix="/api/v1", tags=["task-polls"])
+app.include_router(task_reports_router, prefix="/api/v1", tags=["task-reports"])
+app.include_router(files_router, prefix="/api/v1", tags=["files"])
 
 
 @app.get("/")

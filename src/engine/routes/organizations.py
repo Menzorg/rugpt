@@ -27,6 +27,7 @@ class CreateOrgRequest(BaseModel):
     name: str
     slug: Optional[str] = None
     description: Optional[str] = None
+    timezone: Optional[str] = "Europe/Moscow"
 
 
 class UpdateOrgRequest(BaseModel):
@@ -34,6 +35,7 @@ class UpdateOrgRequest(BaseModel):
     name: Optional[str] = None
     slug: Optional[str] = None
     description: Optional[str] = None
+    timezone: Optional[str] = None
 
 
 class OrgResponse(BaseModel):
@@ -42,6 +44,7 @@ class OrgResponse(BaseModel):
     name: str
     slug: str
     description: Optional[str]
+    timezone: str
     is_active: bool
     created_at: str
     updated_at: str
@@ -75,7 +78,8 @@ async def create_organization(
         org = await org_service.create_organization(
             name=request.name,
             slug=request.slug,
-            description=request.description
+            description=request.description,
+            timezone=request.timezone or "Europe/Moscow",
         )
         return OrgResponse(**org.to_dict())
     except ValueError as e:
@@ -145,7 +149,8 @@ async def update_organization(
             org_id=org_uuid,
             name=request.name,
             slug=request.slug,
-            description=request.description
+            description=request.description,
+            timezone=request.timezone,
         )
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")

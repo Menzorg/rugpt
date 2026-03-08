@@ -24,7 +24,8 @@ class OrgService:
         self,
         name: str,
         slug: Optional[str] = None,
-        description: Optional[str] = None
+        description: Optional[str] = None,
+        timezone: str = "Europe/Moscow",
     ) -> Organization:
         """
         Create a new organization.
@@ -55,7 +56,8 @@ class OrgService:
         org = Organization(
             name=name,
             slug=slug,
-            description=description
+            description=description,
+            timezone=timezone,
         )
 
         created = await self.storage.create(org)
@@ -79,7 +81,8 @@ class OrgService:
         org_id: UUID,
         name: Optional[str] = None,
         slug: Optional[str] = None,
-        description: Optional[str] = None
+        description: Optional[str] = None,
+        timezone: Optional[str] = None,
     ) -> Optional[Organization]:
         """
         Update organization.
@@ -109,6 +112,9 @@ class OrgService:
 
         if description is not None:
             org.description = description
+
+        if timezone is not None:
+            org.timezone = timezone
 
         updated = await self.storage.update(org)
         logger.info(f"Updated organization: {updated.name}")

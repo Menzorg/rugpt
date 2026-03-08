@@ -16,6 +16,12 @@ from ..storage.message_storage import MessageStorage
 from ..storage.calendar_storage import CalendarStorage
 from ..storage.notification_channel_storage import NotificationChannelStorage
 from ..storage.notification_log_storage import NotificationLogStorage
+from ..storage.in_app_notification_storage import InAppNotificationStorage
+from ..storage.task_storage import TaskStorage
+from ..storage.task_poll_storage import TaskPollStorage
+from ..storage.task_report_storage import TaskReportStorage
+from ..storage.user_file_storage import UserFileStorage
+from ..storage.storage_adapter import LocalStorageAdapter
 from .chat_service import ChatService
 from .mention_service import MentionService
 from .ai_service import AIService
@@ -23,6 +29,11 @@ from .prompt_cache import PromptCache
 from .calendar_service import CalendarService
 from .scheduler_service import SchedulerService
 from .notification_service import NotificationService
+from .in_app_notification_service import InAppNotificationService
+from .task_service import TaskService
+from .task_poll_service import TaskPollService
+from .task_report_service import TaskReportService
+from .file_service import FileService
 from ..notifications.telegram_sender import TelegramSender
 from ..notifications.email_sender import EmailSender
 from ..llm.providers.ollama import OllamaProvider
@@ -56,6 +67,11 @@ class EngineService:
         self.calendar_storage = CalendarStorage(self.postgres_dsn)
         self.notification_channel_storage = NotificationChannelStorage(self.postgres_dsn)
         self.notification_log_storage = NotificationLogStorage(self.postgres_dsn)
+        self.in_app_notification_storage = InAppNotificationStorage(self.postgres_dsn)
+        self.task_storage = TaskStorage(self.postgres_dsn)
+        self.task_poll_storage = TaskPollStorage(self.postgres_dsn)
+        self.task_report_storage = TaskReportStorage(self.postgres_dsn)
+        self.user_file_storage = UserFileStorage(self.postgres_dsn)
 
         # Initialize LLM provider (kept for health checks / model listing)
         self.llm_provider = OllamaProvider()
@@ -66,6 +82,35 @@ class EngineService:
 
         # Initialize calendar service
         self.calendar_service = CalendarService(self.calendar_storage)
+
+        # Initialize in-app notification service
+        self.in_app_notification_service = InAppNotificationService(self.in_app_notification_storage)
+
+        # Initialize task service
+        self.task_service = TaskService(self.task_storage, self.in_app_notification_service)
+
+        # Initialize task poll service
+        self.task_poll_service = TaskPollService(
+            storage=self.task_poll_storage,
+            task_service=self.task_service,
+            in_app_notification_service=self.in_app_notification_service,
+        )
+
+        # Initialize task report service
+        self.task_report_service = TaskReportService(
+            storage=self.task_report_storage,
+            task_poll_service=self.task_poll_service,
+            in_app_notification_service=self.in_app_notification_service,
+        )
+
+        # Initialize file service with StorageAdapter
+        storage_adapter = LocalStorageAdapter(base_dir=Config.STORAGE_LOCAL_DIR)
+        self.file_service = FileService(
+            file_storage=self.user_file_storage,
+            storage_adapter=storage_adapter,
+            max_file_size=Config.FILE_MAX_SIZE_MB * 1024 * 1024,
+            allowed_types=set(Config.FILE_ALLOWED_TYPES.split(",")),
+        )
 
         # Initialize notification service
         self.notification_service = NotificationService(
@@ -97,6 +142,7 @@ class EngineService:
         from ..agents.executor import AgentExecutor
         from ..agents.tools.registry import ToolRegistry
         from ..agents.tools.calendar_tool import create_calendar_tools
+        from ..agents.tools.task_tool import create_task_tools
         from ..agents.tools.rag_tool import rag_search
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
@@ -104,10 +150,16 @@ class EngineService:
         # Create calendar tools wired to CalendarService
         cal_create_tool, cal_query_tool = create_calendar_tools(self.calendar_service)
 
+        # Create task tools wired to TaskService
+        task_create_tool, task_query_tool, task_update_tool = create_task_tools(self.task_service)
+
         # Initialize tool registry
         self.tool_registry = ToolRegistry()
         self.tool_registry.register("calendar_create", cal_create_tool)
         self.tool_registry.register("calendar_query", cal_query_tool)
+        self.tool_registry.register("task_create", task_create_tool)
+        self.tool_registry.register("task_query", task_query_tool)
+        self.tool_registry.register("task_update", task_update_tool)
         self.tool_registry.register("rag_search", rag_search)
         self.tool_registry.register("web_search", web_search)
         self.tool_registry.register("role_call", role_call)
@@ -163,6 +215,11 @@ class EngineService:
         await self.calendar_storage.init()
         await self.notification_channel_storage.init()
         await self.notification_log_storage.init()
+        await self.in_app_notification_storage.init()
+        await self.task_storage.init()
+        await self.task_poll_storage.init()
+        await self.task_report_storage.init()
+        await self.user_file_storage.init()
 
         # Start background scheduler
         await self.scheduler_service.start()
@@ -182,6 +239,11 @@ class EngineService:
         await self.calendar_storage.close()
         await self.notification_channel_storage.close()
         await self.notification_log_storage.close()
+        await self.in_app_notification_storage.close()
+        await self.task_storage.close()
+        await self.task_poll_storage.close()
+        await self.task_report_storage.close()
+        await self.user_file_storage.close()
         await self.scheduler_service.stop()
         await self.notification_service.close()
         await self.ai_service.close()

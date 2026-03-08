@@ -1,18 +1,27 @@
 #!/bin/bash
 
-# Sync rugpt to remote server
+# Синхронизация DEV (dev-nid) -> LOCAL
 # Usage: ./sync.sh
 
-SERVER="5090"
-REMOTE_PATH="~/rugpt"
+VM_HOST="dev-nid"
+REMOTE_PATH="/root/rugpt/"
+LOCAL_PATH="$HOME/rugpt/"
 
-rsync -avz --progress \
+echo "🔄 Синхронизация DEV (${VM_HOST}) -> LOCAL..."
+
+rsync -avz --progress --delete \
   -e "ssh" \
-  --exclude 'venv' \
-  --exclude '.git' \
+  --exclude '.git/' \
+  --exclude 'venv/' \
+  --exclude '__pycache__/' \
+  --exclude '*.pyc' \
   --exclude '*.log' \
   --exclude '.env' \
-  --exclude '__pycache__' \
-  ./ ${SERVER}:${REMOTE_PATH}/
+  --exclude '*.env' \
+  --exclude '.env.*' \
+  --exclude '.idea/' \
+  --exclude '.vscode/' \
+  --exclude 'node_modules/' \
+  "${VM_HOST}:${REMOTE_PATH}" "${LOCAL_PATH}"
 
-echo "Sync complete!"
+echo "✅ Синхронизация завершена!"

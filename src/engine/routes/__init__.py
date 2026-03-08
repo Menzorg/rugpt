@@ -11,6 +11,11 @@ from .roles import router as roles_router
 from .chats import router as chats_router
 from .calendar import router as calendar_router
 from .notifications import router as notifications_router
+from .in_app_notifications import router as in_app_notifications_router
+from .tasks import router as tasks_router
+from .task_polls import router as task_polls_router
+from .task_reports import router as task_reports_router
+from .files import router as files_router
 
 __all__ = [
     'health_router',
@@ -21,4 +26,9 @@ __all__ = [
     'chats_router',
     'calendar_router',
     'notifications_router',
+    'in_app_notifications_router',
+    'tasks_router',
+    'task_polls_router',
+    'task_reports_router',
+    'files_router',
 ]
