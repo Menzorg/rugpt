@@ -7,6 +7,7 @@ Singleton pattern - one instance per process.
 import logging
 from typing import Optional
 
+
 from ..config import Config
 from ..storage.org_storage import OrgStorage
 from ..storage.user_storage import UserStorage
@@ -21,6 +22,7 @@ from ..storage.task_storage import TaskStorage
 from ..storage.task_poll_storage import TaskPollStorage
 from ..storage.task_report_storage import TaskReportStorage
 from ..storage.user_file_storage import UserFileStorage
+from ..storage.rag_store import RAG_store
 from ..storage.correction_rule_storage import CorrectionRuleStorage
 from ..storage.device_storage import DeviceStorage
 from ..storage.storage_adapter import LocalStorageAdapter
@@ -36,6 +38,7 @@ from .task_service import TaskService
 from .task_poll_service import TaskPollService
 from .task_report_service import TaskReportService
 from .file_service import FileService
+from .rag_service import RAGService
 from .correction_rule_service import CorrectionRuleService
 from ..notifications.telegram_sender import TelegramSender
 from ..notifications.email_sender import EmailSender
@@ -75,6 +78,7 @@ class EngineService:
         self.task_poll_storage = TaskPollStorage(self.postgres_dsn)
         self.task_report_storage = TaskReportStorage(self.postgres_dsn)
         self.user_file_storage = UserFileStorage(self.postgres_dsn)
+        self.rag_storage = RAG_store(self.postgres_dsn)
         self.correction_rule_storage = CorrectionRuleStorage(self.postgres_dsn)
         self.device_storage = DeviceStorage(self.postgres_dsn)
 
@@ -115,6 +119,18 @@ class EngineService:
             storage_adapter=storage_adapter,
             max_file_size=Config.FILE_MAX_SIZE_MB * 1024 * 1024,
             allowed_types=set(Config.FILE_ALLOWED_TYPES.split(",")),
+        )
+        
+        self.rag_service = RAGService(
+            store=self.rag_store,
+            ollama_model=Config.ollama_model,
+            ollama_embeddings_base_url=Config.ollama_embeddings_base_url,
+            ollama_summary_model=Config.ollama_summary_model,
+            ollama_base_url=Config.ollama_base_url,
+            chunk_size=Config.chunk_size,
+            chunk_overlap=Config.chunk_overlap,
+            tika_server_endpoint=Config.tika_server_endpoint,
+            summary_input_max_chars=Config.summary_input_max_chars,
         )
 
         # Initialize notification service

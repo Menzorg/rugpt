@@ -52,6 +52,24 @@ class Config:
     # LLM settings
     LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")  # Ollama default
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen2:0.5b")
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", DEFAULT_MODEL)
+    OLLAMA_EMBEDDINGS_BASE_URL = os.getenv("OLLAMA_EMBEDDINGS_BASE_URL", LLM_BASE_URL)
+    OLLAMA_SUMMARY_MODEL = os.getenv("OLLAMA_SUMMARY_MODEL", DEFAULT_MODEL)
+    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", LLM_BASE_URL)
+    CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1200"))
+    CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
+    TIKA_SERVER_ENDPOINT = os.getenv("TIKA_SERVER_ENDPOINT", "http://localhost:9998")
+    SUMMARY_INPUT_MAX_CHARS = int(os.getenv("SUMMARY_INPUT_MAX_CHARS", "12000"))
+
+    # Backward-compatible aliases for existing call sites.
+    ollama_model = OLLAMA_MODEL
+    ollama_embeddings_base_url = OLLAMA_EMBEDDINGS_BASE_URL
+    ollama_summary_model = OLLAMA_SUMMARY_MODEL
+    ollama_base_url = OLLAMA_BASE_URL
+    chunk_size = CHUNK_SIZE
+    chunk_overlap = CHUNK_OVERLAP
+    tika_server_endpoint = TIKA_SERVER_ENDPOINT
+    summary_input_max_chars = SUMMARY_INPUT_MAX_CHARS
 
     # OpenAI fallback (optional)
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

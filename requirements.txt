@@ -36,9 +36,13 @@ croniter>=2.0.0
 aiosmtplib>=3.0.0
 
 # File handling
-aiofiles>=25.3.0
-python-multipart>=25.0.0
+aiofiles>=25.1.0
+python-multipart>=0.0.22
 
 # Development
 pytest>=7.4.0
 pytest-asyncio>=0.23.0
+
+# Data extraction
+tika==2.6.0
+beautifulsoup4==4.13.3
