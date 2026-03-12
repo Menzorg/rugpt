@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # Деплой LOCAL -> PROD (сервер 5090)
 # Usage: ./deploy.sh
@@ -19,6 +20,7 @@ rsync -avz --progress \
   --exclude '*.log' \
   --exclude '.env' \
   --exclude '__pycache__' \
+  --exclude 'uploads' \
   ./ ${SERVER}:${REMOTE_PATH}/
 
 # Проверить хэш requirements.txt ПОСЛЕ деплоя
@@ -30,5 +32,9 @@ if [ "$OLD_REQ_HASH" != "$NEW_REQ_HASH" ]; then
 else
   echo "requirements.txt без изменений, пропускаю pip install"
 fi
+
+# Перезапуск движка (миграции + screen + health check)
+echo "Перезапускаю Engine..."
+ssh ${SERVER} "cd ${REMOTE_PATH} && ./local_restart.sh engine"
 
 echo "Деплой завершён!"

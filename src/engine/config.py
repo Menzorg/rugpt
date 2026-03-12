@@ -80,9 +80,12 @@ class Config:
 
     # File storage
     STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "local")  # local | s3
-    STORAGE_LOCAL_DIR = os.getenv("STORAGE_LOCAL_DIR", "/var/lib/rugpt/uploads")
+    STORAGE_LOCAL_DIR = os.getenv("STORAGE_LOCAL_DIR", str(Path(__file__).parent.parent.parent / "uploads"))
     FILE_MAX_SIZE_MB = int(os.getenv("FILE_MAX_SIZE_MB", "50"))
     FILE_ALLOWED_TYPES = os.getenv("FILE_ALLOWED_TYPES", "pdf,docx")
+
+    # RAG / Embeddings
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text-v2-moe:latest")
 
     @staticmethod
     def get_postgres_dsn() -> str:
@@ -91,3 +94,11 @@ class Config:
             password = quote_plus(Config.DB_PASSWORD)
             return f"postgresql://{Config.DB_USER}:{password}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"
         return f"postgresql://{Config.DB_USER}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"
+
+    @staticmethod
+    def get_vector_dsn() -> str:
+        """Get PostgreSQL DSN for pgvector (psycopg2/psycopg3 format)"""
+        if Config.DB_PASSWORD:
+            password = quote_plus(Config.DB_PASSWORD)
+            return f"postgresql+psycopg://{Config.DB_USER}:{password}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"
+        return f"postgresql+psycopg://{Config.DB_USER}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"

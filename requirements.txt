@@ -36,8 +36,8 @@ croniter>=2.0.0
 aiosmtplib>=3.0.0
 
 # File handling
-aiofiles>=25.3.0
-python-multipart>=25.0.0
+aiofiles>=24.1.0
+python-multipart>=0.0.20
 
 # Development
 pytest>=7.4.0

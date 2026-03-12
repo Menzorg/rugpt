@@ -141,7 +141,7 @@ class AIService:
 
         # Generate
         try:
-            response_content = await self._call_llm(role, conv_messages)
+            response_content = await self._call_llm(role, conv_messages, user_id=message.sender_id)
             if response_content is None:
                 return None
 
@@ -187,7 +187,7 @@ class AIService:
         logger.warning(f"User {responder.id} has no role")
         return None
 
-    async def _call_llm(self, role: Role, conv_messages: List[dict]) -> Optional[str]:
+    async def _call_llm(self, role: Role, conv_messages: List[dict], user_id: Optional[UUID] = None) -> Optional[str]:
         """Call LLM via AgentExecutor or fallback to OllamaProvider."""
         if self.agent_executor:
             result = await self.agent_executor.execute(
@@ -195,6 +195,7 @@ class AIService:
                 messages=conv_messages,
                 temperature=0.7,
                 max_tokens=256,
+                user_id=user_id,
             )
             if result.finish_reason == "error":
                 logger.error(f"Agent error: {result.error}")

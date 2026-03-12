@@ -5,7 +5,9 @@ Main router: dispatches execution to the right graph based on role.agent_type.
 """
 import logging
 from typing import List, Optional
+from uuid import UUID
 
+from langchain_core.runnables import RunnableConfig
 from langchain_ollama import ChatOllama
 
 from ..models.role import Role
@@ -58,6 +60,7 @@ class AgentExecutor:
         messages: List[dict],
         temperature: float = 0.7,
         max_tokens: int = 2048,
+        user_id: Optional[UUID] = None,
     ) -> AgentResult:
         """
         Execute agent for a role.
@@ -67,6 +70,7 @@ class AgentExecutor:
             messages: Conversation as [{"role": "user"/"assistant", "content": "..."}]
             temperature: Sampling temperature
             max_tokens: Max tokens in response
+            user_id: User ID for RAG scope (owner of the conversation)
 
         Returns:
             AgentResult with response
@@ -75,6 +79,12 @@ class AgentExecutor:
         system_prompt = self.prompt_cache.get_prompt(role)
         tools = self.tool_registry.resolve(role.tools) if role.tools else []
         llm = self._create_llm(model, temperature)
+
+        # RunnableConfig carries org_id/user_id for tools (e.g. rag_search)
+        config = RunnableConfig(configurable={
+            "org_id": str(role.org_id) if role.org_id else "",
+            "user_id": str(user_id) if user_id else "",
+        })
 
         # TODO: Load correction rules via RAG and append to system_prompt
         # When RAG is implemented, this will search for relevant rules
@@ -99,6 +109,7 @@ class AgentExecutor:
                     tools=tools if tools else None,
                     max_tokens=max_tokens,
                     temperature=temperature,
+                    config=config,
                 )
 
             elif role.agent_type == "chain":
@@ -108,6 +119,7 @@ class AgentExecutor:
                     messages=messages,
                     agent_config=role.agent_config,
                     tools=tools if tools else None,
+                    config=config,
                 )
 
             elif role.agent_type == "multi_agent":
@@ -117,6 +129,7 @@ class AgentExecutor:
                     messages=messages,
                     agent_config=role.agent_config,
                     tools=tools if tools else None,
+                    config=config,
                 )
 
             else:
@@ -127,6 +140,7 @@ class AgentExecutor:
                     messages=messages,
                     max_tokens=max_tokens,
                     temperature=temperature,
+                    config=config,
                 )
 
         except Exception as e:

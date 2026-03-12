@@ -183,6 +183,11 @@ class EngineService:
             notification_service=self.notification_service,
             agent_executor=self.agent_executor,
             role_storage=self.role_storage,
+            user_storage=self.user_storage,
+            org_storage=self.org_storage,
+            task_service=self.task_service,
+            task_poll_service=self.task_poll_service,
+            task_report_service=self.task_report_service,
             poll_interval=int(Config.SCHEDULER_POLL_INTERVAL),
             enabled=Config.SCHEDULER_ENABLED,
         )

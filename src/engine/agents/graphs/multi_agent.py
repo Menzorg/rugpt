@@ -12,6 +12,7 @@ from typing import List, Optional, TypedDict, Annotated
 import operator
 
 from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, END
@@ -34,6 +35,7 @@ async def run_multi_agent(
     messages: List[dict],
     agent_config: dict,
     tools: Optional[List[BaseTool]] = None,
+    config: Optional[RunnableConfig] = None,
 ) -> AgentResult:
     """
     Run multi-agent graph from agent_config["graph"].
@@ -112,8 +114,8 @@ async def run_multi_agent(
             "step_outputs": {},
         }
 
-        # Run the graph
-        result = await graph.ainvoke(initial_state)
+        # Run the graph (config carries org_id/user_id for tools)
+        result = await graph.ainvoke(initial_state, config=config)
 
         final_output = result.get("current_output", "")
         if not final_output:

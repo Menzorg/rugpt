@@ -9,6 +9,7 @@ import logging
 from typing import List, Optional
 
 from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_ollama import ChatOllama
 
@@ -23,6 +24,7 @@ async def run_chain_agent(
     messages: List[dict],
     agent_config: dict,
     tools: Optional[List[BaseTool]] = None,
+    config: Optional[RunnableConfig] = None,
 ) -> AgentResult:
     """
     Run chain agent — sequential steps from agent_config["steps"].
