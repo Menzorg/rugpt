@@ -148,7 +148,7 @@ class EngineService:
         from ..agents.tools.registry import ToolRegistry
         from ..agents.tools.calendar_tool import create_calendar_tools
         from ..agents.tools.task_tool import create_task_tools
-        from ..agents.tools.rag_tool import rag_search
+        from ..agents.tools.rag_tool import rag_search, init_rag_pool
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
 
@@ -242,6 +242,10 @@ class EngineService:
         await self.user_file_storage.init()
         await self.correction_rule_storage.init()
         await self.device_storage.init()
+
+        # Wire the shared pool into the RAG tool (avoids per-call pool creation)
+        from ..agents.tools.rag_tool import init_rag_pool
+        init_rag_pool(self.user_file_storage.pg_pool)
 
         # Start background scheduler
         await self.scheduler_service.start()

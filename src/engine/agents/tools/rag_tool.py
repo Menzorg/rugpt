@@ -5,10 +5,13 @@ LangChain tool for hybrid document search (vector + TSV rank fusion).
 Uses PostgreSQL functions: search_related_docs -> search_rag.
 
 org_id and user_id are injected via RunnableConfig — LLM sees only `query`.
+
+Pool lifecycle: call init_rag_pool(pool) once during engine startup to set the
+shared asyncpg pool. The pool is reused across all calls without reconnecting.
 """
+import concurrent.futures
 import logging
-import asyncio
-from typing import Annotated
+from typing import Annotated, Optional
 
 import asyncpg
 from langchain_core.tools import tool, InjectedToolArg
@@ -18,6 +21,16 @@ from langchain_ollama.embeddings import OllamaEmbeddings
 from ...config import Config
 
 logger = logging.getLogger("rugpt.agents.tools.rag")
+
+# Shared pool set once during engine startup via init_rag_pool()
+_pool: Optional[asyncpg.Pool] = None
+
+
+def init_rag_pool(pool: asyncpg.Pool) -> None:
+    """Set the shared asyncpg pool for all RAG tool calls."""
+    global _pool
+    _pool = pool
+    logger.info("RAG tool pool initialized")
 
 
 def _get_embeddings() -> OllamaEmbeddings:
@@ -39,74 +52,73 @@ async def _search_rag_async(
     1. search_related_docs — find relevant documents by org/user scope
     2. search_rag — retrieve chunks/table rows from each document
     """
+    if _pool is None:
+        logger.error("rag_search: pool not initialized, call init_rag_pool() at startup")
+        return "RAG search unavailable: database pool not initialized."
+
     emb = _get_embeddings()
     query_embedding = emb.embed_query(query)
     emb_literal = "[" + ",".join(str(v) for v in query_embedding) + "]"
 
-    pool = await asyncpg.create_pool(Config.get_postgres_dsn(), min_size=1, max_size=2)
-    try:
-        async with pool.acquire() as conn:
-            # Stage 1: find relevant documents
-            docs = await conn.fetch(
+    async with _pool.acquire() as conn:
+        # Stage 1: find relevant documents
+        docs = await conn.fetch(
+            """
+            SELECT doc_id, doc_title, summary, vec_dist, tsv_score, mode_used
+            FROM search_related_docs($1::uuid, $2::uuid, $3, $4::vector, $5)
+            """,
+            org_id, user_id, query, emb_literal, top_k_docs,
+        )
+
+        if not docs:
+            logger.info(f"rag_search: no documents found for query='{query}'")
+            return "No relevant documents found."
+
+        results = []
+        for doc in docs:
+            doc_id = doc["doc_id"]
+            title = doc["doc_title"] or "Untitled"
+            mode = doc["mode_used"]
+
+            # Stage 2: search chunks within document (same method as doc search used)
+            method = mode if mode in ("concrete", "abstract") else "concrete"
+            chunks = await conn.fetch(
                 """
-                SELECT doc_id, doc_title, summary, vec_dist, tsv_score, mode_used
-                FROM search_related_docs($1::uuid, $2::uuid, $3, $4::vector, $5)
+                SELECT item_id, text_content, vec_dist, tsv_score, source_type
+                FROM search_rag($1::uuid, $2, $3::vector, $4, $5)
                 """,
-                org_id, user_id, query, emb_literal, top_k_docs,
+                doc_id, query, emb_literal, chunks_per_doc, method,
             )
 
-            if not docs:
-                logger.info(f"rag_search: no documents found for query='{query}'")
-                return "No relevant documents found."
-
-            results = []
-            for doc in docs:
-                doc_id = doc["doc_id"]
-                title = doc["doc_title"] or "Untitled"
-                mode = doc["mode_used"]
-
-                # Stage 2: search chunks within document (same method as doc search used)
-                method = mode if mode in ("concrete", "abstract") else "concrete"
+            # Fallback to other method if empty
+            if not chunks:
+                fallback = "abstract" if method == "concrete" else "concrete"
                 chunks = await conn.fetch(
                     """
                     SELECT item_id, text_content, vec_dist, tsv_score, source_type
                     FROM search_rag($1::uuid, $2, $3::vector, $4, $5)
                     """,
-                    doc_id, query, emb_literal, chunks_per_doc, method,
+                    doc_id, query, emb_literal, chunks_per_doc, fallback,
                 )
 
-                # Fallback to other method if empty
-                if not chunks:
-                    fallback = "abstract" if method == "concrete" else "concrete"
-                    chunks = await conn.fetch(
-                        """
-                        SELECT item_id, text_content, vec_dist, tsv_score, source_type
-                        FROM search_rag($1::uuid, $2, $3::vector, $4, $5)
-                        """,
-                        doc_id, query, emb_literal, chunks_per_doc, fallback,
-                    )
+            doc_block = f"## {title}\n"
+            if chunks:
+                for chunk in chunks:
+                    src = chunk["source_type"]
+                    text = chunk["text_content"]
+                    doc_block += f"\n[{src}] {text}\n"
+            else:
+                doc_block += "\n(no matching content)\n"
 
-                doc_block = f"## {title}\n"
-                if chunks:
-                    for chunk in chunks:
-                        src = chunk["source_type"]
-                        text = chunk["text_content"]
-                        doc_block += f"\n[{src}] {text}\n"
-                else:
-                    doc_block += "\n(no matching content)\n"
+            results.append(doc_block)
 
-                results.append(doc_block)
-
-            output = "\n\n---\n\n".join(results)
-            logger.info(f"rag_search: found {len(docs)} docs with chunks")
-            return output
-
-    finally:
-        await pool.close()
+        output = "\n\n---\n\n".join(results)
+        logger.info(f"rag_search: found {len(docs)} docs with chunks")
+        return output
 
 
 @tool(response_format="content")
-def rag_search(
+async def rag_search(
     query: str,
     config: Annotated[RunnableConfig, InjectedToolArg],
 ) -> str:
@@ -124,12 +136,4 @@ def rag_search(
         logger.error("rag_search: missing org_id or user_id in config")
         return "RAG search unavailable: missing context."
 
-    # LangChain tools are sync; run async search in a new thread to avoid
-    # blocking the running event loop (FastAPI / LangGraph).
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(
-            asyncio.run,
-            _search_rag_async(query, org_id, user_id),
-        )
-        return future.result(timeout=120)
+    return await _search_rag_async(query, org_id, user_id)
