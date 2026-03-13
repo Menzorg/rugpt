@@ -37,6 +37,8 @@ from .task_poll_service import TaskPollService
 from .task_report_service import TaskReportService
 from .file_service import FileService
 from .correction_rule_service import CorrectionRuleService
+from .rag_service import RAGService
+from ..storage.rag_store import RAG_store
 from ..notifications.telegram_sender import TelegramSender
 from ..notifications.email_sender import EmailSender
 from ..llm.providers.ollama import OllamaProvider
@@ -115,6 +117,21 @@ class EngineService:
             storage_adapter=storage_adapter,
             max_file_size=Config.FILE_MAX_SIZE_MB * 1024 * 1024,
             allowed_types=set(Config.FILE_ALLOWED_TYPES.split(",")),
+        )
+
+        # Initialize RAG store and service
+        self.rag_store = RAG_store(
+            dsn=Config.RAG_STORE_DSN,
+            vector_dim=Config.RAG_VECTOR_DIM,
+        )
+        self.rag_service = RAGService(
+            store=self.rag_store,
+            ollama_model=Config.EMBEDDING_MODEL,
+            ollama_embeddings_base_url=Config.LLM_BASE_URL,
+            ollama_base_url=Config.LLM_BASE_URL,
+            chunk_size=Config.RAG_CHUNK_SIZE,
+            chunk_overlap=Config.RAG_CHUNK_OVERLAP,
+            summary_input_max_chars=Config.RAG_SUMMARY_INPUT_MAX_CHARS,
         )
 
         # Initialize notification service
@@ -243,6 +260,8 @@ class EngineService:
         await self.correction_rule_storage.init()
         await self.device_storage.init()
 
+        await self.rag_store.init()
+
         # Wire the shared pool into the RAG tool (avoids per-call pool creation)
         from ..agents.tools.rag_tool import init_rag_pool
         init_rag_pool(self.user_file_storage.pg_pool)
@@ -272,6 +291,7 @@ class EngineService:
         await self.user_file_storage.close()
         await self.correction_rule_storage.close()
         await self.device_storage.close()
+        await self.rag_store.close()
         await self.scheduler_service.stop()
         await self.notification_service.close()
         await self.ai_service.close()

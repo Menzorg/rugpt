@@ -86,6 +86,13 @@ class Config:
 
     # RAG / Embeddings
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-embed-text-v2-moe:latest")
+    RAG_SUMMARY_MODEL = os.getenv("RAG_SUMMARY_MODEL", DEFAULT_MODEL)
+    RAG_TIKA_SERVER_ENDPOINT = os.getenv("RAG_TIKA_SERVER_ENDPOINT", "http://localhost:9998")
+    RAG_STORE_DSN = os.getenv("RAG_STORE_DSN", POSTGRES_DSN)
+    RAG_VECTOR_DIM = int(os.getenv("RAG_VECTOR_DIM", "768"))
+    RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1000"))
+    RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "200"))
+    RAG_SUMMARY_INPUT_MAX_CHARS = int(os.getenv("RAG_SUMMARY_INPUT_MAX_CHARS", "8000"))
 
     @staticmethod
     def get_postgres_dsn() -> str:

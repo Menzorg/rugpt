@@ -38,6 +38,8 @@ aiosmtplib>=3.0.0
 # File handling
 aiofiles>=24.1.0
 python-multipart>=0.0.20
+bs4>=0.0.2
+tika>=2.6.0
 
 # Development
 pytest>=7.4.0
