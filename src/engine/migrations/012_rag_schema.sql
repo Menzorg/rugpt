@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS rag_docs (
     doc_title TEXT NOT NULL DEFAULT '',
     summary   TEXT NOT NULL DEFAULT '',
 
-    summary_embedding vector(768),
+    summary_embedding vector(1024),
 
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at  DATE,
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 
     chunk_text TEXT NOT NULL,
 
-    embedding vector(768) NOT NULL,
+    embedding vector(1024) NOT NULL,
 
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
 
@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS tables_rows_chunks (
     row_index INTEGER NOT NULL,
     row_text TEXT NOT NULL,
 
-    embedding vector(768) NOT NULL,
+    embedding vector(1024) NOT NULL,
 
     tsv tsvector GENERATED ALWAYS AS (
         to_tsvector('russian', coalesce(row_text, ''))

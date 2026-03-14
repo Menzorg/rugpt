@@ -8,7 +8,7 @@
 CREATE OR REPLACE FUNCTION search_concrete_chunks(
   p_doc_id uuid,
   p_query text,
-  p_query_emb vector(768),
+  p_query_emb vector(1024),
   p_top_k integer,
   p_tsv_weight double precision DEFAULT 1.0
 )
@@ -118,7 +118,7 @@ $$;
 CREATE OR REPLACE FUNCTION search_abstract_chunks(
   p_doc_id uuid,
   p_query text,
-  p_query_emb vector(768),
+  p_query_emb vector(1024),
   p_top_k integer
 )
 RETURNS TABLE (
@@ -187,7 +187,7 @@ $$;
 CREATE OR REPLACE FUNCTION search_concrete_table_rows(
   p_doc_id uuid,
   p_query text,
-  p_query_emb vector(768),
+  p_query_emb vector(1024),
   p_top_k integer,
   p_tsv_weight double precision DEFAULT 1.0
 )
@@ -263,7 +263,7 @@ $$;
 CREATE OR REPLACE FUNCTION search_abstract_table_rows(
   p_doc_id uuid,
   p_query text,
-  p_query_emb vector(768),
+  p_query_emb vector(1024),
   p_top_k integer,
   p_tsv_weight double precision DEFAULT 0.3
 )
@@ -344,7 +344,7 @@ CREATE OR REPLACE FUNCTION search_related_docs(
   p_org_id uuid,
   p_user_id uuid,
   p_query text,
-  p_query_emb vector(768),
+  p_query_emb vector(1024),
   p_top_k integer
 )
 RETURNS TABLE (
@@ -476,7 +476,7 @@ $$;
 CREATE OR REPLACE FUNCTION search_rag(
   p_doc_id uuid,
   p_query text,
-  p_query_emb vector(768),
+  p_query_emb vector(1024),
   p_top_k integer,
   p_method text   -- 'abstract' | 'concrete'
 )
@@ -538,7 +538,7 @@ $$;
 CREATE OR REPLACE FUNCTION get_expanded_context(
   p_doc_id uuid,
   p_query text,
-  p_query_emb vector(768),
+  p_query_emb vector(1024),
   p_distance integer DEFAULT 1
 )
 RETURNS TABLE (
