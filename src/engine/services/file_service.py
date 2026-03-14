@@ -4,6 +4,7 @@ File Service
 Business logic for file upload/download/management.
 Uses StorageAdapter for binary data, UserFileStorage for metadata.
 """
+import hashlib
 import logging
 from typing import Optional, List
 from uuid import UUID
@@ -29,6 +30,21 @@ class FileService:
         self.adapter = storage_adapter
         self.max_file_size = max_file_size
         self.allowed_types = allowed_types or ALLOWED_FILE_TYPES
+
+    def _hash_bytes(self, payload: bytes) -> str:
+        """
+        Вычислить SHA-256 хеш бинарного содержимого файла.
+
+        Используется для детекции дубликатов: два файла с одинаковым
+        хешем имеют идентичное содержимое.
+
+        Args:
+            payload: бинарное содержимое файла
+
+        Returns:
+            SHA-256 hex-дайджест (64 символа)
+        """
+        return hashlib.sha256(payload).hexdigest()
 
     async def upload(
         self,
@@ -57,6 +73,19 @@ class FileService:
         if len(data) > self.max_file_size:
             raise ValueError(f"File too large: {len(data)} bytes (max {self.max_file_size})")
 
+        # Вычислить SHA-256 хеш содержимого файла
+        content_hash = self._hash_bytes(data)
+
+        # Проверить наличие дубликата для данного пользователя по хешу.
+        # Дубликат определяется как активный файл того же владельца
+        # с идентичным содержимым (одинаковый content_hash).
+        duplicate = await self.file_storage.find_duplicate(user_id, content_hash)
+        if duplicate:
+            raise ValueError(
+                f"Duplicate file: identical content already exists as '{duplicate.original_filename}' "
+                f"(id={duplicate.id})"
+            )
+
         # Create metadata record
         file_record = UserFile(
             user_id=user_id,
@@ -65,6 +94,7 @@ class FileService:
             original_filename=filename,
             file_type=ext,
             file_size=len(data),
+            content_hash=content_hash,  # сохраняем хеш для последующей детекции дубликатов
         )
 
         # Generate storage key: {org_id}/{user_id}/{file_id}.{ext}
