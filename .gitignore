@@ -74,6 +74,9 @@ data/*.parquet
 chroma_data/
 *.chromadb/
 
+# Uploaded files
+uploads/
+
 # Temporary files
 tmp/
 temp/

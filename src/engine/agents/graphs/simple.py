@@ -9,6 +9,7 @@ import logging
 from typing import List, Optional
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
@@ -25,6 +26,7 @@ async def run_simple_agent(
     tools: Optional[List[BaseTool]] = None,
     max_tokens: int = 2048,
     temperature: float = 0.7,
+    config: Optional[RunnableConfig] = None,
 ) -> AgentResult:
     """
     Run simple agent.
@@ -62,7 +64,7 @@ async def run_simple_agent(
         return await _direct_llm_call(llm, lc_messages)
     else:
         # ReAct agent with tools
-        return await _react_agent_call(llm, lc_messages, system_prompt, tools)
+        return await _react_agent_call(llm, lc_messages, system_prompt, tools, config)
 
 
 async def _direct_llm_call(
@@ -96,6 +98,7 @@ async def _react_agent_call(
     messages: list,
     system_prompt: str,
     tools: List[BaseTool],
+    config: Optional[RunnableConfig] = None,
 ) -> AgentResult:
     """ReAct agent with tool calling"""
     try:
@@ -103,7 +106,8 @@ async def _react_agent_call(
 
         # The last message should be the user input
         # ReAct agent expects {"messages": [...]}
-        result = await agent.ainvoke({"messages": messages})
+        # config carries org_id/user_id for tools like rag_search
+        result = await agent.ainvoke({"messages": messages}, config=config)
 
         # Extract final response from the result
         output_messages = result.get("messages", [])

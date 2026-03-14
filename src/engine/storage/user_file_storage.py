@@ -22,19 +22,46 @@ class UserFileStorage(BaseStorage):
             INSERT INTO user_files
                 (id, user_id, org_id, uploaded_by_user_id,
                  storage_key, original_filename, file_type,
-                 file_size, rag_status,
+                 file_size, content_hash, summary, is_table, rag_status,
                  is_active, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             RETURNING *
         """
         row = await self.fetchrow(
             query,
             file.id, file.user_id, file.org_id, file.uploaded_by_user_id,
             file.storage_key, file.original_filename, file.file_type,
-            file.file_size, file.rag_status,
+            file.file_size, file.content_hash, file.summary, file.is_table, file.rag_status,
             file.is_active, file.created_at, file.updated_at,
         )
         return self._row_to_file(row)
+
+    async def find_duplicate(self, user_id: UUID, content_hash: str) -> Optional[UserFile]:
+        """
+        Найти активный файл пользователя с совпадающим SHA-256 хешем.
+
+        Используется для детекции дубликатов перед загрузкой:
+        если метод вернул запись — файл с идентичным содержимым уже существует.
+
+        Args:
+            user_id: владелец файла
+            content_hash: SHA-256 hex-дайджест загружаемого файла
+
+        Returns:
+            UserFile если дубликат найден, иначе None
+        """
+        row = await self.fetchrow(
+            """
+            SELECT * FROM user_files
+            WHERE user_id = $1
+              AND content_hash = $2
+              AND is_active = true
+            LIMIT 1
+            """,
+            user_id,
+            content_hash,
+        )
+        return self._row_to_file(row) if row else None
 
     async def get_by_id(self, file_id: UUID) -> Optional[UserFile]:
         """Get file by ID"""
@@ -96,6 +123,38 @@ class UserFileStorage(BaseStorage):
         row = await self.fetchrow(query, file_id, rag_status, rag_error, indexed_at, now)
         return self._row_to_file(row) if row else None
 
+    async def change_rag_status(self, file_id: UUID, status: str) -> Optional[UserFile]:
+        """
+        Обновить rag_status документа по его UUID.
+
+        Используется RAGService в процессе индексации:
+          - 'indexing' — индексация начата
+          - 'indexed'  — индексация завершена успешно
+          - 'failed'   — индексация завершилась ошибкой
+
+        При переходе в 'indexed' автоматически проставляет indexed_at = NOW().
+
+        Args:
+            file_id: UUID записи в user_files
+            status:  новый rag_status ('indexing' | 'indexed' | 'failed')
+
+        Returns:
+            Обновлённый UserFile или None, если запись не найдена
+        """
+        now = datetime.utcnow()
+        # indexed_at заполняем только при успешном завершении индексации
+        indexed_at = now if status == "indexed" else None
+        query = """
+            UPDATE user_files SET
+                rag_status = $2,
+                indexed_at = COALESCE($3, indexed_at),
+                updated_at = $4
+            WHERE id = $1 AND is_active = true
+            RETURNING *
+        """
+        row = await self.fetchrow(query, file_id, status, indexed_at, now)
+        return self._row_to_file(row) if row else None
+
     async def deactivate(self, file_id: UUID) -> bool:
         """Soft-delete a file"""
         result = await self.execute(
@@ -115,6 +174,9 @@ class UserFileStorage(BaseStorage):
             original_filename=row["original_filename"],
             file_type=row["file_type"],
             file_size=row["file_size"],
+            content_hash=row["content_hash"],
+            summary=row["summary"],
+            is_table=row["is_table"],
             rag_status=row["rag_status"],
             rag_error=row["rag_error"],
             indexed_at=row["indexed_at"],

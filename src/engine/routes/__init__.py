@@ -16,6 +16,7 @@ from .tasks import router as tasks_router
 from .task_polls import router as task_polls_router
 from .task_reports import router as task_reports_router
 from .files import router as files_router
+from .rag import router as rag_router
 
 __all__ = [
     'health_router',
@@ -31,4 +32,5 @@ __all__ = [
     'task_polls_router',
     'task_reports_router',
     'files_router',
+    'rag_router',
 ]

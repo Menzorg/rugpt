@@ -37,6 +37,8 @@ from .task_poll_service import TaskPollService
 from .task_report_service import TaskReportService
 from .file_service import FileService
 from .correction_rule_service import CorrectionRuleService
+from .rag_service import RAGService
+from ..storage.rag_store import RAG_store
 from ..notifications.telegram_sender import TelegramSender
 from ..notifications.email_sender import EmailSender
 from ..llm.providers.ollama import OllamaProvider
@@ -117,6 +119,22 @@ class EngineService:
             allowed_types=set(Config.FILE_ALLOWED_TYPES.split(",")),
         )
 
+        # Initialize RAG store and service
+        self.rag_store = RAG_store(
+            dsn=Config.RAG_STORE_DSN,
+            vector_dim=Config.RAG_VECTOR_DIM,
+        )
+        self.rag_service = RAGService(
+            store=self.rag_store,
+            ollama_model=Config.EMBEDDING_MODEL,
+            ollama_embeddings_base_url=Config.LLM_BASE_URL,
+            ollama_base_url=Config.LLM_BASE_URL,
+            chunk_size=Config.RAG_CHUNK_SIZE,
+            chunk_overlap=Config.RAG_CHUNK_OVERLAP,
+            summary_input_max_chars=Config.RAG_SUMMARY_INPUT_MAX_CHARS,
+            file_storage=self.user_file_storage,  # для обновления rag_status при индексации
+        )
+
         # Initialize notification service
         self.notification_service = NotificationService(
             channel_storage=self.notification_channel_storage,
@@ -148,7 +166,7 @@ class EngineService:
         from ..agents.tools.registry import ToolRegistry
         from ..agents.tools.calendar_tool import create_calendar_tools
         from ..agents.tools.task_tool import create_task_tools
-        from ..agents.tools.rag_tool import rag_search
+        from ..agents.tools.rag_tool import rag_search, init_rag_pool
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
 
@@ -183,6 +201,11 @@ class EngineService:
             notification_service=self.notification_service,
             agent_executor=self.agent_executor,
             role_storage=self.role_storage,
+            user_storage=self.user_storage,
+            org_storage=self.org_storage,
+            task_service=self.task_service,
+            task_poll_service=self.task_poll_service,
+            task_report_service=self.task_report_service,
             poll_interval=int(Config.SCHEDULER_POLL_INTERVAL),
             enabled=Config.SCHEDULER_ENABLED,
         )
@@ -238,6 +261,12 @@ class EngineService:
         await self.correction_rule_storage.init()
         await self.device_storage.init()
 
+        await self.rag_store.init()
+
+        # Wire the shared pool into the RAG tool (avoids per-call pool creation)
+        from ..agents.tools.rag_tool import init_rag_pool
+        init_rag_pool(self.user_file_storage.pg_pool)
+
         # Start background scheduler
         await self.scheduler_service.start()
 
@@ -263,6 +292,7 @@ class EngineService:
         await self.user_file_storage.close()
         await self.correction_rule_storage.close()
         await self.device_storage.close()
+        await self.rag_store.close()
         await self.scheduler_service.stop()
         await self.notification_service.close()
         await self.ai_service.close()

@@ -119,6 +119,16 @@ class UserStorage(BaseStorage):
         row = await self.fetchrow(query, f'admin_{model_code}')
         return self._row_to_user(row) if row else None
 
+    async def list_admins_by_org(self, org_id: UUID) -> List[User]:
+        """List admin users in an organization (for evening reports)"""
+        query = """
+            SELECT * FROM users
+            WHERE org_id = $1 AND is_admin = true AND is_active = true AND is_system = false
+            ORDER BY name
+        """
+        rows = await self.fetch(query, org_id)
+        return [self._row_to_user(row) for row in rows]
+
     async def update(self, user: User) -> User:
         """Update user"""
         user.updated_at = datetime.utcnow()

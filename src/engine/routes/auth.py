@@ -9,7 +9,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 
 from ..config import Config
@@ -18,6 +19,8 @@ from ..services.users_service import UsersService
 
 logger = logging.getLogger("rugpt.routes.auth")
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+http_bearer = HTTPBearer(auto_error=False)
 
 
 # ============================================
@@ -89,17 +92,14 @@ def verify_token(token: str) -> Optional[dict]:
         return None
 
 
-async def get_current_user(authorization: str = Header(None)) -> dict:
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
+) -> dict:
     """Dependency to get current authenticated user"""
-    if not authorization:
+    if not credentials:
         raise HTTPException(status_code=401, detail="Authorization header required")
 
-    # Expect "Bearer <token>"
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Invalid authorization header format")
-
-    token = parts[1]
+    token = credentials.credentials
     payload = verify_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")

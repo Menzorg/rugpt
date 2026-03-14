@@ -110,6 +110,20 @@ class TaskStorage(BaseStorage):
         rows = await self.fetch(query, assignee_user_id)
         return [self._row_to_task(r) for r in rows]
 
+    async def list_distinct_assignees(self) -> list:
+        """
+        Get distinct (assignee_user_id, org_id) pairs with active non-done tasks.
+        Used by scheduler to know which users need morning polls.
+        """
+        query = """
+            SELECT DISTINCT assignee_user_id, org_id
+            FROM tasks
+            WHERE is_active = true
+              AND status NOT IN ('done')
+        """
+        rows = await self.fetch(query)
+        return [(row["assignee_user_id"], row["org_id"]) for row in rows]
+
     async def update(self, task: Task) -> Task:
         """Update a task"""
         task.updated_at = datetime.utcnow()
