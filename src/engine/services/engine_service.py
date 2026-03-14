@@ -132,6 +132,7 @@ class EngineService:
             chunk_size=Config.RAG_CHUNK_SIZE,
             chunk_overlap=Config.RAG_CHUNK_OVERLAP,
             summary_input_max_chars=Config.RAG_SUMMARY_INPUT_MAX_CHARS,
+            file_storage=self.user_file_storage,  # для обновления rag_status при индексации
         )
 
         # Initialize notification service

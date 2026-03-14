@@ -123,6 +123,38 @@ class UserFileStorage(BaseStorage):
         row = await self.fetchrow(query, file_id, rag_status, rag_error, indexed_at, now)
         return self._row_to_file(row) if row else None
 
+    async def change_rag_status(self, file_id: UUID, status: str) -> Optional[UserFile]:
+        """
+        Обновить rag_status документа по его UUID.
+
+        Используется RAGService в процессе индексации:
+          - 'indexing' — индексация начата
+          - 'indexed'  — индексация завершена успешно
+          - 'failed'   — индексация завершилась ошибкой
+
+        При переходе в 'indexed' автоматически проставляет indexed_at = NOW().
+
+        Args:
+            file_id: UUID записи в user_files
+            status:  новый rag_status ('indexing' | 'indexed' | 'failed')
+
+        Returns:
+            Обновлённый UserFile или None, если запись не найдена
+        """
+        now = datetime.utcnow()
+        # indexed_at заполняем только при успешном завершении индексации
+        indexed_at = now if status == "indexed" else None
+        query = """
+            UPDATE user_files SET
+                rag_status = $2,
+                indexed_at = COALESCE($3, indexed_at),
+                updated_at = $4
+            WHERE id = $1 AND is_active = true
+            RETURNING *
+        """
+        row = await self.fetchrow(query, file_id, status, indexed_at, now)
+        return self._row_to_file(row) if row else None
+
     async def deactivate(self, file_id: UUID) -> bool:
         """Soft-delete a file"""
         result = await self.execute(

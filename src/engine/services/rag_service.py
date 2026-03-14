@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import logging
 import mimetypes
 import re
 from typing import Any
 from urllib.parse import quote
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from bs4 import BeautifulSoup
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -13,6 +14,9 @@ from tika import parser
 
 from ..config import Config
 from ..storage.rag_store import RAG_store
+from ..storage.user_file_storage import UserFileStorage
+
+logger = logging.getLogger("rugpt.services.rag")
 
 TABLE_MIME_TYPES = {
     "text/csv",
@@ -71,11 +75,15 @@ class RAGService:
         chunk_size: int,
         chunk_overlap: int,
         summary_input_max_chars: int,
+        file_storage: UserFileStorage | None = None,
     ) -> None:
         self._store = store or RAG_store(
             dsn=Config.RAG_STORE_DSN,
             vector_dim=Config.RAG_VECTOR_DIM,
         )
+        # UserFileStorage для обновления rag_status в процессе индексации.
+        # Опциональный: если не передан, обновление статусов не производится.
+        self._file_storage = file_storage
         self._embeddings = OllamaEmbeddings(
             model=ollama_model,
             base_url=ollama_embeddings_base_url,
@@ -208,6 +216,10 @@ class RAGService:
             raise ValueError("LLM returned empty summary.")
         return summary
 
+    async def set_status(self, file_id: UUID, status: str):
+        if file_id and self._file_storage:
+            await self._file_storage.change_rag_status(file_id, status)
+
     async def ingest(
         self,
         *,
@@ -216,38 +228,56 @@ class RAGService:
         filename: str | None,
         content_type: str | None,
         data: bytes,
+        file_id: UUID | None = None,
     ) -> dict[str, str | int | bool]:
+        """
+        Проиндексировать файл в RAG-хранилище.
+
+        Если передан file_id, обновляет rag_status записи в user_files:
+          - 'indexing' — сразу при старте
+          - 'indexed'  — при успешном завершении
+          - 'failed'   — при любой ошибке
+
+        Args:
+            org_id:       UUID организации (строка)
+            user_id:      UUID пользователя-владельца (строка или None)
+            filename:     оригинальное имя файла
+            content_type: MIME-тип файла
+            data:         бинарное содержимое файла
+            file_id:      UUID записи user_files для обновления rag_status
+        """
         if not data:
             raise ValueError("Uploaded file is empty.")
+
+        # Помечаем документ как «индексация начата»
+        await self.set_status(file_id, "indexing")
+        logger.info(f"RAG ingest started for file_id={file_id}")
 
         doc_id = str(uuid4())
         is_table = self._is_table_file(content_type, filename)
 
-        if is_table:
-            try:
+        # Single try/except wraps all pipeline stages.
+        # `stage` is updated before each step so the except block
+        # can report exactly where the failure occurred.
+        stage = "init"
+        try:
+            if is_table:
+                stage = "table_parsing"
                 headers, table_rows = self._parse_table_rows(data, content_type, filename)
-            except Exception as exc:
-                raise ValueError(f"Table parsing failed: {exc}") from exc
-            if not table_rows:
-                raise ValueError("No table rows extracted from file.")
+                if not table_rows:
+                    raise ValueError("No table rows extracted from file.")
 
-            try:
+                stage = "table_embedding"
                 row_embeddings = self._embeddings.embed_documents(table_rows)
-            except Exception as exc:
-                raise ValueError(f"Table rows embedding failed: {exc}") from exc
 
-            summary_source = self._build_table_summary_source(filename, headers, table_rows)
-            try:
+                stage = "summary_generation"
+                summary_source = self._build_table_summary_source(filename, headers, table_rows)
                 summary = self._generate_summary_with_llm(summary_source)
-            except Exception as exc:
-                raise ValueError(f"Summary generation failed: {exc}") from exc
 
-            try:
+                stage = "summary_embedding"
                 summary_embedding = self._embeddings.embed_query(summary)
-            except Exception as exc:
-                raise ValueError(f"Summary embedding failed: {exc}") from exc
 
-            try:
+                stage = "db_write"
                 await self._store.insert_table_document_with_rows(
                     doc_id=doc_id,
                     doc_title=filename or doc_id,
@@ -258,39 +288,31 @@ class RAGService:
                     rows_text=table_rows,
                     row_embeddings=row_embeddings,
                 )
-            except Exception as exc:
-                raise ValueError(f"Database write failed: {exc}") from exc
 
-            return {"doc_id": doc_id, "chunks_ingested": len(table_rows), "is_table": True}
+                await self.set_status(file_id, "indexed")
+                logger.info(f"RAG ingest completed (table) for file_id={file_id}")
+                return {"doc_id": doc_id, "chunks_ingested": len(table_rows), "is_table": True}
 
-        try:
+            stage = "text_extraction"
             full_text = self._extract_text_with_tika(data, filename or "uploaded_file")
-        except Exception as exc:
-            raise ValueError(f"Tika extraction failed: {exc}") from exc
+            if not full_text:
+                raise ValueError("No text content extracted from file.")
 
-        if not full_text:
-            raise ValueError("No text content extracted from file.")
+            stage = "text_splitting"
+            chunks = self._splitter.split_text(full_text)
+            if not chunks:
+                raise ValueError("Text splitting produced no chunks.")
 
-        chunks = self._splitter.split_text(full_text)
-        if not chunks:
-            raise ValueError("Text splitting produced no chunks.")
-
-        try:
+            stage = "chunk_embedding"
             chunk_embeddings = self._embeddings.embed_documents(chunks)
-        except Exception as exc:
-            raise ValueError(f"Chunk embedding failed: {exc}") from exc
 
-        try:
+            stage = "summary_generation"
             summary = self._generate_summary_with_llm(full_text)
-        except Exception as exc:
-            raise ValueError(f"Summary generation failed: {exc}") from exc
 
-        try:
+            stage = "summary_embedding"
             summary_embedding = self._embeddings.embed_query(summary)
-        except Exception as exc:
-            raise ValueError(f"Summary embedding failed: {exc}") from exc
 
-        try:
+            stage = "db_write"
             await self._store.insert_document_with_chunks(
                 doc_id=doc_id,
                 doc_title=filename or doc_id,
@@ -302,9 +324,14 @@ class RAGService:
                 chunks=chunks,
                 chunk_embeddings=chunk_embeddings,
             )
-        except Exception as exc:
-            raise ValueError(f"Database write failed: {exc}") from exc
 
+        except Exception as exc:
+            # Mark file as failed and surface the stage name in the error message
+            await self.set_status(file_id, "failed")
+            raise ValueError(f"{stage}: {exc}") from exc
+
+        await self.set_status(file_id, "indexed")
+        logger.info(f"RAG ingest completed (text) for file_id={file_id}")
         return {"doc_id": doc_id, "chunks_ingested": len(chunks), "is_table": False}
 
     async def find_docs(
