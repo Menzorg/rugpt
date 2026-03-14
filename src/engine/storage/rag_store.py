@@ -23,52 +23,39 @@ class RAG_store(BaseStorage):
                 f"Embedding size {len(embedding)} does not match VECTOR_DIM={self._vector_dim}."
             )
 
-    async def insert_document(
+    async def update_user_file_rag_data(
         self,
-        doc_id: str,
-        doc_title: str,
+        file_id: str,
         summary: str,
         summary_embedding: list[float],
         is_table: bool,
-        org_id: str,
-        user_id: str | None = None,
     ) -> None:
-        """Insert a rag_docs row with metadata and summary embedding."""
+        """
+        Write RAG-computed fields back to user_files.
+
+        Called after successful ingestion to persist summary, its embedding,
+        and the is_table flag. These fields drive doc-level search (tsv + vector).
+        """
         self._validate_embedding(summary_embedding)
         await self.init()
         sql = """
-            INSERT INTO rag_docs (
-                doc_id,
-                org_id,
-                user_id,
-                summary,
-                summary_embedding,
-                is_table,
-                doc_title
-            )
-            VALUES (
-                $1::uuid,
-                $2::uuid,
-                $3::uuid,
-                $4,
-                $5::vector,
-                $6,
-                $7
-            )
+            UPDATE user_files
+            SET
+                summary           = $2,
+                summary_embedding = $3::vector,
+                is_table          = $4
+            WHERE id = $1::uuid
         """
         await self.execute(
             sql,
-            doc_id,
-            org_id,
-            user_id,
+            file_id,
             summary,
             _to_pgvector(summary_embedding),
             is_table,
-            doc_title,
         )
 
     def _build_chunk_rows(
-        self, doc_id: str, chunks: list[str], embeddings: list[list[float]]
+        self, file_id: str, chunks: list[str], embeddings: list[list[float]]
     ) -> list[tuple[Any, ...]]:
         if len(chunks) != len(embeddings):
             raise ValueError("Chunks count does not match embeddings count.")
@@ -80,7 +67,7 @@ class RAG_store(BaseStorage):
             self._validate_embedding(emb)
             rows.append(
                 (
-                    doc_id,
+                    file_id,
                     chunk_text,
                     _to_pgvector(emb),
                     json.dumps({"chunk_index": idx}),
@@ -91,7 +78,7 @@ class RAG_store(BaseStorage):
 
     async def insert_document_with_chunks(
         self,
-        doc_id: str,
+        file_id: str,
         doc_title: str,
         summary: str,
         summary_embedding: list[float],
@@ -101,57 +88,33 @@ class RAG_store(BaseStorage):
         chunks: list[str],
         chunk_embeddings: list[list[float]],
     ) -> None:
-        """Atomically insert a normal text doc and its chunk embeddings."""
+        """
+        Atomically ingest a text document:
+          1. Update user_files with summary / embedding / is_table.
+          2. Insert chunks referencing user_files.id via file_id.
+        """
         self._validate_embedding(summary_embedding)
-        rows = self._build_chunk_rows(doc_id=doc_id, chunks=chunks, embeddings=chunk_embeddings)
+        rows = self._build_chunk_rows(file_id=file_id, chunks=chunks, embeddings=chunk_embeddings)
         await self.init()
 
-        doc_sql = """
-            INSERT INTO rag_docs (
-                doc_id,
-                org_id,
-                user_id,
-                summary,
-                summary_embedding,
-                is_table,
-                doc_title
-            )
-            VALUES (
-                $1::uuid,
-                $2::uuid,
-                $3::uuid,
-                $4,
-                $5::vector,
-                $6,
-                $7
-            )
-        """
+        # 1. Persist RAG fields into user_files (primary document table)
+        await self.update_user_file_rag_data(
+            file_id=file_id,
+            summary=summary,
+            summary_embedding=summary_embedding,
+            is_table=is_table,
+        )
+
+        # 2. Chunks reference user_files(id) directly
         chunk_sql = """
-            INSERT INTO chunks (
-                doc_id,
-                chunk_text,
-                embedding,
-                metadata,
-                chunk_index
-            )
+            INSERT INTO chunks (file_id, chunk_text, embedding, metadata, chunk_index)
             VALUES ($1::uuid, $2, $3::vector, $4::jsonb, $5)
         """
-
-        await self.execute(
-            doc_sql,
-            doc_id,
-            org_id,
-            user_id,
-            summary,
-            _to_pgvector(summary_embedding),
-            is_table,
-            doc_title,
-        )
         for row in rows:
             await self.execute(chunk_sql, *row)
 
     def _build_table_rows(
-        self, doc_id: str, rows_text: list[str], row_embeddings: list[list[float]]
+        self, file_id: str, rows_text: list[str], row_embeddings: list[list[float]]
     ) -> list[tuple[Any, ...]]:
         if len(rows_text) != len(row_embeddings):
             raise ValueError("Table rows count does not match embeddings count.")
@@ -160,7 +123,7 @@ class RAG_store(BaseStorage):
             self._validate_embedding(emb)
             rows.append(
                 (
-                    doc_id,
+                    file_id,
                     None,  # No parent chunk for native table-row ingestion path.
                     idx,
                     row_text,
@@ -172,7 +135,7 @@ class RAG_store(BaseStorage):
 
     async def insert_table_document_with_rows(
         self,
-        doc_id: str,
+        file_id: str,
         doc_title: str,
         summary: str,
         summary_embedding: list[float],
@@ -181,72 +144,53 @@ class RAG_store(BaseStorage):
         rows_text: list[str],
         row_embeddings: list[list[float]],
     ) -> None:
-        """Atomically insert a table doc and per-row embeddings into tables_rows_chunks."""
+        """
+        Atomically ingest a table document:
+          1. Update user_files with summary / embedding / is_table=True.
+          2. Insert tables_rows_chunks referencing user_files.id via file_id.
+        """
         self._validate_embedding(summary_embedding)
         table_rows = self._build_table_rows(
-            doc_id=doc_id,
+            file_id=file_id,
             rows_text=rows_text,
             row_embeddings=row_embeddings,
         )
         await self.init()
 
-        doc_sql = """
-            INSERT INTO rag_docs (
-                doc_id,
-                org_id,
-                user_id,
-                summary,
-                summary_embedding,
-                is_table,
-                doc_title
-            )
-            VALUES (
-                $1::uuid,
-                $2::uuid,
-                $3::uuid,
-                $4,
-                $5::vector,
-                $6,
-                $7
-            )
-        """
+        # 1. Persist RAG fields; is_table=True for table documents
+        await self.update_user_file_rag_data(
+            file_id=file_id,
+            summary=summary,
+            summary_embedding=summary_embedding,
+            is_table=True,
+        )
+
+        # 2. Table rows reference user_files(id) directly
         table_rows_sql = """
-            INSERT INTO tables_rows_chunks (
-                doc_id,
-                table_chunk_id,
-                row_index,
-                row_text,
-                embedding,
-                metadata
-            )
+            INSERT INTO tables_rows_chunks
+                (file_id, table_chunk_id, row_index, row_text, embedding, metadata)
             VALUES ($1::uuid, $2::uuid, $3, $4, $5::vector, $6::jsonb)
         """
-
-        await self.execute(
-            doc_sql,
-            doc_id,
-            org_id,
-            user_id,
-            summary,
-            _to_pgvector(summary_embedding),
-            True,
-            doc_title,
-        )
         for row in table_rows:
             await self.execute(table_rows_sql, *row)
 
-    async def delete_document(self, doc_id: str) -> bool:
-        """Delete document by id (cascades to related chunks/rows via FK)."""
+    async def delete_document(self, file_id: str) -> bool:
+        """Deindex a file: delete its chunks/rows and reset RAG fields in user_files."""
         await self.init()
-        sql = "DELETE FROM rag_docs WHERE doc_id = $1::uuid"
-        status = await self.execute(sql, doc_id)
-        if not status.startswith("DELETE "):
-            return False
+        await self.execute("DELETE FROM chunks WHERE file_id = $1::uuid", file_id)
+        await self.execute("DELETE FROM tables_rows_chunks WHERE file_id = $1::uuid", file_id)
+        status = await self.execute(
+            """
+            UPDATE user_files
+            SET summary='', summary_embedding=NULL, is_table=false, rag_status='uploaded'
+            WHERE id = $1::uuid
+            """,
+            file_id,
+        )
         try:
-            affected = int(status.split()[-1])
+            return int(status.split()[-1]) > 0
         except Exception:
             return False
-        return affected > 0
 
     async def call_search_related_docs(
         self,
@@ -261,7 +205,7 @@ class RAG_store(BaseStorage):
         await self.init()
         sql = """
             SELECT
-                doc_id::text,
+                doc_id::text AS file_id,
                 org_id::text,
                 user_id::text,
                 doc_title,
@@ -284,7 +228,7 @@ class RAG_store(BaseStorage):
 
     async def call_search_abstract_chunks(
         self,
-        doc_id: str,
+        file_id: str,
         query: str,
         query_embedding: list[float],
         top_k: int,
@@ -294,13 +238,13 @@ class RAG_store(BaseStorage):
         await self.init()
         sql = """
             SELECT
-                item_id::text AS chunk_id,
-                doc_id::text,
-                text_content AS chunk_text,
+                item_id::text  AS chunk_id,
+                doc_id::text   AS file_id,
+                text_content   AS chunk_text,
                 vec_dist,
                 tsv_score,
-                NULL::int AS r_vec,
-                NULL::int AS r_tsv,
+                NULL::int      AS r_vec,
+                NULL::int      AS r_tsv,
                 NULL::double precision AS final_rank,
                 source_type
             FROM search_rag(
@@ -311,12 +255,12 @@ class RAG_store(BaseStorage):
                 'abstract'
             )
         """
-        rows = await self.fetch(sql, doc_id, query, _to_pgvector(query_embedding), top_k)
+        rows = await self.fetch(sql, file_id, query, _to_pgvector(query_embedding), top_k)
         return [dict(row) for row in rows]
 
     async def call_search_concrete_chunks(
         self,
-        doc_id: str,
+        file_id: str,
         query: str,
         query_embedding: list[float],
         top_k: int,
@@ -327,13 +271,13 @@ class RAG_store(BaseStorage):
         await self.init()
         sql = """
             SELECT
-                item_id::text AS chunk_id,
-                doc_id::text,
-                text_content AS chunk_text,
+                item_id::text  AS chunk_id,
+                doc_id::text   AS file_id,
+                text_content   AS chunk_text,
                 vec_dist,
                 tsv_score,
-                NULL::int AS r_vec,
-                NULL::int AS r_tsv,
+                NULL::int      AS r_vec,
+                NULL::int      AS r_tsv,
                 NULL::double precision AS final_rank,
                 source_type
             FROM search_rag(
@@ -346,7 +290,7 @@ class RAG_store(BaseStorage):
         """
         rows = await self.fetch(
             sql,
-            doc_id,
+            file_id,
             query,
             _to_pgvector(query_embedding),
             top_k,

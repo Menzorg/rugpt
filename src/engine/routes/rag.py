@@ -33,21 +33,21 @@ async def ingest_doc(
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
 
 
-@router.delete("/docs/{doc_id}")
+@router.delete("/docs/{file_id}")
 async def delete_doc(
-    doc_id: str,
+    file_id: str,
     current_user: dict = Depends(get_current_user),
 ) -> dict[str, str]:
     engine = get_engine_service()
     try:
-        deleted = await engine.rag_store.delete_document(doc_id=doc_id)
+        deleted = await engine.rag_store.delete_document(file_id=file_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Database delete failed: {exc}") from exc
 
     if not deleted:
         raise HTTPException(status_code=404, detail="Document not found.")
 
-    return {"status": "deleted", "doc_id": doc_id}
+    return {"status": "deleted", "file_id": file_id}
 
 
 @router.get("/docs/find")
@@ -68,9 +68,9 @@ async def find_docs(
         raise HTTPException(status_code=500, detail=f"Find docs failed: {exc}") from exc
 
 
-@router.get("/docs/{doc_id}/search/abstract")
+@router.get("/docs/{file_id}/search/abstract")
 async def search_abstract_in_doc(
-    doc_id: str,
+    file_id: str,
     query: str = Query(..., min_length=1),
     top_k: int = Query(5, gt=0),
     current_user: dict = Depends(get_current_user),
@@ -78,7 +78,7 @@ async def search_abstract_in_doc(
     engine = get_engine_service()
     try:
         return await engine.rag_service.search_abstract_in_doc(
-            doc_id=doc_id,
+            file_id=file_id,
             query=query,
             top_k=top_k,
         )
@@ -86,9 +86,9 @@ async def search_abstract_in_doc(
         raise HTTPException(status_code=500, detail=f"Abstract chunk search failed: {exc}") from exc
 
 
-@router.get("/docs/{doc_id}/search/concrete")
+@router.get("/docs/{file_id}/search/concrete")
 async def search_concrete_in_doc(
-    doc_id: str,
+    file_id: str,
     query: str = Query(..., min_length=1),
     top_k: int = Query(5, gt=0),
     tsv_weight: float = Query(1.0, gt=0.0),
@@ -97,7 +97,7 @@ async def search_concrete_in_doc(
     engine = get_engine_service()
     try:
         return await engine.rag_service.search_concrete_in_doc(
-            doc_id=doc_id,
+            file_id=file_id,
             query=query,
             top_k=top_k,
             tsv_weight=tsv_weight,

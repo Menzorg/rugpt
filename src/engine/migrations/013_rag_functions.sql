@@ -36,7 +36,7 @@ BEGIN
   SELECT count(*)
   INTO v_count
   FROM chunks c
-  WHERE c.doc_id = p_doc_id
+  WHERE c.file_id = p_doc_id
     AND c.tsv @@ v_tsquery;
 
   IF v_count > 0 THEN
@@ -44,12 +44,12 @@ BEGIN
     WITH lex AS (
       SELECT
         c.id         AS chunk_id,
-        c.doc_id     AS doc_id,
+        c.file_id    AS doc_id,
         c.chunk_text AS chunk_text,
         c.embedding  AS embedding,
         ts_rank_cd(c.tsv, v_tsquery) AS tsv_score
       FROM chunks c
-      WHERE c.doc_id = p_doc_id
+      WHERE c.file_id = p_doc_id
         AND c.tsv @@ v_tsquery
       ORDER BY tsv_score DESC
       LIMIT v_pool
@@ -88,11 +88,11 @@ BEGIN
     WITH vec AS (
       SELECT
         c.id         AS chunk_id,
-        c.doc_id     AS doc_id,
+        c.file_id    AS doc_id,
         c.chunk_text AS chunk_text,
         (c.embedding <=> p_query_emb) AS vec_dist
       FROM chunks c
-      WHERE c.doc_id = p_doc_id
+      WHERE c.file_id = p_doc_id
       ORDER BY c.embedding <=> p_query_emb
       LIMIT p_top_k
     )
@@ -140,11 +140,11 @@ WITH q AS (
 vec AS (
   SELECT
     c.id AS chunk_id,
-    c.doc_id,
+    c.file_id AS doc_id,
     c.chunk_text,
     (c.embedding <=> p_query_emb) AS vec_dist
   FROM chunks c
-  WHERE c.doc_id = p_doc_id
+  WHERE c.file_id = p_doc_id
   ORDER BY c.embedding <=> p_query_emb
   LIMIT GREATEST(p_top_k * 10, 50)
 ),
@@ -215,12 +215,12 @@ BEGIN
   WITH lex AS (
     SELECT
       tr.id AS row_id,
-      tr.doc_id,
+      tr.file_id AS doc_id,
       tr.row_text,
       tr.embedding,
       ts_rank_cd(tr.tsv, v_tsquery) AS tsv_score
     FROM tables_rows_chunks tr
-    WHERE tr.doc_id = p_doc_id
+    WHERE tr.file_id = p_doc_id
       AND tr.tsv @@ v_tsquery
     ORDER BY tsv_score DESC
     LIMIT v_pool
@@ -291,11 +291,11 @@ BEGIN
   WITH vec AS (
     SELECT
       tr.id AS row_id,
-      tr.doc_id,
+      tr.file_id AS doc_id,
       tr.row_text,
       (tr.embedding <=> p_query_emb) AS vec_dist
     FROM tables_rows_chunks tr
-    WHERE tr.doc_id = p_doc_id
+    WHERE tr.file_id = p_doc_id
     ORDER BY tr.embedding <=> p_query_emb
     LIMIT v_pool
   ),
@@ -338,6 +338,7 @@ $$;
 
 -- =================================================================
 -- 5. search_related_docs: find relevant documents for a query
+--    Queries user_files directly (summary, tsv, summary_embedding).
 -- =================================================================
 
 CREATE OR REPLACE FUNCTION search_related_docs(
@@ -370,78 +371,74 @@ BEGIN
   v_pool := GREATEST(p_top_k * 10, 50);
   v_tsquery := plainto_tsquery('russian', p_query);
 
+  -- Count TSV matches directly on user_files (filename A + summary B)
   SELECT count(*)
   INTO v_count
-  FROM rag_docs d
-  WHERE d.org_id = p_org_id
-    AND (d.user_id IS NULL OR d.user_id = p_user_id)
-    AND d.tsv @@ v_tsquery;
+  FROM user_files uf
+  WHERE uf.org_id    = p_org_id
+    AND (uf.user_id IS NULL OR uf.user_id = p_user_id)
+    AND uf.is_active = true
+    AND uf.tsv @@ v_tsquery;
 
   IF v_count > 0 THEN
+    -- TSV-first: rank by text match, re-sort by vector distance
     RETURN QUERY
     WITH lex AS (
       SELECT
-        d.doc_id AS doc_id,
-        ts_rank_cd(d.tsv, v_tsquery) AS tsv_score
-      FROM rag_docs d
-      WHERE d.org_id = p_org_id
-        AND (d.user_id IS NULL OR d.user_id = p_user_id)
-        AND d.tsv @@ v_tsquery
+        uf.id AS doc_id,
+        ts_rank_cd(uf.tsv, v_tsquery) AS tsv_score
+      FROM user_files uf
+      WHERE uf.org_id    = p_org_id
+        AND (uf.user_id IS NULL OR uf.user_id = p_user_id)
+        AND uf.is_active = true
+        AND uf.tsv @@ v_tsquery
       ORDER BY tsv_score DESC
       LIMIT v_pool
     )
     SELECT
-      d.doc_id      AS doc_id,
-      d.org_id      AS org_id,
-      d.user_id     AS user_id,
-      d.doc_title   AS doc_title,
-      d.summary     AS summary,
-      d.uploaded_at AS uploaded_at,
-      d.created_at  AS created_at,
-      (d.summary_embedding <=> p_query_emb) AS vec_dist,
-      l.tsv_score   AS tsv_score,
-      'concrete'::text AS mode_used
+      uf.id                                  AS doc_id,
+      uf.org_id                              AS org_id,
+      uf.user_id                             AS user_id,
+      uf.original_filename                   AS doc_title,
+      uf.summary                             AS summary,
+      uf.created_at                          AS uploaded_at,
+      uf.created_at::date                    AS created_at,
+      (uf.summary_embedding <=> p_query_emb) AS vec_dist,
+      l.tsv_score                            AS tsv_score,
+      'concrete'::text                       AS mode_used
     FROM lex l
-    JOIN rag_docs d ON d.doc_id = l.doc_id
-    WHERE d.summary_embedding IS NOT NULL
+    JOIN user_files uf ON uf.id = l.doc_id
+    WHERE uf.summary_embedding IS NOT NULL
     ORDER BY vec_dist ASC
     LIMIT p_top_k;
 
   ELSE
+    -- Vector-first: rank by embedding distance, re-score with TSV
     RETURN QUERY
     WITH vec AS (
       SELECT
-        d.doc_id      AS doc_id,
-        d.org_id      AS org_id,
-        d.user_id     AS user_id,
-        d.doc_title   AS doc_title,
-        d.summary     AS summary,
-        d.uploaded_at AS uploaded_at,
-        d.created_at  AS created_at,
-        (d.summary_embedding <=> p_query_emb) AS vec_dist
-      FROM rag_docs d
-      WHERE d.org_id = p_org_id
-        AND (d.user_id IS NULL OR d.user_id = p_user_id)
-        AND d.summary_embedding IS NOT NULL
-      ORDER BY d.summary_embedding <=> p_query_emb
+        uf.id        AS doc_id,
+        uf.org_id    AS org_id,
+        uf.user_id   AS user_id,
+        uf.summary   AS summary,
+        (uf.summary_embedding <=> p_query_emb) AS vec_dist
+      FROM user_files uf
+      WHERE uf.org_id    = p_org_id
+        AND (uf.user_id IS NULL OR uf.user_id = p_user_id)
+        AND uf.is_active = true
+        AND uf.summary_embedding IS NOT NULL
+      ORDER BY uf.summary_embedding <=> p_query_emb
       LIMIT v_pool
     ),
     scored AS (
       SELECT
-        v.doc_id      AS doc_id,
-        v.org_id      AS org_id,
-        v.user_id     AS user_id,
-        v.doc_title   AS doc_title,
-        v.summary     AS summary,
-        v.uploaded_at AS uploaded_at,
-        v.created_at  AS created_at,
-        v.vec_dist    AS vec_dist,
+        v.*,
         CASE
-          WHEN d.tsv @@ v_tsquery THEN ts_rank_cd(d.tsv, v_tsquery)
+          WHEN uf.tsv @@ v_tsquery THEN ts_rank_cd(uf.tsv, v_tsquery)
           ELSE 0
         END AS tsv_score
       FROM vec v
-      JOIN rag_docs d ON d.doc_id = v.doc_id
+      JOIN user_files uf ON uf.id = v.doc_id
     ),
     ranked AS (
       SELECT
@@ -451,17 +448,18 @@ BEGIN
       FROM scored s
     )
     SELECT
-      r.doc_id      AS doc_id,
-      r.org_id      AS org_id,
-      r.user_id     AS user_id,
-      r.doc_title   AS doc_title,
-      r.summary     AS summary,
-      r.uploaded_at AS uploaded_at,
-      r.created_at  AS created_at,
-      r.vec_dist    AS vec_dist,
-      r.tsv_score   AS tsv_score,
-      'abstract'::text AS mode_used
+      r.doc_id                AS doc_id,
+      r.org_id                AS org_id,
+      r.user_id               AS user_id,
+      uf.original_filename    AS doc_title,
+      r.summary               AS summary,
+      uf.created_at           AS uploaded_at,
+      uf.created_at::date     AS created_at,
+      r.vec_dist              AS vec_dist,
+      r.tsv_score             AS tsv_score,
+      'abstract'::text        AS mode_used
     FROM ranked r
+    JOIN user_files uf ON uf.id = r.doc_id
     WHERE r.vec_dist < 0.5
     ORDER BY (r.r_vec + 0.3 * r.r_tsv) ASC
     LIMIT p_top_k;
@@ -471,6 +469,7 @@ $$;
 
 -- =================================================================
 -- 6. search_rag: unified dispatcher (chunks vs table rows)
+--    Reads is_table from user_files (p_doc_id is user_files.id).
 -- =================================================================
 
 CREATE OR REPLACE FUNCTION search_rag(
@@ -494,13 +493,14 @@ AS $$
 DECLARE
   v_is_table boolean;
 BEGIN
-  SELECT d.is_table
+  -- is_table lives in user_files; p_doc_id is user_files.id
+  SELECT uf.is_table
   INTO v_is_table
-  FROM rag_docs d
-  WHERE d.doc_id = p_doc_id;
+  FROM user_files uf
+  WHERE uf.id = p_doc_id;
 
   IF v_is_table IS NULL THEN
-    RAISE EXCEPTION 'Document % not found', p_doc_id;
+    RAISE EXCEPTION 'File % not found', p_doc_id;
   END IF;
 
   IF v_is_table THEN
@@ -567,7 +567,7 @@ BEGIN
   INTO v_center_index
   FROM chunks c
   WHERE c.id = v_center_chunk_id
-    AND c.doc_id = p_doc_id;
+    AND c.file_id = p_doc_id;
 
   RETURN QUERY
   SELECT
@@ -580,7 +580,7 @@ BEGIN
       ORDER BY c.chunk_index
     ) AS context_text
   FROM chunks c
-  WHERE c.doc_id = p_doc_id
+  WHERE c.file_id = p_doc_id
     AND c.chunk_index BETWEEN
         v_center_index - p_distance
         AND

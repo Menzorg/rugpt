@@ -5,7 +5,7 @@ import mimetypes
 import re
 from typing import Any
 from urllib.parse import quote
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from bs4 import BeautifulSoup
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -248,12 +248,13 @@ class RAGService:
         """
         if not data:
             raise ValueError("Uploaded file is empty.")
+        if file_id is None:
+            raise ValueError("file_id is required for RAG ingest.")
 
         # Помечаем документ как «индексация начата»
         await self.set_status(file_id, "indexing")
         logger.info(f"RAG ingest started for file_id={file_id}")
 
-        doc_id = str(uuid4())
         is_table = self._is_table_file(content_type, filename)
 
         # Single try/except wraps all pipeline stages.
@@ -279,8 +280,8 @@ class RAGService:
 
                 stage = "db_write"
                 await self._store.insert_table_document_with_rows(
-                    doc_id=doc_id,
-                    doc_title=filename or doc_id,
+                    file_id=str(file_id),
+                    doc_title=filename or str(file_id),
                     summary=summary,
                     summary_embedding=summary_embedding,
                     org_id=org_id,
@@ -291,7 +292,7 @@ class RAGService:
 
                 await self.set_status(file_id, "indexed")
                 logger.info(f"RAG ingest completed (table) for file_id={file_id}")
-                return {"doc_id": doc_id, "chunks_ingested": len(table_rows), "is_table": True}
+                return {"file_id": str(file_id), "chunks_ingested": len(table_rows), "is_table": True}
 
             stage = "text_extraction"
             full_text = self._extract_text_with_tika(data, filename or "uploaded_file")
@@ -314,8 +315,8 @@ class RAGService:
 
             stage = "db_write"
             await self._store.insert_document_with_chunks(
-                doc_id=doc_id,
-                doc_title=filename or doc_id,
+                file_id=str(file_id),
+                doc_title=filename or str(file_id),
                 summary=summary,
                 summary_embedding=summary_embedding,
                 is_table=False,
@@ -332,7 +333,7 @@ class RAGService:
 
         await self.set_status(file_id, "indexed")
         logger.info(f"RAG ingest completed (text) for file_id={file_id}")
-        return {"doc_id": doc_id, "chunks_ingested": len(chunks), "is_table": False}
+        return {"file_id": str(file_id), "chunks_ingested": len(chunks), "is_table": False}
 
     async def find_docs(
         self,
@@ -353,14 +354,14 @@ class RAGService:
 
     async def search_abstract_in_doc(
         self,
-        doc_id: str,
+        file_id: str,
         query: str,
         top_k: int,
     ) -> list[dict[str, Any]]:
-        """Return top-k abstract matches inside one doc."""
+        """Return top-k abstract matches inside one file."""
         query_embedding = self._embed_query(query)
         return await self._store.call_search_abstract_chunks(
-            doc_id=doc_id,
+            file_id=file_id,
             query=query,
             query_embedding=query_embedding,
             top_k=top_k,
@@ -368,15 +369,15 @@ class RAGService:
 
     async def search_concrete_in_doc(
         self,
-        doc_id: str,
+        file_id: str,
         query: str,
         top_k: int,
         tsv_weight: float,
     ) -> list[dict[str, Any]]:
-        """Return top-k concrete matches inside one doc."""
+        """Return top-k concrete matches inside one file."""
         query_embedding = self._embed_query(query)
         return await self._store.call_search_concrete_chunks(
-            doc_id=doc_id,
+            file_id=file_id,
             query=query,
             query_embedding=query_embedding,
             top_k=top_k,

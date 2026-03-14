@@ -22,16 +22,16 @@ class UserFileStorage(BaseStorage):
             INSERT INTO user_files
                 (id, user_id, org_id, uploaded_by_user_id,
                  storage_key, original_filename, file_type,
-                 file_size, content_hash, rag_status,
+                 file_size, content_hash, summary, is_table, rag_status,
                  is_active, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             RETURNING *
         """
         row = await self.fetchrow(
             query,
             file.id, file.user_id, file.org_id, file.uploaded_by_user_id,
             file.storage_key, file.original_filename, file.file_type,
-            file.file_size, file.content_hash, file.rag_status,
+            file.file_size, file.content_hash, file.summary, file.is_table, file.rag_status,
             file.is_active, file.created_at, file.updated_at,
         )
         return self._row_to_file(row)
@@ -175,6 +175,8 @@ class UserFileStorage(BaseStorage):
             file_type=row["file_type"],
             file_size=row["file_size"],
             content_hash=row["content_hash"],
+            summary=row["summary"],
+            is_table=row["is_table"],
             rag_status=row["rag_status"],
             rag_error=row["rag_error"],
             indexed_at=row["indexed_at"],
