@@ -199,6 +199,29 @@ async def delete_file(file_id: str, current_user: dict = Depends(get_current_use
     return {"success": True, "message": "File deleted"}
 
 
+@router.get("/{file_id}/rag-status")
+async def get_rag_status(file_id: str, current_user: dict = Depends(get_current_user)):
+    """Get RAG indexing status for a file."""
+    engine = get_engine_service()
+    try:
+        file_uuid = UUID(file_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid file ID")
+
+    file_record = await engine.file_service.get(file_uuid)
+    if not file_record:
+        raise HTTPException(status_code=404, detail="File not found")
+    if file_record.org_id != current_user["org_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return {
+        "file_id": str(file_record.id),
+        "rag_status": file_record.rag_status,
+        "rag_error": file_record.rag_error,
+        "indexed_at": file_record.indexed_at.isoformat() if file_record.indexed_at else None,
+    }
+
+
 @router.patch("/{file_id}/public", response_model=FileResponse)
 async def set_file_public(
     file_id: str,
