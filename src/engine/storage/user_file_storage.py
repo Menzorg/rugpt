@@ -163,6 +163,19 @@ class UserFileStorage(BaseStorage):
         )
         return "UPDATE 1" in result
 
+    async def change_public(self, file_id: UUID, is_public: bool) -> Optional[UserFile]:
+        """Set the is_public flag on a file."""
+        row = await self.fetchrow(
+            """
+            UPDATE user_files
+            SET is_public = $2, updated_at = $3
+            WHERE id = $1
+            RETURNING *
+            """,
+            file_id, is_public, datetime.utcnow(),
+        )
+        return self._row_to_file(row) if row else None
+
     def _row_to_file(self, row) -> UserFile:
         """Map asyncpg Record to UserFile"""
         return UserFile(

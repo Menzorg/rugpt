@@ -53,6 +53,7 @@ class FileService:
         uploaded_by_user_id: UUID,
         filename: str,
         data: bytes,
+        is_public: bool = False,
     ) -> UserFile:
         """
         Upload a file for an employee.
@@ -94,7 +95,8 @@ class FileService:
             original_filename=filename,
             file_type=ext,
             file_size=len(data),
-            content_hash=content_hash,  # сохраняем хеш для последующей детекции дубликатов
+            content_hash=content_hash,
+            is_public=is_public,
         )
 
         # Generate storage key: {org_id}/{user_id}/{file_id}.{ext}
@@ -151,3 +153,7 @@ class FileService:
         if result:
             logger.info(f"Deleted file {file_id} ({file_record.original_filename})")
         return result
+
+    async def change_public(self, file_id: UUID, is_public: bool) -> Optional[UserFile]:
+        """Set the is_public visibility flag on a file."""
+        return await self.file_storage.change_public(file_id, is_public)

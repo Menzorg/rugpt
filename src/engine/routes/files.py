@@ -13,7 +13,7 @@ import logging
 from typing import Optional, List
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form, Body
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -73,6 +73,7 @@ class FileResponse(BaseModel):
 async def upload_file(
     file: UploadFile = File(...),
     user_id: str = Form(..., description="Employee UUID who owns this file"),
+    is_public: bool = Form(False, description="Make file visible to all org users"),
     current_user: dict = Depends(get_current_user),
 ):
     """Upload a file for an employee (manager action)"""
@@ -92,6 +93,7 @@ async def upload_file(
             uploaded_by_user_id=current_user["user_id"],
             filename=file.filename or "unnamed",
             data=data,
+            is_public=is_public,
         )
         asyncio.create_task(
             _do_rag_ingestion_in_background(
@@ -193,3 +195,28 @@ async def delete_file(file_id: str, current_user: dict = Depends(get_current_use
 
     await engine.file_service.delete(file_uuid)
     return {"success": True, "message": "File deleted"}
+
+
+@router.patch("/{file_id}/public", response_model=FileResponse)
+async def set_file_public(
+    file_id: str,
+    is_public: bool = Body(..., embed=True),
+    current_user: dict = Depends(get_current_user),
+):
+    """Set or clear the is_public flag. Only the file owner can change this."""
+    engine = get_engine_service()
+    try:
+        file_uuid = UUID(file_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid file ID")
+
+    file_record = await engine.file_service.get(file_uuid)
+    if not file_record:
+        raise HTTPException(status_code=404, detail="File not found")
+    if str(file_record.user_id) != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="Only the file owner can change visibility")
+
+    updated = await engine.file_service.change_public(file_uuid, is_public)
+    if not updated:
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(**updated.to_dict())
