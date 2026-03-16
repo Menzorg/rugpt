@@ -72,15 +72,17 @@ class FileResponse(BaseModel):
 @router.post("/upload", response_model=FileResponse)
 async def upload_file(
     file: UploadFile = File(...),
-    user_id: str = Form(..., description="Employee UUID who owns this file"),
+    user_id: Optional[str] = Form(None, description="Employee UUID who owns this file (defaults to authenticated user)"),
     is_public: bool = Form(False, description="Make file visible to all org users"),
     current_user: dict = Depends(get_current_user),
 ):
     """Upload a file for an employee (manager action)"""
     engine = get_engine_service()
 
+    resolved_user_id = user_id or current_user["user_id"]
+
     try:
-        user_uuid = UUID(user_id)
+        user_uuid = UUID(resolved_user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user_id")
 
