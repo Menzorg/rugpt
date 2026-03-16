@@ -8,7 +8,6 @@ Endpoints for file upload/download/management:
 - GET /files/{file_id}/download — download file binary
 - DELETE /files/{file_id} — soft-delete file
 """
-import asyncio
 import logging
 from typing import Optional, List
 from uuid import UUID
@@ -19,33 +18,12 @@ from pydantic import BaseModel
 
 from ..services.engine_service import get_engine_service
 from ..constants import CONTENT_TYPES
+from ..tasks.ingest_queue import ingest_queue
 from .auth import get_current_user
 
 logger = logging.getLogger("rugpt.routes.files")
 router = APIRouter(prefix="/files", tags=["files"])
 
-
-async def _do_rag_ingestion_in_background(
-    file_id: UUID,
-    org_id: str,
-    user_id: str,
-    filename: str,
-    data: bytes,
-) -> None:
-    """Background task: ingest a freshly uploaded file into RAG (3 retries)."""
-    from ..services.engine_service import get_engine_service  # local import avoids circular
-    engine = get_engine_service()
-    try:
-        logger.info(f"Starting background RAG ingestion for file_id={file_id}")
-        await engine.rag_service.try_ingest(
-            org_id=org_id,
-            user_id=user_id,
-            filename=filename,
-            data=data,
-            file_id=file_id,
-        )
-    except Exception as exc:
-        logger.error(f"Background RAG ingest ultimately failed for file_id={file_id}: {exc}")
 
 
 class FileResponse(BaseModel):
@@ -94,14 +72,12 @@ async def upload_file(
             data=data,
             is_public=is_public,
         )
-        asyncio.create_task(
-            _do_rag_ingestion_in_background(
-                file_id=created.id,
-                org_id=str(created.org_id),
-                user_id=str(created.user_id),
-                filename=created.original_filename,
-                data=data,
-            )
+        ingest_queue.submit(
+            file_id=created.id,
+            org_id=str(created.org_id),
+            user_id=str(created.user_id),
+            filename=created.original_filename,
+            data=data,
         )
         return FileResponse(**created.to_dict())
     except ValueError as e:

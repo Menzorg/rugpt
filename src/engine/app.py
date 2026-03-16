@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Config
 from .services.engine_service import get_engine_service, init_engine_service
+from .tasks.ingest_queue import ingest_queue
 from .routes import (
     health_router,
     auth_router,
@@ -77,6 +78,9 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown"""
     logger.info("Shutting down RuGPT Engine...")
+
+    # Drop queued ingest jobs; running threads finish naturally
+    ingest_queue.shutdown(wait=False)
 
     try:
         engine = get_engine_service()
