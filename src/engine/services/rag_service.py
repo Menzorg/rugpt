@@ -335,6 +335,42 @@ class RAGService:
         logger.info(f"RAG ingest completed (text) for file_id={file_id}")
         return {"file_id": str(file_id), "chunks_ingested": len(chunks), "is_table": False}
 
+    async def try_ingest(
+        self,
+        *,
+        org_id: str,
+        user_id: str | None,
+        filename: str | None,
+        content_type: str | None,
+        data: bytes,
+        file_id: UUID | None = None,
+        max_retries: int = 3,
+    ) -> dict[str, str | int | bool]:
+        """
+        Wrapper around ingest with automatic retry.
+
+        Attempts up to max_retries times on failure.
+        Re-raises the last exception if all attempts are exhausted.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                return await self.ingest(
+                    org_id=org_id,
+                    user_id=user_id,
+                    filename=filename,
+                    content_type=content_type,
+                    data=data,
+                    file_id=file_id,
+                )
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    f"RAG ingest attempt {attempt}/{max_retries} failed for "
+                    f"file_id={file_id}: {exc}"
+                )
+        raise last_exc  # type: ignore[misc]
+
     async def find_docs(
         self,
         org_id: str,
