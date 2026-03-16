@@ -12,7 +12,7 @@ from uuid import UUID
 from ..models.user_file import UserFile
 from ..storage.user_file_storage import UserFileStorage
 from ..storage.storage_adapter import StorageAdapter
-from ..constants import ALLOWED_FILE_TYPES, CONTENT_TYPES, MAX_FILE_SIZE
+from ..constants import ALLOWED_FILE_TYPES, CONTENT_TYPES, MAX_FILE_SIZE, TABLE_EXTENSIONS
 
 logger = logging.getLogger("rugpt.services.file")
 
@@ -87,6 +87,9 @@ class FileService:
                 f"(id={duplicate.id})"
             )
 
+        # Detect tabular content by file extension
+        is_table = ext in TABLE_EXTENSIONS
+
         # Create metadata record
         file_record = UserFile(
             user_id=user_id,
@@ -97,6 +100,7 @@ class FileService:
             file_size=len(data),
             content_hash=content_hash,
             is_public=is_public,
+            is_table=is_table,
         )
 
         # Generate storage key: {org_id}/{user_id}/{file_id}.{ext}

@@ -29,13 +29,12 @@ class RAG_store(BaseStorage):
         file_id: str,
         summary: str,
         summary_embedding: list[float],
-        is_table: bool,
     ) -> None:
         """
         Write RAG-computed fields back to user_files.
 
-        Called after successful ingestion to persist summary, its embedding,
-        and the is_table flag. These fields drive doc-level search (tsv + vector).
+        is_table is intentionally excluded — it is set at upload time by
+        FileService based on file extension and must not be overwritten here.
         """
         self._validate_embedding(summary_embedding)
         await self.init()
@@ -43,8 +42,7 @@ class RAG_store(BaseStorage):
             UPDATE user_files
             SET
                 summary           = $2,
-                summary_embedding = $3::vector,
-                is_table          = $4
+                summary_embedding = $3::vector
             WHERE id = $1::uuid
         """
         await self.execute(
@@ -52,7 +50,6 @@ class RAG_store(BaseStorage):
             file_id,
             summary,
             _to_pgvector(summary_embedding),
-            is_table,
         )
 
     def _build_chunk_rows(
@@ -83,7 +80,6 @@ class RAG_store(BaseStorage):
         doc_title: str,
         summary: str,
         summary_embedding: list[float],
-        is_table: bool,
         org_id: str,
         user_id: str | None,
         chunks: list[str],
@@ -91,7 +87,7 @@ class RAG_store(BaseStorage):
     ) -> None:
         """
         Atomically ingest a text document:
-          1. Update user_files with summary / embedding / is_table.
+          1. Update user_files with summary / embedding.
           2. Insert chunks referencing user_files.id via file_id.
         """
         self._validate_embedding(summary_embedding)
@@ -103,7 +99,6 @@ class RAG_store(BaseStorage):
             file_id=file_id,
             summary=summary,
             summary_embedding=summary_embedding,
-            is_table=is_table,
         )
 
         # 2. Chunks reference user_files(id) directly
@@ -147,7 +142,7 @@ class RAG_store(BaseStorage):
     ) -> None:
         """
         Atomically ingest a table document:
-          1. Update user_files with summary / embedding / is_table=True.
+          1. Update user_files with summary / embedding.
           2. Insert tables_rows_chunks referencing user_files.id via file_id.
         """
         self._validate_embedding(summary_embedding)
@@ -158,12 +153,11 @@ class RAG_store(BaseStorage):
         )
         await self.init()
 
-        # 1. Persist RAG fields; is_table=True for table documents
+        # 1. Persist RAG fields; is_table already set during upload
         await self.update_user_file_rag_data(
             file_id=file_id,
             summary=summary,
             summary_embedding=summary_embedding,
-            is_table=True,
         )
 
         # 2. Table rows reference user_files(id) directly
@@ -183,7 +177,7 @@ class RAG_store(BaseStorage):
         status = await self.execute(
             """
             UPDATE user_files
-            SET summary='', summary_embedding=NULL, is_table=false, rag_status='uploaded'
+            SET rag_status='unindexed'
             WHERE id = $1::uuid
             """,
             file_id,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import mimetypes
 import re
 from typing import Any
 from urllib.parse import quote
@@ -18,23 +17,6 @@ from ..storage.rag_store import RAG_store
 from ..storage.user_file_storage import UserFileStorage
 
 logger = logging.getLogger("rugpt.services.rag")
-
-TABLE_MIME_TYPES = {
-    "text/csv",
-    "text/tab-separated-values",
-    "application/csv",
-    "application/vnd.oasis.opendocument.spreadsheet",
-    "application/x-vnd.oasis.opendocument.spreadsheet",
-    "application/vnd.ms-excel",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "application/vnd.ms-excel.sheet.macroenabled.12",
-    "application/vnd.ms-excel.sheet.binary.macroenabled.12",
-    "application/wps-office.xlsx",
-    "application/wps-office.xls",
-    "application/x-wps-office.xlsx",
-    "application/x-wps-office.xls",
-    "application/kswps",
-}
 
 
 def _safe_tika_file_name(file_name: str | None) -> str:
@@ -115,26 +97,11 @@ class RAGService:
             return ""
         return content.strip()
 
-    def _is_table_file(self, content_type: str | None, file_name: str | None) -> bool:
-        detected_mime = (content_type or "").split(";")[0].strip().lower()
-        if detected_mime in TABLE_MIME_TYPES:
-            return True
-        guessed_mime, _ = mimetypes.guess_type(file_name or "")
-        return (guessed_mime or "").lower() in TABLE_MIME_TYPES
-
     def _parse_table_rows(
         self,
         file_bytes: bytes,
-        content_type: str | None,
         file_name: str | None,
     ) -> tuple[list[str], list[str]]:
-        detected_mime = (content_type or "").split(";")[0].strip().lower()
-        guessed_mime, _ = mimetypes.guess_type(file_name or "")
-        mime = detected_mime or (guessed_mime or "").lower()
-
-        if mime not in TABLE_MIME_TYPES:
-            raise ValueError(f"Unsupported table MIME type: {mime or 'unknown'}")
-
         parsed = parser.from_buffer(
             file_bytes,
             serverEndpoint=self._tika_server_endpoint,
@@ -227,7 +194,6 @@ class RAGService:
         org_id: str,
         user_id: str | None,
         filename: str | None,
-        content_type: str | None,
         data: bytes,
         file_id: UUID | None = None,
     ) -> dict[str, str | int | bool]:
@@ -240,12 +206,11 @@ class RAGService:
           - 'failed'   — при любой ошибке
 
         Args:
-            org_id:       UUID организации (строка)
-            user_id:      UUID пользователя-владельца (строка или None)
-            filename:     оригинальное имя файла
-            content_type: MIME-тип файла
-            data:         бинарное содержимое файла
-            file_id:      UUID записи user_files для обновления rag_status
+            org_id:    UUID организации (строка)
+            user_id:   UUID пользователя-владельца (строка или None)
+            filename:  оригинальное имя файла
+            data:      бинарное содержимое файла
+            file_id:   UUID записи user_files для обновления rag_status
         """
         if not data:
             raise ValueError("Uploaded file is empty.")
@@ -256,7 +221,12 @@ class RAGService:
         await self.set_status(file_id, "indexing")
         logger.info(f"RAG ingest started for file_id={file_id}")
 
-        is_table = self._is_table_file(content_type, filename)
+        # is_table is owned by FileService at upload time; we just read it from DB.
+        is_table = False
+        if self._file_storage:
+            file_record = await self._file_storage.get_by_id(file_id)
+            if file_record:
+                is_table = file_record.is_table
 
         # Single try/except wraps all pipeline stages.
         # `stage` is updated before each step so the except block
@@ -265,7 +235,7 @@ class RAGService:
         try:
             if is_table:
                 stage = "table_parsing"
-                headers, table_rows = self._parse_table_rows(data, content_type, filename)
+                headers, table_rows = self._parse_table_rows(data, filename)
                 if not table_rows:
                     raise ValueError("No table rows extracted from file.")
 
@@ -293,7 +263,7 @@ class RAGService:
 
                 await self.set_status(file_id, "indexed")
                 logger.info(f"RAG ingest completed (table) for file_id={file_id}")
-                return {"file_id": str(file_id), "chunks_ingested": len(table_rows), "is_table": True}
+                return {"file_id": str(file_id), "chunks_ingested": len(table_rows)}
 
             stage = "text_extraction"
             full_text = self._extract_text_with_tika(data, filename or "uploaded_file")
@@ -320,7 +290,6 @@ class RAGService:
                 doc_title=filename or str(file_id),
                 summary=summary,
                 summary_embedding=summary_embedding,
-                is_table=False,
                 org_id=org_id,
                 user_id=user_id,
                 chunks=chunks,
@@ -334,7 +303,7 @@ class RAGService:
 
         await self.set_status(file_id, "indexed")
         logger.info(f"RAG ingest completed (text) for file_id={file_id}")
-        return {"file_id": str(file_id), "chunks_ingested": len(chunks), "is_table": False}
+        return {"file_id": str(file_id), "chunks_ingested": len(chunks)}
 
     async def try_ingest(
         self,
@@ -342,7 +311,6 @@ class RAGService:
         org_id: str,
         user_id: str | None,
         filename: str | None,
-        content_type: str | None,
         data: bytes,
         file_id: UUID | None = None,
         max_retries: int = 3,
@@ -353,10 +321,10 @@ class RAGService:
         Attempts up to max_retries times on failure.
         Re-raises the last exception if all attempts are exhausted.
         """
-        
+
         if Config.DEBUG:
-           max_retries = 1  # No retries in debug mode to surface errors immediately 
-        
+            max_retries = 1  # No retries in debug mode to surface errors immediately
+
         last_exc: Exception | None = None
         for attempt in range(1, max_retries + 1):
             try:
@@ -364,7 +332,6 @@ class RAGService:
                     org_id=org_id,
                     user_id=user_id,
                     filename=filename,
-                    content_type=content_type,
                     data=data,
                     file_id=file_id,
                 )

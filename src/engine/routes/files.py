@@ -30,7 +30,6 @@ async def _do_rag_ingestion_in_background(
     org_id: str,
     user_id: str,
     filename: str,
-    content_type: str | None,
     data: bytes,
 ) -> None:
     """Background task: ingest a freshly uploaded file into RAG (3 retries)."""
@@ -42,7 +41,6 @@ async def _do_rag_ingestion_in_background(
             org_id=org_id,
             user_id=user_id,
             filename=filename,
-            content_type=content_type,
             data=data,
             file_id=file_id,
         )
@@ -102,7 +100,6 @@ async def upload_file(
                 org_id=str(created.org_id),
                 user_id=str(created.user_id),
                 filename=created.original_filename,
-                content_type=file.content_type,
                 data=data,
             )
         )

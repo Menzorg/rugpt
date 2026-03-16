@@ -24,7 +24,6 @@ async def ingest_doc(
             org_id=current_user["org_id"],
             user_id=current_user["user_id"],
             filename=file.filename,
-            content_type=file.content_type,
             data=data,
         )
     except ValueError as exc:
