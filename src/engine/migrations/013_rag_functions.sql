@@ -376,7 +376,7 @@ BEGIN
   INTO v_count
   FROM user_files uf
   WHERE uf.org_id    = p_org_id
-    AND (uf.user_id IS NULL OR uf.user_id = p_user_id)
+    AND (uf.is_public OR uf.user_id = p_user_id)
     AND uf.is_active = true
     AND uf.tsv @@ v_tsquery;
 
@@ -389,7 +389,7 @@ BEGIN
         ts_rank_cd(uf.tsv, v_tsquery) AS tsv_score
       FROM user_files uf
       WHERE uf.org_id    = p_org_id
-        AND (uf.user_id IS NULL OR uf.user_id = p_user_id)
+        AND (uf.is_public OR uf.user_id = p_user_id)
         AND uf.is_active = true
         AND uf.tsv @@ v_tsquery
       ORDER BY tsv_score DESC
@@ -424,7 +424,7 @@ BEGIN
         (uf.summary_embedding <=> p_query_emb) AS vec_dist
       FROM user_files uf
       WHERE uf.org_id    = p_org_id
-        AND (uf.user_id IS NULL OR uf.user_id = p_user_id)
+        AND (uf.is_public OR uf.user_id = p_user_id)
         AND uf.is_active = true
         AND uf.summary_embedding IS NOT NULL
       ORDER BY uf.summary_embedding <=> p_query_emb

@@ -39,6 +39,10 @@ ALTER TABLE user_files
 ALTER TABLE user_files
     ADD COLUMN IF NOT EXISTS is_table BOOLEAN NOT NULL DEFAULT false;
 
+-- True when the file is visible to all users in the organization
+ALTER TABLE user_files
+    ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT false;
+
 -- Full-text search vector: filename ranked A (most specific),
 -- summary ranked B (broader context)
 ALTER TABLE user_files
