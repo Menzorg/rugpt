@@ -104,11 +104,19 @@ async def get_current_user(
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    return {
-        "user_id": UUID(payload["user_id"]),
-        "org_id": UUID(payload["org_id"])
-    }
+    user_id = UUID(payload["user_id"])
+    org_id = UUID(payload["org_id"])
 
+    # Verify user still exists and is active in DB
+    engine = get_engine_service()
+    user = await engine.user_storage.get_by_id(user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+
+    return {
+        "user_id": user_id,
+        "org_id": org_id,
+    }
 
 # ============================================
 # Routes
