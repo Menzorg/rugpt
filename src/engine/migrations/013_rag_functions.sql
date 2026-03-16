@@ -352,7 +352,7 @@ RETURNS TABLE (
   doc_id uuid,
   org_id uuid,
   user_id uuid,
-  doc_title text,
+  doc_title varchar(500),
   summary text,
   uploaded_at timestamptz,
   created_at date,
