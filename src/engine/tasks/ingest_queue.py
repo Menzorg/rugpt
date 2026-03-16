@@ -57,6 +57,12 @@ def _run_ingest_sync(
             summary_input_max_chars=Config.RAG_SUMMARY_INPUT_MAX_CHARS,
             file_storage=file_storage,
         )
+        
+        # Explicitly initialize pools on this thread's event loop before any DB call.
+        # Without this pg_pool is None and the first fetchrow/execute crashes.
+        await rag_store.init()
+        await file_storage.init()
+        
         try:
             logger.info(f"RAG ingest started for file_id={file_id}")
             await rag_service.try_ingest(

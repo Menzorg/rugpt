@@ -217,9 +217,12 @@ class RAGService:
         if file_id is None:
             raise ValueError("file_id is required for RAG ingest.")
 
+        fid = str(file_id)
+        size_kb = round(len(data) / 1024, 1)
+
         # Помечаем документ как «индексация начата»
         await self.set_status(file_id, "indexing")
-        logger.info(f"RAG ingest started for file_id={file_id}")
+        logger.info(f"[{fid}] ingest started — file={filename!r} size={size_kb}KB")
 
         # is_table is owned by FileService at upload time; we just read it from DB.
         is_table = False
@@ -227,6 +230,7 @@ class RAGService:
             file_record = await self._file_storage.get_by_id(file_id)
             if file_record:
                 is_table = file_record.is_table
+        logger.info(f"[{fid}] is_table={is_table}")
 
         # Single try/except wraps all pipeline stages.
         # `stage` is updated before each step so the except block
@@ -235,21 +239,29 @@ class RAGService:
         try:
             if is_table:
                 stage = "table_parsing"
+                logger.info(f"[{fid}] stage={stage}")
                 headers, table_rows = self._parse_table_rows(data, filename)
                 if not table_rows:
                     raise ValueError("No table rows extracted from file.")
+                logger.info(f"[{fid}] parsed {len(table_rows)} rows, {len(headers)} headers")
 
                 stage = "table_embedding"
+                logger.info(f"[{fid}] stage={stage}")
                 row_embeddings = self._embeddings.embed_documents(table_rows)
+                logger.info(f"[{fid}] embedded {len(row_embeddings)} row vectors")
 
                 stage = "summary_generation"
+                logger.info(f"[{fid}] stage={stage}")
                 summary_source = self._build_table_summary_source(filename, headers, table_rows)
                 summary = self._generate_summary_with_llm(summary_source)
+                logger.info(f"[{fid}] summary generated ({len(summary)} chars)")
 
                 stage = "summary_embedding"
+                logger.info(f"[{fid}] stage={stage}")
                 summary_embedding = self._embeddings.embed_query(summary)
 
                 stage = "db_write"
+                logger.info(f"[{fid}] stage={stage}")
                 await self._store.insert_table_document_with_rows(
                     file_id=str(file_id),
                     doc_title=filename or str(file_id),
@@ -262,29 +274,39 @@ class RAGService:
                 )
 
                 await self.set_status(file_id, "indexed")
-                logger.info(f"RAG ingest completed (table) for file_id={file_id}")
-                return {"file_id": str(file_id), "chunks_ingested": len(table_rows)}
+                logger.info(f"[{fid}] ingest completed (table) — rows_ingested={len(table_rows)}")
+                return {"file_id": fid, "chunks_ingested": len(table_rows)}
 
             stage = "text_extraction"
+            logger.info(f"[{fid}] stage={stage}")
             full_text = self._extract_text_with_tika(data, filename or "uploaded_file")
             if not full_text:
                 raise ValueError("No text content extracted from file.")
+            logger.info(f"[{fid}] extracted {len(full_text)} chars")
 
             stage = "text_splitting"
+            logger.info(f"[{fid}] stage={stage}")
             chunks = self._splitter.split_text(full_text)
             if not chunks:
                 raise ValueError("Text splitting produced no chunks.")
+            logger.info(f"[{fid}] split into {len(chunks)} chunks")
 
             stage = "chunk_embedding"
+            logger.info(f"[{fid}] stage={stage}")
             chunk_embeddings = self._embeddings.embed_documents(chunks)
+            logger.info(f"[{fid}] embedded {len(chunk_embeddings)} chunk vectors")
 
             stage = "summary_generation"
+            logger.info(f"[{fid}] stage={stage}")
             summary = self._generate_summary_with_llm(full_text)
+            logger.info(f"[{fid}] summary generated ({len(summary)} chars)")
 
             stage = "summary_embedding"
+            logger.info(f"[{fid}] stage={stage}")
             summary_embedding = self._embeddings.embed_query(summary)
 
             stage = "db_write"
+            logger.info(f"[{fid}] stage={stage}")
             await self._store.insert_document_with_chunks(
                 file_id=str(file_id),
                 doc_title=filename or str(file_id),
@@ -297,13 +319,14 @@ class RAGService:
             )
 
         except Exception as exc:
+            logger.error(f"[{fid}] ingest failed at stage={stage}: {exc}")
             # Mark file as failed and surface the stage name in the error message
             await self.set_status(file_id, "failed")
             raise ValueError(f"{stage}: {exc}") from exc
 
         await self.set_status(file_id, "indexed")
-        logger.info(f"RAG ingest completed (text) for file_id={file_id}")
-        return {"file_id": str(file_id), "chunks_ingested": len(chunks)}
+        logger.info(f"[{fid}] ingest completed (text) — chunks_ingested={len(chunks)}")
+        return {"file_id": fid, "chunks_ingested": len(chunks)}
 
     async def try_ingest(
         self,
