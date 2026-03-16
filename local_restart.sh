@@ -1,6 +1,23 @@
 #!/bin/bash
 # Перезапуск RuGPT Engine
 
+# Загружаем .env
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+    set -o allexport
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/.env"
+    set +o allexport
+fi
+
+# Defaults (если .env не задал значения)
+API_HOST="${API_HOST:-localhost}"
+API_PORT="${API_PORT:-8100}"
+DB_HOST="${DB_HOST:-localhost}"
+DB_PORT="${DB_PORT:-5432}"
+DB_NAME="${DB_NAME:-rugpt}"
+DEFAULT_MODEL="${DEFAULT_MODEL:-qwen2.5:7b}"
+
 # Получаем параметр
 SERVICE="$1"
 
@@ -20,7 +37,6 @@ case "$SERVICE" in
 esac
 
 # Переходим в директорию проекта
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # Функция остановки Engine
@@ -70,9 +86,9 @@ print('✅ Миграции выполнены')
     sleep 5
 
     # Проверяем статус
-    if curl -s http://localhost:8100/api/v1/health > /dev/null 2>&1; then
+    if curl -s "http://${API_HOST}:${API_PORT}/api/v1/health" > /dev/null 2>&1; then
         echo "  ✅ Engine API запущен и отвечает"
-        curl -s http://localhost:8100/api/v1/health | python3 -c "
+        curl -s "http://${API_HOST}:${API_PORT}/api/v1/health" | python3 -c "
 import json,sys
 d = json.load(sys.stdin)
 print(f\"  📊 Статус: {d.get('status', 'unknown')}\")
@@ -94,14 +110,14 @@ show_info() {
     echo "  📱 Список экранов:     screen -ls"
     echo ""
     echo "🌐 Доступные эндпоинты:"
-    echo "  📡 Engine API:         http://localhost:8100"
-    echo "  📖 API документация:   http://localhost:8100/docs"
-    echo "  💚 Health check:       http://localhost:8100/api/v1/health"
+    echo "  📡 Engine API:         http://${API_HOST}:${API_PORT}"
+    echo "  📖 API документация:   http://${API_HOST}:${API_PORT}/docs"
+    echo "  💚 Health check:       http://${API_HOST}:${API_PORT}/api/v1/health"
     echo ""
     echo "🔧 Конфигурация:"
-    echo "  • PostgreSQL:          rugpt (localhost:5432)"
-    echo "  • LLM:                 Ollama (localhost:11434)"
-    echo "  • Модель по умолчанию: qwen2:0.5b"
+    echo "  • PostgreSQL:          ${DB_NAME} (${DB_HOST}:${DB_PORT})"
+    echo "  • LLM:                 Ollama"
+    echo "  • Модель по умолчанию: ${DEFAULT_MODEL}"
 }
 
 # Основная логика
