@@ -353,6 +353,10 @@ class RAGService:
         Attempts up to max_retries times on failure.
         Re-raises the last exception if all attempts are exhausted.
         """
+        
+        if Config.DEBUG:
+           max_retries = 1  # No retries in debug mode to surface errors immediately 
+        
         last_exc: Exception | None = None
         for attempt in range(1, max_retries + 1):
             try:

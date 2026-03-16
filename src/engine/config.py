@@ -17,6 +17,8 @@ load_dotenv(_env_path)
 class Config:
     """Configuration class for RuGPT Engine API"""
 
+    DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+
     # Base paths
     BASE_DIR = Path(__file__).parent.parent.parent
     DATA_DIR = BASE_DIR / "data"

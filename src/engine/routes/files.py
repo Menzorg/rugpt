@@ -79,10 +79,9 @@ async def upload_file(
     """Upload a file for an employee (manager action)"""
     engine = get_engine_service()
 
-    resolved_user_id = user_id or current_user["user_id"]
-
+    
     try:
-        user_uuid = UUID(resolved_user_id)
+        user_uuid = UUID(user_id) if user_id else current_user["user_id"]
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user_id")
 
