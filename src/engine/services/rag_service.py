@@ -13,6 +13,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from tika import parser
 
 from ..config import Config
+from ..models.rag import ChunkSearchResult, RelatedDoc
 from ..storage.rag_store import RAG_store
 from ..storage.user_file_storage import UserFileStorage
 
@@ -377,7 +378,7 @@ class RAGService:
         user_id: str | None,
         query: str,
         top_k: int,
-    ) -> list[dict[str, Any]]:
+    ) -> list[RelatedDoc]:
         """Return top-k related docs in org/user scope using SQL hybrid search."""
         query_embedding = self._embed_query(query)
         return await self._store.call_search_related_docs(
@@ -393,7 +394,7 @@ class RAGService:
         file_id: str,
         query: str,
         top_k: int,
-    ) -> list[dict[str, Any]]:
+    ) -> list[ChunkSearchResult]:
         """Return top-k abstract matches inside one file."""
         query_embedding = self._embed_query(query)
         return await self._store.call_search_abstract_chunks(
@@ -409,7 +410,7 @@ class RAGService:
         query: str,
         top_k: int,
         tsv_weight: float,
-    ) -> list[dict[str, Any]]:
+    ) -> list[ChunkSearchResult]:
         """Return top-k concrete matches inside one file."""
         query_embedding = self._embed_query(query)
         return await self._store.call_search_concrete_chunks(

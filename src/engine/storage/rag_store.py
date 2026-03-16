@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from .base import BaseStorage
+from ..models.rag import ChunkSearchResult, RelatedDoc
 
 
 def _to_pgvector(values: list[float]) -> str:
@@ -199,7 +200,7 @@ class RAG_store(BaseStorage):
         query: str,
         query_embedding: list[float],
         top_k: int,
-    ) -> list[dict[str, Any]]:
+    ) -> list[RelatedDoc]:
         """Call SQL function search_related_docs for doc-level retrieval."""
         self._validate_embedding(query_embedding)
         await self.init()
@@ -224,7 +225,21 @@ class RAG_store(BaseStorage):
             )
         """
         rows = await self.fetch(sql, org_id, user_id, query, _to_pgvector(query_embedding), top_k)
-        return [dict(row) for row in rows]
+        return [
+            RelatedDoc(
+                file_id=row["file_id"],
+                org_id=row["org_id"],
+                user_id=row["user_id"],
+                doc_title=row["doc_title"],
+                summary=row["summary"],
+                uploaded_at=row["uploaded_at"],
+                created_at=row["created_at"],
+                vec_dist=row["vec_dist"],
+                tsv_score=row["tsv_score"],
+                mode_used=row["mode_used"],
+            )
+            for row in rows
+        ]
 
     async def call_search_abstract_chunks(
         self,
@@ -232,7 +247,7 @@ class RAG_store(BaseStorage):
         query: str,
         query_embedding: list[float],
         top_k: int,
-    ) -> list[dict[str, Any]]:
+    ) -> list[ChunkSearchResult]:
         """Call SQL function search_rag in abstract mode for doc-scoped retrieval."""
         self._validate_embedding(query_embedding)
         await self.init()
@@ -256,7 +271,20 @@ class RAG_store(BaseStorage):
             )
         """
         rows = await self.fetch(sql, file_id, query, _to_pgvector(query_embedding), top_k)
-        return [dict(row) for row in rows]
+        return [
+            ChunkSearchResult(
+                chunk_id=row["chunk_id"],
+                file_id=row["file_id"],
+                chunk_text=row["chunk_text"],
+                vec_dist=row["vec_dist"],
+                tsv_score=row["tsv_score"],
+                r_vec=row["r_vec"],
+                r_tsv=row["r_tsv"],
+                final_rank=row["final_rank"],
+                source_type=row["source_type"],
+            )
+            for row in rows
+        ]
 
     async def call_search_concrete_chunks(
         self,
@@ -265,7 +293,7 @@ class RAG_store(BaseStorage):
         query_embedding: list[float],
         top_k: int,
         tsv_weight: float,
-    ) -> list[dict[str, Any]]:
+    ) -> list[ChunkSearchResult]:
         """Call SQL function search_rag in concrete mode for doc-scoped retrieval."""
         self._validate_embedding(query_embedding)
         await self.init()
@@ -295,4 +323,17 @@ class RAG_store(BaseStorage):
             _to_pgvector(query_embedding),
             top_k,
         )
-        return [dict(row) for row in rows]
+        return [
+            ChunkSearchResult(
+                chunk_id=row["chunk_id"],
+                file_id=row["file_id"],
+                chunk_text=row["chunk_text"],
+                vec_dist=row["vec_dist"],
+                tsv_score=row["tsv_score"],
+                r_vec=row["r_vec"],
+                r_tsv=row["r_tsv"],
+                final_rank=row["final_rank"],
+                source_type=row["source_type"],
+            )
+            for row in rows
+        ]

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
+from ..models.rag import ChunkSearchResult, RelatedDoc
 from ..services.engine_service import get_engine_service
 from .auth import get_current_user
 
@@ -55,7 +55,7 @@ async def find_docs(
     query: str = Query(..., min_length=1),
     top_k: int = Query(5, gt=0),
     current_user: dict = Depends(get_current_user),
-) -> list[dict[str, Any]]:
+) -> list[RelatedDoc]:
     engine = get_engine_service()
     try:
         return await engine.rag_service.find_docs(
@@ -74,7 +74,7 @@ async def search_abstract_in_doc(
     query: str = Query(..., min_length=1),
     top_k: int = Query(5, gt=0),
     current_user: dict = Depends(get_current_user),
-) -> list[dict[str, Any]]:
+) -> list[ChunkSearchResult]:
     engine = get_engine_service()
     try:
         return await engine.rag_service.search_abstract_in_doc(
@@ -93,7 +93,7 @@ async def search_concrete_in_doc(
     top_k: int = Query(5, gt=0),
     tsv_weight: float = Query(1.0, gt=0.0),
     current_user: dict = Depends(get_current_user),
-) -> list[dict[str, Any]]:
+) -> list[ChunkSearchResult]:
     engine = get_engine_service()
     try:
         return await engine.rag_service.search_concrete_in_doc(
