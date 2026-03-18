@@ -1,23 +1,6 @@
 #!/bin/bash
 # Перезапуск RuGPT Engine
 
-# Загружаем .env
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-    set -o allexport
-    # shellcheck source=/dev/null
-    source "$SCRIPT_DIR/.env"
-    set +o allexport
-fi
-
-# Defaults (если .env не задал значения)
-API_HOST="${API_HOST:-localhost}"
-API_PORT="${API_PORT:-8100}"
-DB_HOST="${DB_HOST:-localhost}"
-DB_PORT="${DB_PORT:-5432}"
-DB_NAME="${DB_NAME:-rugpt}"
-DEFAULT_MODEL="${DEFAULT_MODEL:-qwen2.5:7b}"
-
 # Получаем параметр
 SERVICE="$1"
 
@@ -37,6 +20,7 @@ case "$SERVICE" in
 esac
 
 # Переходим в директорию проекта
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # Функция остановки Engine
@@ -47,17 +31,17 @@ stop_engine() {
     screen -S rugpt-engine -X quit 2>/dev/null || true
     sleep 2
 
-    # Останавливаем uvicorn процессы
+    # Останавливаем uvicorn процессы (только свои, не Docker)
     echo "🛑 Останавливаем uvicorn процессы..."
-    pkill -15 -f "uvicorn.*src.engine.app:app" || true
-    pkill -15 -f "python.*src.engine.run" || true
+    pkill -15 -u "$(whoami)" -f "uvicorn.*src.engine.app:app" 2>/dev/null || true
+    pkill -15 -u "$(whoami)" -f "python.*src.engine.run" 2>/dev/null || true
     sleep 2
 
     # Проверяем, остались ли процессы
-    if pgrep -f "uvicorn.*src.engine.app:app\|python.*src.engine.run" > /dev/null; then
+    if pgrep -u "$(whoami)" -f "uvicorn.*src.engine.app:app|python.*src.engine.run" > /dev/null; then
         echo "  ⚠️ Применяем принудительную остановку..."
-        pkill -9 -f "uvicorn.*src.engine.app:app" || true
-        pkill -9 -f "python.*src.engine.run" || true
+        pkill -9 -u "$(whoami)" -f "uvicorn.*src.engine.app:app" 2>/dev/null || true
+        pkill -9 -u "$(whoami)" -f "python.*src.engine.run" 2>/dev/null || true
         sleep 1
     fi
 
@@ -86,9 +70,9 @@ print('✅ Миграции выполнены')
     sleep 5
 
     # Проверяем статус
-    if curl -s "http://${API_HOST}:${API_PORT}/api/v1/health" > /dev/null 2>&1; then
+    if curl -s http://localhost:8100/api/v1/health > /dev/null 2>&1; then
         echo "  ✅ Engine API запущен и отвечает"
-        curl -s "http://${API_HOST}:${API_PORT}/api/v1/health" | python3 -c "
+        curl -s http://localhost:8100/api/v1/health | python3 -c "
 import json,sys
 d = json.load(sys.stdin)
 print(f\"  📊 Статус: {d.get('status', 'unknown')}\")
@@ -110,14 +94,21 @@ show_info() {
     echo "  📱 Список экранов:     screen -ls"
     echo ""
     echo "🌐 Доступные эндпоинты:"
-    echo "  📡 Engine API:         http://${API_HOST}:${API_PORT}"
-    echo "  📖 API документация:   http://${API_HOST}:${API_PORT}/docs"
-    echo "  💚 Health check:       http://${API_HOST}:${API_PORT}/api/v1/health"
+    echo "  📡 Engine API:         http://localhost:8100"
+    echo "  📖 API документация:   http://localhost:8100/docs"
+    echo "  💚 Health check:       http://localhost:8100/api/v1/health"
     echo ""
-    echo "🔧 Конфигурация:"
-    echo "  • PostgreSQL:          ${DB_NAME} (${DB_HOST}:${DB_PORT})"
-    echo "  • LLM:                 Ollama"
-    echo "  • Модель по умолчанию: ${DEFAULT_MODEL}"
+    echo "🔧 Конфигурация (из .env):"
+    if [ -f "$SCRIPT_DIR/.env" ]; then
+        DB_PORT=$(grep -E '^DB_PORT=' "$SCRIPT_DIR/.env" | cut -d= -f2)
+        LLM_URL=$(grep -E '^LLM_BASE_URL=' "$SCRIPT_DIR/.env" | cut -d= -f2)
+        MODEL=$(grep -E '^DEFAULT_MODEL=' "$SCRIPT_DIR/.env" | cut -d= -f2)
+        echo "  * PostgreSQL:          rugpt (localhost:${DB_PORT:-5432})"
+        echo "  * LLM:                 ${LLM_URL:-unknown}"
+        echo "  * Модель по умолчанию: ${MODEL:-unknown}"
+    else
+        echo "  * .env не найден"
+    fi
 }
 
 # Основная логика
