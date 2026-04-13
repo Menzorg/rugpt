@@ -116,9 +116,8 @@
    - Карточка для каждой активной задачи:
      - Название задачи
      - Выпадающий список статусов:
-       - `"Не начата"` (not_started)
+       - `"Создана"` (created)
        - `"В работе"` (in_progress)
-       - `"Заблокирована"` (blocked)
        - `"Готова"` (done)
      - Поле для комментария (опционально)
    - Кнопка `"Отправить опрос"`
@@ -129,8 +128,8 @@
 3. Ответы сохраняются в JSONB-поле `responses`:
    ```json
    [
-     {"task_id": "uuid", "status": "in_progress", "comment": "Работаю над этим"},
-     {"task_id": "uuid", "status": "done", "comment": "Готово"}
+     {"task_id": "uuid", "new_status": "in_progress", "comment": "Работаю над этим"},
+     {"task_id": "uuid", "new_status": "done", "comment": "Готово"}
    ]
    ```
 
@@ -247,7 +246,7 @@ if local_hour in (18, 19, 20):  # вечер
 | assignee_user_id | UUID FK → users | Кого опрашивают |
 | poll_date | DATE | Дата опроса |
 | status | VARCHAR(20) | `pending` / `completed` / `expired` |
-| responses | JSONB | `[{task_id, status, comment}]` |
+| responses | JSONB | `[{task_id, new_status, comment}]` |
 | expires_at | TIMESTAMP WITH TZ | Когда опрос истекает (created_at + 10ч) |
 | created_at, completed_at | TIMESTAMP WITH TZ | |
 
@@ -262,7 +261,7 @@ UNIQUE(assignee_user_id, poll_date) — один опрос в день.
 | generated_for_user_id | UUID FK → users | Руководитель |
 | report_date | DATE | За какую дату |
 | content | TEXT | Текстовый отчёт |
-| task_summaries | JSONB | Структурированные данные по задачам |
+| task_summaries | JSONB | `[{task_id, assignee_user_id, assignee_name, new_status, employee_comment, poll_completed}]` |
 | created_at | TIMESTAMP WITH TZ | |
 
 ---

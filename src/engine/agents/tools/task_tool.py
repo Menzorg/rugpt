@@ -6,10 +6,11 @@ Uses factory function to inject TaskService dependency.
 """
 import asyncio
 import logging
-from typing import Optional
+from typing import Annotated, Optional
 from uuid import UUID
 
-from langchain_core.tools import StructuredTool
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import StructuredTool, InjectedToolArg
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("rugpt.agents.tools.task")
@@ -57,6 +58,7 @@ def create_task_tools(
         assignee_user_id: str,
         description: str = "",
         deadline: str = "",
+        config: Annotated[RunnableConfig, InjectedToolArg] = None,
     ) -> str:
         """Create a task for an employee. Use when a manager assigns work via chat.
         Args:
@@ -68,10 +70,39 @@ def create_task_tools(
         try:
             from datetime import datetime
 
+            # Extract user_id and org_id from RunnableConfig
+            configurable = (config or {}).get("configurable", {})
+            user_id = configurable.get("user_id", "")
+            org_id = configurable.get("org_id", "")
+
             assignee_uuid = UUID(assignee_user_id)
             dl = None
             if deadline:
                 dl = datetime.fromisoformat(deadline)
+
+            # Visibility check: can the caller see the assignee?
+            if user_id and org_id:
+                from ...services.engine_service import get_engine_service
+                engine = get_engine_service()
+                loop_check = asyncio.get_event_loop()
+                if loop_check.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        visible = pool.submit(
+                            lambda: asyncio.run(
+                                engine.department_service.check_visible(
+                                    UUID(user_id), assignee_uuid, UUID(org_id),
+                                )
+                            )
+                        ).result()
+                else:
+                    visible = loop_check.run_until_complete(
+                        engine.department_service.check_visible(
+                            UUID(user_id), assignee_uuid, UUID(org_id),
+                        )
+                    )
+                if not visible:
+                    return "Cannot assign task: user not visible to you."
 
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -106,13 +137,22 @@ def create_task_tools(
             logger.error(f"task_create failed: {e}")
             return f"Failed to create task: {e}"
 
-    def _task_query(assignee_user_id: str = "", status: str = "") -> str:
+    def _task_query(
+        assignee_user_id: str = "",
+        status: str = "",
+        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+    ) -> str:
         """Query tasks. Can filter by employee and/or status.
         Args:
             assignee_user_id: UUID of employee (empty = all in org)
             status: Filter by status (empty = all)
         """
         try:
+            # Extract user_id and org_id from RunnableConfig
+            configurable = (config or {}).get("configurable", {})
+            user_id = configurable.get("user_id", "")
+            org_id = configurable.get("org_id", "")
+
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 logger.info(f"task_query: assignee={assignee_user_id}, status={status}")
@@ -129,6 +169,18 @@ def create_task_tools(
                             status or None,
                         )
                     )
+
+                # Filter tasks by visibility
+                if user_id and org_id:
+                    from ...services.engine_service import get_engine_service
+                    engine = get_engine_service()
+                    visible_ids = loop.run_until_complete(
+                        engine.department_service.get_visible_user_ids(
+                            UUID(user_id), UUID(org_id),
+                        )
+                    )
+                    tasks = [t for t in tasks if t.assignee_user_id in visible_ids]
+
                 if not tasks:
                     return "No tasks found."
                 lines = []

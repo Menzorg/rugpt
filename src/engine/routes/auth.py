@@ -44,6 +44,8 @@ class LoginResponse(BaseModel):
     name: Optional[str] = None
     username: Optional[str] = None
     is_admin: bool = False
+    department_id: Optional[str] = None
+    is_head: bool = False
     device_id: Optional[str] = None
     message: Optional[str] = None
 
@@ -116,6 +118,9 @@ async def get_current_user(
     return {
         "user_id": user_id,
         "org_id": org_id,
+        "is_admin": user.is_admin,
+        "department_id": user.department_id,
+        "is_head": user.is_head,
     }
 
 # ============================================
@@ -174,6 +179,8 @@ async def login(request: LoginRequest):
         name=user.name,
         username=user.username,
         is_admin=user.is_admin,
+        department_id=str(user.department_id) if user.department_id else None,
+        is_head=user.is_head,
         device_id=device_id,
     )
 

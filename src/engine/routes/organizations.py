@@ -7,7 +7,7 @@ import logging
 from typing import Optional, List
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from pydantic import BaseModel
 
 from ..services.engine_service import get_engine_service
@@ -36,6 +36,7 @@ class UpdateOrgRequest(BaseModel):
     slug: Optional[str] = None
     description: Optional[str] = None
     timezone: Optional[str] = None
+    org_context: Optional[str] = None
 
 
 class OrgResponse(BaseModel):
@@ -45,6 +46,7 @@ class OrgResponse(BaseModel):
     slug: str
     description: Optional[str]
     timezone: str
+    org_context: Optional[str] = None
     is_active: bool
     created_at: str
     updated_at: str
@@ -151,6 +153,7 @@ async def update_organization(
             slug=request.slug,
             description=request.description,
             timezone=request.timezone,
+            org_context=request.org_context,
         )
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
@@ -184,3 +187,43 @@ async def deactivate_organization(
         raise HTTPException(status_code=404, detail="Organization not found")
 
     return {"success": True, "message": "Organization deactivated"}
+
+
+@router.post("/{org_id}/context/upload")
+async def upload_org_context(
+    org_id: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Upload a file, extract text with Tika, save as org_context."""
+    if not current_user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    engine = get_engine_service()
+    org = await engine.org_storage.get_by_id(UUID(org_id))
+    if not org or org.id != current_user["org_id"]:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    from tika import parser as tika_parser
+    from ..config import Config
+    parsed = tika_parser.from_buffer(data, serverEndpoint=Config.RAG_TIKA_SERVER_ENDPOINT)
+    content = ""
+    if isinstance(parsed, dict):
+        content = parsed.get("content", "") or ""
+    elif isinstance(parsed, tuple) and len(parsed) >= 2:
+        payload = parsed[1]
+        if isinstance(payload, dict):
+            content = payload.get("content", "") or ""
+    content = content.strip()
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Could not extract text from file")
+
+    org.org_context = content
+    await engine.org_storage.update(org)
+
+    return {"status": "ok", "org_context_length": len(content)}

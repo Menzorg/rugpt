@@ -76,7 +76,13 @@ class AgentExecutor:
             AgentResult with response
         """
         model = role.model_name or self.default_model
-        system_prompt = self.prompt_cache.get_prompt(role)
+
+        # Fetch org_context for injection into system prompt
+        from ..services.engine_service import get_engine_service
+        engine = get_engine_service()
+        org = await engine.org_storage.get_by_id(role.org_id)
+        org_context = org.org_context if org else ""
+        system_prompt = self.prompt_cache.get_prompt(role, org_context=org_context)
         tools = self.tool_registry.resolve(role.tools) if role.tools else []
         llm = self._create_llm(model, temperature)
 

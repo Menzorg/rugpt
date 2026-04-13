@@ -56,8 +56,12 @@ class UserStorage(BaseStorage):
     async def get_by_id(user_id: UUID) -> User?
     async def get_by_email(email: str) -> User?
     async def get_by_username(username: str, org_id: UUID) -> User?
+    async def get_system_users() -> List[User]
+    async def get_system_user_by_username(username: str) -> User?
+    async def get_system_user_by_model(model_code: str) -> User?
     async def list_by_org(org_id: UUID, active_only: bool) -> List[User]
     async def list_by_role(role_id: UUID) -> List[User]
+    async def list_admins_by_org(org_id: UUID) -> List[User]
     async def update(user: User) -> User
     async def update_last_seen(user_id: UUID) -> None
     async def assign_role(user_id: UUID, role_id?: UUID) -> bool
@@ -84,8 +88,7 @@ class RoleStorage(BaseStorage):
 ```
 
 **Особенности:**
-- Обрабатывает новые колонки: `agent_type`, `agent_config` (JSONB), `tools` (JSONB), `prompt_file`
-- JSONB поля парсятся при чтении из БД
+- `agent_config` (JSONB) и `tools` (JSONB) парсятся при чтении из БД
 
 ---
 
@@ -97,7 +100,6 @@ class RoleStorage(BaseStorage):
 class ChatStorage(BaseStorage):
     async def create(chat: Chat) -> Chat
     async def get_by_id(chat_id: UUID) -> Chat?
-    async def get_main_chat(user_id: UUID) -> Chat?
     async def get_direct_chat(user1_id: UUID, user2_id: UUID) -> Chat?
     async def list_by_user(user_id: UUID, active_only: bool) -> List[Chat]
     async def list_by_org(org_id: UUID, active_only: bool) -> List[Chat]
@@ -122,21 +124,20 @@ class ChatStorage(BaseStorage):
 class MessageStorage(BaseStorage):
     async def create(message: Message) -> Message
     async def get_by_id(message_id: UUID) -> Message?
-    async def list_by_chat(chat_id, limit=50, offset=0, include_deleted=False) -> List[Message]
-    async def list_after(chat_id, after_id, limit=50) -> List[Message]
-    async def list_before(chat_id, before_id, limit=50) -> List[Message]
-    async def update(message: Message) -> Message
-    async def validate_ai_response(message_id: UUID, validated: bool) -> bool
-    async def edit_content(message_id: UUID, new_content: str, user_id: UUID) -> bool
+    async def list_by_chat(chat_id, limit=50, before_id=None) -> List[Message]
+    async def validate(message_id: UUID, edited_content: str? = None) -> Message?
+    async def reject(message_id: UUID) -> Message?
+    async def list_pending_review(user_id: UUID) -> List[Message]
     async def delete(message_id: UUID) -> bool
-    async def count_by_chat(chat_id, include_deleted=False) -> int
-    async def get_unvalidated_ai_messages(user_id, limit=10) -> List[Message]
+    async def count_by_chat(chat_id: UUID) -> int
 ```
 
 **Особенности:**
 - `mentions` хранится как JSONB
-- Пагинация через limit/offset и cursor (after_id/before_id)
-- Сортировка по created_at DESC
+- Пагинация через cursor (`before_id`)
+- `list_by_chat` возвращает сообщения в хронологическом порядке (ASC)
+- `validate()` ставит `ai_is_valid=true`, опционально обновляет content
+- `reject()` ставит `ai_is_valid=false`
 
 ---
 
@@ -155,10 +156,6 @@ class CalendarStorage(BaseStorage):
     async def deactivate(event_id: UUID) -> bool
 ```
 
-**Особенности:**
-- `get_due_events()` — выбирает события с `next_trigger_at <= now AND is_active = true`
-- `metadata` хранится как JSONB
-
 ---
 
 ## NotificationChannelStorage
@@ -174,11 +171,6 @@ class NotificationChannelStorage(BaseStorage):
     async def delete_by_user_and_type(user_id: UUID, channel_type: str) -> bool
 ```
 
-**Особенности:**
-- `list_by_user()` сортирует по priority DESC (высший приоритет первым)
-- UNIQUE(user_id, channel_type) — один канал каждого типа на пользователя
-- `config` хранится как JSONB
-
 ---
 
 ## NotificationLogStorage
@@ -189,27 +181,176 @@ class NotificationChannelStorage(BaseStorage):
 class NotificationLogStorage(BaseStorage):
     async def create(log_entry: NotificationLog) -> NotificationLog
     async def update_status(log_id: UUID, status: str, attempts: int, error_message?: str) -> NotificationLog?
-    async def list_by_user(user_id: UUID, limit: int) -> List[NotificationLog]
+    async def list_by_user(user_id: UUID, limit=50) -> List[NotificationLog]
     async def list_by_event(event_id: UUID) -> List[NotificationLog]
+```
+
+---
+
+## TaskStorage
+
+**Файл:** `src/engine/storage/task_storage.py`
+
+```python
+class TaskStorage(BaseStorage):
+    async def create(task: Task) -> Task
+    async def get_by_id(task_id: UUID) -> Task?
+    async def list_by_org(org_id, status?, assignee_user_id?) -> List[Task]
+    async def list_active_for_polls(assignee_user_id: UUID) -> List[Task]  # status != 'done'
+    async def update(task: Task) -> Task
+    async def deactivate(task_id: UUID) -> bool
+```
+
+---
+
+## TaskPollStorage
+
+**Файл:** `src/engine/storage/task_poll_storage.py`
+
+```python
+class TaskPollStorage(BaseStorage):
+    async def create(poll: TaskPoll) -> TaskPoll
+    async def get_by_id(poll_id: UUID) -> TaskPoll?
+    async def get_today(user_id: UUID, poll_date: date) -> TaskPoll?
+    async def list_by_user(user_id: UUID, limit: int) -> List[TaskPoll]
+    async def update(poll: TaskPoll) -> TaskPoll
+```
+
+---
+
+## TaskReportStorage
+
+**Файл:** `src/engine/storage/task_report_storage.py`
+
+```python
+class TaskReportStorage(BaseStorage):
+    async def create(report: TaskReport) -> TaskReport
+    async def get_by_id(report_id: UUID) -> TaskReport?
+    async def list_by_user(user_id: UUID, limit: int) -> List[TaskReport]
+```
+
+---
+
+## InAppNotificationStorage
+
+**Файл:** `src/engine/storage/in_app_notification_storage.py`
+
+```python
+class InAppNotificationStorage(BaseStorage):
+    async def create(notification: InAppNotification) -> InAppNotification
+    async def list_by_user(user_id: UUID, limit: int) -> List[InAppNotification]
+    async def get_unread_count(user_id: UUID) -> int
+    async def mark_read(notification_id: UUID) -> bool
+    async def mark_all_read(user_id: UUID) -> int
+```
+
+---
+
+## UserFileStorage
+
+**Файл:** `src/engine/storage/user_file_storage.py`
+
+```python
+class UserFileStorage(BaseStorage):
+    async def create(file: UserFile) -> UserFile
+    async def get_by_id(file_id: UUID) -> UserFile?
+    async def list_by_user(user_id: UUID) -> List[UserFile]
+    async def list_by_org(org_id: UUID) -> List[UserFile]
+    async def find_duplicate(user_id: UUID, content_hash: str) -> UserFile?
+    async def change_rag_status(file_id: UUID, status: str) -> None
+    async def change_public(file_id: UUID, is_public: bool) -> UserFile?
+    async def deactivate(file_id: UUID) -> bool
+```
+
+---
+
+## CorrectionRuleStorage
+
+**Файл:** `src/engine/storage/correction_rule_storage.py`
+
+```python
+class CorrectionRuleStorage(BaseStorage):
+    async def create(rule: CorrectionRule) -> CorrectionRule
+    async def get_rules_for_role(role_id: UUID) -> List[CorrectionRule]
+    async def update_rule_text(rule_id: UUID, rule_text: str) -> None
+```
+
+---
+
+## DeviceStorage
+
+**Файл:** `src/engine/storage/device_storage.py`
+
+```python
+class DeviceStorage(BaseStorage):
+    async def create(user_id, device_name, public_key_pem) -> dict
+    async def list_by_user(user_id: UUID) -> List[dict]
+    async def get_by_id(device_id: UUID) -> dict?
+```
+
+---
+
+## RAG_store
+
+**Файл:** `src/engine/storage/rag_store.py`
+
+Отдельный storage для RAG-данных. Подробнее см. `docs/rag-info.md`.
+
+```python
+class RAG_store(BaseStorage):
+    def __init__(self, dsn: str, vector_dim: int)
+
+    async def update_user_file_rag_data(file_id, summary, summary_embedding) -> None
+    async def insert_document_with_chunks(file_id, doc_title, summary, summary_embedding,
+                                           org_id, user_id, chunks, chunk_embeddings) -> None
+    async def insert_table_document_with_rows(file_id, doc_title, summary, summary_embedding,
+                                               org_id, user_id, rows_text, row_embeddings) -> None
+    async def delete_document(file_id) -> bool
+    async def call_search_related_docs(org_id, user_id, query, query_embedding, top_k) -> List[RelatedDoc]
+    async def call_search_abstract_chunks(file_id, query, query_embedding, top_k) -> List[ChunkSearchResult]
+    async def call_search_concrete_chunks(file_id, query, query_embedding, top_k, tsv_weight) -> List[ChunkSearchResult]
+```
+
+---
+
+## StorageAdapter
+
+**Файл:** `src/engine/storage/storage_adapter.py`
+
+Абстракция для бинарного хранения файлов (не PostgreSQL).
+
+```python
+class StorageAdapter(ABC):
+    async def save(key: str, data: bytes, content_type: str) -> None
+    async def read(key: str) -> bytes
+    async def delete(key: str) -> None
+    async def exists(key: str) -> bool
+
+class LocalStorageAdapter(StorageAdapter):
+    def __init__(self, base_dir: str)
+    # Хранит файлы на локальной ФС
 ```
 
 ---
 
 ## Схема базы данных
 
+Основные таблицы (миграция 001 + последующие):
+
 ```sql
--- Организации
+-- Организации (+ 014: timezone)
 CREATE TABLE organizations (
     id UUID PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     slug VARCHAR(100) NOT NULL UNIQUE,
     description TEXT,
+    timezone VARCHAR(64) DEFAULT 'Europe/Moscow',  -- IANA timezone
     is_active BOOLEAN DEFAULT true,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Роли (AI-агенты)
+-- Роли (AI-агенты) (001 + 002)
 CREATE TABLE roles (
     id UUID PRIMARY KEY,
     org_id UUID REFERENCES organizations(id),
@@ -224,12 +365,12 @@ CREATE TABLE roles (
     tools JSONB DEFAULT '[]',
     prompt_file VARCHAR(255),
     is_active BOOLEAN DEFAULT true,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(org_id, code)
 );
 
--- Пользователи
+-- Пользователи (001 + 003: is_system)
 CREATE TABLE users (
     id UUID PRIMARY KEY,
     org_id UUID REFERENCES organizations(id),
@@ -239,29 +380,16 @@ CREATE TABLE users (
     password_hash VARCHAR(255),
     role_id UUID REFERENCES roles(id),
     is_admin BOOLEAN DEFAULT false,
+    is_system BOOLEAN DEFAULT false,
     is_active BOOLEAN DEFAULT true,
     avatar_url TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    last_seen_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ,
     UNIQUE(org_id, username)
 );
 
--- Чаты
-CREATE TABLE chats (
-    id UUID PRIMARY KEY,
-    org_id UUID REFERENCES organizations(id),
-    type VARCHAR(20) DEFAULT 'main',
-    name VARCHAR(255),
-    participants TEXT[] DEFAULT '{}',
-    created_by UUID REFERENCES users(id),
-    is_active BOOLEAN DEFAULT true,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    last_message_at TIMESTAMP WITH TIME ZONE
-);
-
--- Сообщения
+-- Сообщения (001 + 010: ai_is_valid)
 CREATE TABLE messages (
     id UUID PRIMARY KEY,
     chat_id UUID REFERENCES chats(id),
@@ -270,106 +398,162 @@ CREATE TABLE messages (
     content TEXT NOT NULL,
     mentions JSONB,
     reply_to_id UUID REFERENCES messages(id),
-    ai_validated BOOLEAN DEFAULT false,
+    ai_is_valid BOOLEAN,            -- NULL=pending, true=approved, false=rejected
     ai_edited BOOLEAN DEFAULT false,
     is_deleted BOOLEAN DEFAULT false,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Календарные события
-CREATE TABLE calendar_events (
+-- Задачи (005)
+CREATE TABLE tasks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    role_id UUID NOT NULL REFERENCES roles(id),
     org_id UUID NOT NULL REFERENCES organizations(id),
     title VARCHAR(500) NOT NULL,
     description TEXT,
-    event_type VARCHAR(20) NOT NULL DEFAULT 'one_time',
-    scheduled_at TIMESTAMP WITH TIME ZONE,
-    cron_expression VARCHAR(100),
-    next_trigger_at TIMESTAMP WITH TIME ZONE,
-    last_triggered_at TIMESTAMP WITH TIME ZONE,
-    trigger_count INTEGER DEFAULT 0,
-    source_chat_id UUID,
-    source_message_id UUID,
-    metadata JSONB DEFAULT '{}',
-    created_by_user_id UUID,
+    status VARCHAR(20) NOT NULL DEFAULT 'created',
+    assignee_user_id UUID NOT NULL REFERENCES users(id),
+    deadline TIMESTAMPTZ,
     is_active BOOLEAN DEFAULT true,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Каналы уведомлений
-CREATE TABLE notification_channels (
+-- Утренние опросы (006)
+CREATE TABLE task_polls (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(id),
+    assignee_user_id UUID NOT NULL REFERENCES users(id),
+    poll_date DATE NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    responses JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
+    UNIQUE(assignee_user_id, poll_date)
+);
+
+-- Вечерние отчёты (007)
+CREATE TABLE task_reports (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(id),
+    generated_for_user_id UUID NOT NULL REFERENCES users(id),
+    report_date DATE NOT NULL,
+    content TEXT NOT NULL,
+    task_summaries JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- In-app уведомления (008)
+CREATE TABLE in_app_notifications (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id),
     org_id UUID NOT NULL REFERENCES organizations(id),
-    channel_type VARCHAR(20) NOT NULL,
-    config JSONB DEFAULT '{}',
-    is_enabled BOOLEAN DEFAULT true,
-    is_verified BOOLEAN DEFAULT false,
-    priority INTEGER DEFAULT 0,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE(user_id, channel_type)
+    type VARCHAR(50) NOT NULL,
+    title VARCHAR(500) NOT NULL,
+    content TEXT,
+    reference_type VARCHAR(50),
+    reference_id UUID,
+    is_read BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Лог уведомлений
-CREATE TABLE notification_log (
+-- Файлы (009 + 012: RAG-поля)
+CREATE TABLE user_files (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL,
-    channel_type VARCHAR(20) NOT NULL,
-    event_id UUID,
-    role_id UUID,
-    content TEXT,
-    status VARCHAR(20) DEFAULT 'pending',
-    attempts INTEGER DEFAULT 0,
-    error_message TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    user_id UUID NOT NULL REFERENCES users(id),
+    org_id UUID NOT NULL REFERENCES organizations(id),
+    uploaded_by_user_id UUID NOT NULL REFERENCES users(id),
+    storage_key VARCHAR(500) NOT NULL,
+    original_filename VARCHAR(500) NOT NULL,
+    file_type VARCHAR(20),
+    file_size BIGINT,
+    content_hash TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    summary_embedding vector(1024),
+    is_table BOOLEAN NOT NULL DEFAULT false,
+    is_public BOOLEAN NOT NULL DEFAULT false,
+    rag_status VARCHAR(20) DEFAULT 'pending',
+    rag_error TEXT,
+    indexed_at TIMESTAMPTZ,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    tsv tsvector GENERATED ALWAYS AS (...) STORED
+);
+
+-- Правила коррекции AI (010)
+CREATE TABLE correction_rules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    role_id UUID NOT NULL REFERENCES roles(id),
+    org_id UUID NOT NULL REFERENCES organizations(id),
+    original_message_id UUID NOT NULL,
+    ai_message_id UUID NOT NULL,
+    chat_id UUID NOT NULL,
+    user_question TEXT NOT NULL,
+    ai_answer TEXT NOT NULL,
+    correction_text TEXT NOT NULL,
+    rule_text TEXT NOT NULL DEFAULT '',
+    created_by_user_id UUID NOT NULL REFERENCES users(id),
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Устройства (011)
+CREATE TABLE user_devices (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    device_name VARCHAR(255),
+    public_key_pem TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- RAG: чанки (012)
+CREATE TABLE chunks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    file_id UUID NOT NULL REFERENCES user_files(id) ON DELETE CASCADE,
+    chunk_text TEXT NOT NULL,
+    embedding vector(1024) NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    chunk_index INTEGER,
+    tsv tsvector GENERATED ALWAYS AS (...) STORED
+);
+
+-- RAG: строки таблиц (012)
+CREATE TABLE tables_rows_chunks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    file_id UUID NOT NULL REFERENCES user_files(id) ON DELETE CASCADE,
+    table_chunk_id UUID REFERENCES chunks(id) ON DELETE SET NULL,
+    row_index INTEGER NOT NULL,
+    row_text TEXT NOT NULL,
+    embedding vector(1024) NOT NULL,
+    tsv tsvector GENERATED ALWAYS AS (...) STORED,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(file_id, table_chunk_id, row_index)
 );
 ```
+
+Также: таблицы `chats`, `calendar_events`, `notification_channels`, `notification_log` (без изменений с миграции 001).
 
 ---
 
-## Индексы
+## Миграции
 
-```sql
--- Organizations
-CREATE INDEX idx_organizations_slug ON organizations(slug);
-CREATE INDEX idx_organizations_active ON organizations(is_active) WHERE is_active = true;
-
--- Roles
-CREATE INDEX idx_roles_org ON roles(org_id);
-CREATE INDEX idx_roles_code ON roles(org_id, code);
-
--- Users
-CREATE INDEX idx_users_org ON users(org_id);
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_username ON users(org_id, username);
-CREATE INDEX idx_users_role ON users(role_id);
-
--- Chats
-CREATE INDEX idx_chats_org ON chats(org_id);
-CREATE INDEX idx_chats_participants ON chats USING GIN(participants);
-CREATE INDEX idx_chats_last_message ON chats(last_message_at DESC NULLS LAST);
-
--- Messages
-CREATE INDEX idx_messages_chat ON messages(chat_id);
-CREATE INDEX idx_messages_created ON messages(chat_id, created_at DESC);
-CREATE INDEX idx_messages_ai_pending ON messages(sender_id, ai_validated)
-    WHERE sender_type = 'ai_role' AND ai_validated = false;
-
--- Calendar Events
-CREATE INDEX idx_calendar_events_role ON calendar_events(role_id);
-CREATE INDEX idx_calendar_events_org ON calendar_events(org_id);
-CREATE INDEX idx_calendar_events_due ON calendar_events(next_trigger_at)
-    WHERE is_active = true AND next_trigger_at IS NOT NULL;
-
--- Notification Channels
-CREATE INDEX idx_notification_channels_user ON notification_channels(user_id);
-
--- Notification Log
-CREATE INDEX idx_notification_log_user ON notification_log(user_id, created_at DESC);
-CREATE INDEX idx_notification_log_event ON notification_log(event_id);
-```
+| # | Файл | Описание |
+|---|------|----------|
+| 001 | initial.sql | organizations, users, roles, chats, messages, calendar_events, notification_channels, notification_log |
+| 002 | role_evolution.sql | agent_type, agent_config, tools, prompt_file на roles |
+| 003 | system_user.sql | is_system на users, системные AI-пользователи |
+| 004 | mirror_user.sql | Mirror user support |
+| 005 | tasks.sql | tasks |
+| 006 | task_polls.sql | task_polls |
+| 007 | task_reports.sql | task_reports |
+| 008 | in_app_notifications.sql | in_app_notifications |
+| 009 | user_files.sql | user_files |
+| 010 | correction_rules.sql | correction_rules, ai_validated -> ai_is_valid |
+| 011 | user_devices.sql | user_devices (Zero Trust) |
+| 012 | rag_schema.sql | pgvector, chunks, tables_rows_chunks, RAG-поля в user_files |
+| 013 | rag_functions.sql | SQL-функции гибридного поиска (7 функций) |
+| 014 | org_timezone.sql | timezone в organizations |

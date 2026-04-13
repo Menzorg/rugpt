@@ -49,7 +49,8 @@ class MentionService:
     async def resolve_mentions(
         self,
         content: str,
-        org_id: UUID
+        org_id: UUID,
+        sender_id: UUID = None
     ) -> List[Mention]:
         """
         Parse and resolve mentions to user IDs.
@@ -68,6 +69,15 @@ class MentionService:
                 user = await self.user_storage.get_system_user_by_username(username)
 
             if user:
+                # Check visibility if sender_id provided
+                if sender_id:
+                    from .engine_service import get_engine_service
+                    engine = get_engine_service()
+                    visible = await engine.department_service.check_visible(sender_id, user.id, org_id)
+                    if not visible:
+                        logger.warning(f"Mention @{username} skipped: not visible to sender {sender_id}")
+                        continue
+
                 mentions.append(Mention(
                     type=mention_type,
                     user_id=user.id,

@@ -20,13 +20,22 @@ WebClient ───────────────────────�
                                          └────────────────────┘
                                                   │
                                                   ▼
-                                         ┌─── FastAPI (:8100) ┐
-                                         │  /api/v1/auth/*    │
-                                         │  /api/v1/users/*   │
-                                         │  /api/v1/roles/*   │
-                                         │  /api/v1/chats/*   │
-                                         │  /api/v1/health    │
-                                         └────────────────────┘
+                                         +--- FastAPI (:8100) -----------+
+                                         |  /api/v1/health               |
+                                         |  /api/v1/auth/*               |
+                                         |  /api/v1/organizations/*      |
+                                         |  /api/v1/users/*              |
+                                         |  /api/v1/roles/*              |
+                                         |  /api/v1/chats/*              |
+                                         |  /api/v1/calendar/*           |
+                                         |  /api/v1/notifications/*      |
+                                         |  /api/v1/in-app-notifications/*|
+                                         |  /api/v1/tasks/*              |
+                                         |  /api/v1/task-polls/*         |
+                                         |  /api/v1/task-reports/*       |
+                                         |  /api/v1/files/*              |
+                                         |  /api/v1/rag/*                |
+                                         +-------------------------------+
 ```
 
 ## VPN-сеть
@@ -79,13 +88,22 @@ server {
 
 WebClient отправляет на `/api/v1/web/*`, Nginx перенаправляет на `/api/v1/*`:
 
-| WebClient запрос | Nginx rewrite | FastAPI обработка |
-|------------------|---------------|-------------------|
+| WebClient запрос | Nginx rewrite | FastAPI роутер |
+|------------------|---------------|----------------|
 | `POST /api/v1/web/auth/login` | `/api/v1/auth/login` | `auth.py` |
+| `GET /api/v1/web/organizations` | `/api/v1/organizations` | `organizations.py` |
 | `GET /api/v1/web/users` | `/api/v1/users` | `users.py` |
 | `GET /api/v1/web/roles` | `/api/v1/roles` | `roles.py` |
 | `GET /api/v1/web/chats/my` | `/api/v1/chats/my` | `chats.py` |
 | `POST /api/v1/web/chats/{id}/messages` | `/api/v1/chats/{id}/messages` | `chats.py` |
+| `GET /api/v1/web/calendar/events` | `/api/v1/calendar/events` | `calendar.py` |
+| `GET /api/v1/web/notifications/channels` | `/api/v1/notifications/channels` | `notifications.py` |
+| `GET /api/v1/web/in-app-notifications` | `/api/v1/in-app-notifications` | `in_app_notifications.py` |
+| `GET /api/v1/web/tasks` | `/api/v1/tasks` | `tasks.py` |
+| `GET /api/v1/web/task-polls/today` | `/api/v1/task-polls/today` | `task_polls.py` |
+| `GET /api/v1/web/task-reports` | `/api/v1/task-reports` | `task_reports.py` |
+| `POST /api/v1/web/files/upload` | `/api/v1/files/upload` | `files.py` |
+| `GET /api/v1/web/rag/docs/find` | `/api/v1/rag/docs/find` | `rag.py` |
 | `GET /api/v1/web/health` | `/api/v1/health` | `health.py` |
 
 ## FastAPI
@@ -103,3 +121,6 @@ API_PORT=8100
 - Nginx **отсекает** всё кроме `/api/v1/web/*`
 - FastAPI слушает **только localhost** (`127.0.0.1`)
 - VPN трафик шифрован (WireGuard)
+- CORS: `allow_origins=["*"]` в app.py (для dev)
+
+**Замечание:** Telegram webhook (`POST /api/v1/notifications/telegram/webhook`) должен быть доступен серверам Telegram. Если Engine только за VPN, нужен отдельный маршрут для webhook (через VPS или отдельный proxy).

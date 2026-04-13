@@ -104,6 +104,12 @@ async def create_direct_chat(
     engine: EngineService = Depends(get_engine)
 ):
     """Create direct chat with another user"""
+    # Visibility check
+    if not await engine.department_service.check_visible(
+        user_id, request.other_user_id, org_id,
+    ):
+        raise HTTPException(status_code=403, detail="User not visible")
+
     chat = await engine.chat_service.create_direct_chat(
         user_id, request.other_user_id, org_id
     )
@@ -118,6 +124,14 @@ async def create_group_chat(
     engine: EngineService = Depends(get_engine)
 ):
     """Create group chat"""
+    # Visibility check for all participants
+    visible_ids = await engine.department_service.get_visible_user_ids(
+        user_id, org_id,
+    )
+    for pid in request.participant_ids:
+        if pid not in visible_ids:
+            raise HTTPException(status_code=403, detail=f"User {pid} not visible")
+
     participants = [user_id] + request.participant_ids
     chat = await engine.chat_service.create_group_chat(
         request.name, participants, user_id, org_id
@@ -141,9 +155,17 @@ async def get_chat(
 async def add_participant(
     chat_id: UUID,
     participant_id: UUID,
+    user_id: UUID,  # In real app, get from JWT
+    org_id: UUID,
     engine: EngineService = Depends(get_engine)
 ):
     """Add participant to chat"""
+    # Visibility check
+    if not await engine.department_service.check_visible(
+        user_id, participant_id, org_id,
+    ):
+        raise HTTPException(status_code=403, detail="User not visible")
+
     success = await engine.chat_service.add_participant(chat_id, participant_id)
     if not success:
         raise HTTPException(status_code=400, detail="Could not add participant")
@@ -205,7 +227,7 @@ async def send_message(
 ):
     """Send message to chat"""
     # Parse mentions
-    mentions = await engine.mention_service.resolve_mentions(request.content, org_id)
+    mentions = await engine.mention_service.resolve_mentions(request.content, org_id, sender_id=user_id)
 
     # Send user message
     message = await engine.chat_service.send_message(

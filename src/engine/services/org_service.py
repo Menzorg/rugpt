@@ -83,6 +83,7 @@ class OrgService:
         slug: Optional[str] = None,
         description: Optional[str] = None,
         timezone: Optional[str] = None,
+        org_context: Optional[str] = None,
     ) -> Optional[Organization]:
         """
         Update organization.
@@ -115,6 +116,9 @@ class OrgService:
 
         if timezone is not None:
             org.timezone = timezone
+
+        if org_context is not None:
+            org.org_context = org_context
 
         updated = await self.storage.update(org)
         logger.info(f"Updated organization: {updated.name}")

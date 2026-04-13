@@ -23,6 +23,7 @@ from ..storage.task_report_storage import TaskReportStorage
 from ..storage.user_file_storage import UserFileStorage
 from ..storage.correction_rule_storage import CorrectionRuleStorage
 from ..storage.device_storage import DeviceStorage
+from ..storage.department_storage import DepartmentStorage
 from ..storage.storage_adapter import LocalStorageAdapter
 from .chat_service import ChatService
 from .mention_service import MentionService
@@ -37,6 +38,7 @@ from .task_poll_service import TaskPollService
 from .task_report_service import TaskReportService
 from .file_service import FileService
 from .correction_rule_service import CorrectionRuleService
+from .department_service import DepartmentService
 from .rag_service import RAGService
 from ..storage.rag_store import RAG_store
 from ..notifications.telegram_sender import TelegramSender
@@ -79,6 +81,7 @@ class EngineService:
         self.user_file_storage = UserFileStorage(self.postgres_dsn)
         self.correction_rule_storage = CorrectionRuleStorage(self.postgres_dsn)
         self.device_storage = DeviceStorage(self.postgres_dsn)
+        self.department_storage = DepartmentStorage(self.postgres_dsn)
 
         # Initialize LLM provider (kept for health checks / model listing)
         self.llm_provider = OllamaProvider()
@@ -89,6 +92,9 @@ class EngineService:
 
         # Initialize calendar service
         self.calendar_service = CalendarService(self.calendar_storage)
+
+        # Initialize department service
+        self.department_service = DepartmentService(self.department_storage, self.user_storage)
 
         # Initialize in-app notification service
         self.in_app_notification_service = InAppNotificationService(self.in_app_notification_storage)
@@ -260,6 +266,7 @@ class EngineService:
         await self.user_file_storage.init()
         await self.correction_rule_storage.init()
         await self.device_storage.init()
+        await self.department_storage.init()
 
         await self.rag_store.init()
 
@@ -292,6 +299,7 @@ class EngineService:
         await self.user_file_storage.close()
         await self.correction_rule_storage.close()
         await self.device_storage.close()
+        await self.department_storage.close()
         await self.rag_store.close()
         await self.scheduler_service.stop()
         await self.notification_service.close()

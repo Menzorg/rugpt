@@ -1,12 +1,13 @@
 # Отчёт по альфа-фичам RuGPT
 
 Дата: 2026-03-09
+Обновлено: 2026-04-09
 
 ---
 
 ## 1. Задачи (Tasks + Polls + Reports)
 
-**Статус: ~90% engine, 100% webclient**
+**Статус: 100% engine, 100% webclient**
 
 ### Модель данных
 
@@ -54,9 +55,9 @@
 
 ### Не сделано
 
-- Scheduler jobs (`_morning_poll_job`, `_evening_report_job`) **не подключены** в SchedulerService
-- AI-генерация текста отчётов — заглушка (plain text вместо LLM)
-- Конфиги `TASK_MORNING_POLL_CRON`, `TASK_EVENING_REPORT_CRON`, `TASK_POLL_EXPIRE_HOURS` не в .env
+- ~~Scheduler jobs не подключены~~ -- **ИСПРАВЛЕНО**: `_run_morning_polls_for_org()` и `_run_evening_reports_for_org()` работают в `_process_task_jobs()` с per-org timezone
+- AI-генерация текста отчётов -- plain text (не через LLM)
+- ~~Конфиги не в .env~~ -- используются morning_hours/evening_hours в конструкторе SchedulerService (не cron)
 
 ---
 
@@ -109,7 +110,7 @@
 
 ## 3. Загрузка файлов (Files)
 
-**Статус: полностью реализовано (без RAG)**
+**Статус: полностью реализовано (RAG реализован)**
 
 ### Модель данных
 
@@ -143,9 +144,10 @@
 
 ### Не сделано
 
-- MinIO / S3 интеграция (S3StorageAdapter)
-- RAG-индексация (`rag_search` — stub, `list_pending_indexing()` готов)
-- Presigned URLs для прямого скачивания
+- ~~RAG-индексация~~ -- **РЕАЛИЗОВАНО**: полный RAG pipeline (Tika + pgvector + hybrid search). См. `docs/rag-info.md`
+- ~~`rag_search` stub~~ -- **РЕАЛИЗОВАНО**: двухуровневый гибридный поиск (docs -> chunks)
+- S3 интеграция (S3StorageAdapter) -- не реализована, используется LocalStorageAdapter
+- Presigned URLs для прямого скачивания -- не реализовано
 
 ---
 
@@ -217,7 +219,13 @@ ai_is_valid = NULL (pending)
 
 | Фича | Engine | WebClient Backend | WebClient Frontend | Блокеры |
 |-------|--------|-------------------|-------------------|---------|
-| Задачи | 90% | 100% | 100% | Scheduler jobs не подключены |
+| Задачи | 100% | 100% | 100% | AI-генерация текста отчётов (plain text) |
 | Колокольчик | 100% | 100% | 100% | Нет WebSocket push, нет навигации по клику |
-| Файлы | 100% | 100% | 100% | RAG-индексация не реализована |
+| Файлы + RAG | 100% | 100% | 100% | S3 не реализован (local storage) |
 | Упоминания/Коррекция | 100% | 100% | 100% | RAG для правил не подключён |
+
+### Реализовано вне отчёта
+
+- **Zero Trust / устройства** -- миграция 011, CryptoService (ECDSA P-256), DeviceStorage
+- **Organization timezone** -- миграция 014, per-org timezone в SchedulerService
+- **RAG pipeline** -- миграции 012-013, RAGService, IngestQueue, rag_search tool, 7 SQL-функций

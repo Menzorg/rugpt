@@ -30,6 +30,7 @@ class CreateUserRequest(BaseModel):
     password: str
     is_admin: bool = False
     role_id: Optional[str] = None
+    department_id: Optional[str] = None
 
 
 class UpdateUserRequest(BaseModel):
@@ -40,6 +41,7 @@ class UpdateUserRequest(BaseModel):
     avatar_url: Optional[str] = None
     is_admin: Optional[bool] = None
     role_id: Optional[str] = None  # Assign/unassign role
+    department_id: Optional[str] = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -64,6 +66,8 @@ class UserResponse(BaseModel):
     role_name: Optional[str] = None  # Name of assigned role
     is_admin: bool
     is_system: bool = False  # Is system user (AI assistant for admins)
+    department_id: Optional[str] = None
+    is_head: bool = False
     is_active: bool
     avatar_url: Optional[str]
     created_at: str
@@ -115,6 +119,12 @@ async def list_users(current_user: dict = Depends(get_current_user)):
 
     users = await users_service.list_users(current_user["org_id"])
 
+    # Filter by visibility
+    visible_ids = await engine.department_service.get_visible_user_ids(
+        current_user["user_id"], current_user["org_id"],
+    )
+    users = [u for u in users if u.id in visible_ids]
+
     # Build role_id -> role_name mapping
     role_ids = {u.role_id for u in users if u.role_id}
     role_names = {}
@@ -153,6 +163,7 @@ async def create_user(
     users_service = UsersService(engine.user_storage)
 
     role_id = UUID(request.role_id) if request.role_id else None
+    department_id = UUID(request.department_id) if request.department_id else None
 
     try:
         new_user = await users_service.create_user(
@@ -164,6 +175,10 @@ async def create_user(
             is_admin=False,  # Руководителей создавать только через CLI/SQL
             role_id=role_id
         )
+        # Assign department if provided
+        if department_id:
+            new_user.department_id = department_id
+            await engine.user_storage.update(new_user)
         # Get role name if role assigned
         data = new_user.to_dict()
         if new_user.role_id:
@@ -198,6 +213,12 @@ async def get_user(
     if user.org_id != current_user["org_id"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
+    # Check visibility
+    if not await engine.department_service.check_visible(
+        current_user["user_id"], user.id, current_user["org_id"],
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     # Get role name if role assigned
     data = user.to_dict()
     if user.role_id:
@@ -221,6 +242,12 @@ async def get_user_by_username(
     user = await users_service.get_user_by_username(username, current_user["org_id"])
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Check visibility
+    if not await engine.department_service.check_visible(
+        current_user["user_id"], user.id, current_user["org_id"],
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     # Get role name if role assigned
     data = user.to_dict()
@@ -271,6 +298,10 @@ async def update_user(
     if request.role_id is not None and not is_admin:
         raise HTTPException(status_code=403, detail="Only admins can assign roles")
 
+    # Only admins can change department
+    if request.department_id is not None and not is_admin:
+        raise HTTPException(status_code=403, detail="Only admins can assign departments")
+
     # Validate role if provided
     role_id = None
     if request.role_id:
@@ -295,6 +326,12 @@ async def update_user(
         )
         if not updated:
             raise HTTPException(status_code=404, detail="User not found")
+
+        # Update department if specified
+        if request.department_id is not None:
+            dept_id = UUID(request.department_id) if request.department_id else None
+            updated.department_id = dept_id
+            await engine.user_storage.update(updated)
 
         # Assign/unassign role if specified
         if request.role_id is not None:

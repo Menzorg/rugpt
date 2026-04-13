@@ -61,6 +61,9 @@ async def upload_file(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user_id")
 
+    if not current_user.get("is_admin") and user_uuid != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="You can only upload files for yourself")
+
     data = await file.read()
 
     try:
@@ -210,7 +213,9 @@ async def set_file_public(
     file_record = await engine.file_service.get(file_uuid)
     if not file_record:
         raise HTTPException(status_code=404, detail="File not found")
-    if str(file_record.user_id) != current_user["user_id"]:
+    if not current_user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Only admins can change file visibility")
+    if str(file_record.user_id) != str(current_user["user_id"]):
         raise HTTPException(status_code=403, detail="Only the file owner can change visibility")
 
     updated = await engine.file_service.change_public(file_uuid, is_public)

@@ -86,6 +86,21 @@ Authorization: Bearer <token>
 ### POST /auth/refresh
 Обновить JWT токен.
 
+### POST /auth/verify-signature
+Верификация подписи устройства (используется WebClient backend).
+
+**Request:**
+```json
+{
+  "user_id": "uuid",
+  "payload": "string",
+  "signature": "base64"
+}
+```
+
+### GET /auth/devices
+Список устройств текущего пользователя.
+
 ---
 
 ## Organizations
@@ -101,7 +116,8 @@ Authorization: Bearer <token>
 {
   "name": "Acme Corp",
   "slug": "acme-corp",
-  "description": "Description"
+  "description": "Description",
+  "timezone": "Europe/Moscow"
 }
 ```
 
@@ -135,6 +151,9 @@ Authorization: Bearer <token>
   "role_id": "uuid"
 }
 ```
+
+### GET /users/system
+Системные AI-пользователи.
 
 ### GET /users/{user_id}
 Получить пользователя.
@@ -192,6 +211,7 @@ Authorization: Bearer <token>
     "tools": ["calendar_create", "calendar_query"],
     "prompt_file": "lawyer.md",
     "model_name": "qwen2.5:7b",
+    "rag_collection": null,
     "is_active": true
   }
 ]
@@ -227,16 +247,13 @@ Authorization: Bearer <token>
 ### GET /chats/my
 Список чатов текущего пользователя.
 
-### GET /chats/main
-Получить main chat текущего пользователя.
-
 ### POST /chats/direct
 Создать/получить direct chat с пользователем.
 
 **Request:**
 ```json
 {
-  "user_id": "uuid"
+  "other_user_id": "uuid"
 }
 ```
 
@@ -247,19 +264,28 @@ Authorization: Bearer <token>
 ```json
 {
   "name": "Chat Name",
-  "participants": ["uuid1", "uuid2"]
+  "participant_ids": ["uuid1", "uuid2"]
 }
 ```
 
 ### GET /chats/{chat_id}
 Получить чат.
 
+### DELETE /chats/{chat_id}
+Архивировать чат.
+
+### POST /chats/{chat_id}/participants/{participant_id}
+Добавить участника в чат.
+
+### DELETE /chats/{chat_id}/participants/{participant_id}
+Удалить участника из чата.
+
 ### GET /chats/{chat_id}/messages
-Получить сообщения чата.
+Получить сообщения чата (cursor-based pagination).
 
 **Query params:**
 - `limit` — количество (default: 50)
-- `offset` — смещение (default: 0)
+- `before_id` — UUID сообщения для пагинации (вернуть сообщения до этого)
 
 ### POST /chats/{chat_id}/messages
 Отправить сообщение.
@@ -275,19 +301,26 @@ Authorization: Bearer <token>
 **Response:**
 ```json
 {
-  "message": { },
+  "user_message": { },
   "ai_responses": [ ]
 }
 ```
 
-### PATCH /chats/{chat_id}/messages/{message_id}
-Редактировать сообщение.
+### GET /chats/messages/{message_id}
+Получить сообщение по ID.
 
-### DELETE /chats/{chat_id}/messages/{message_id}
+### DELETE /chats/messages/{message_id}
 Удалить сообщение (soft delete).
 
-### POST /chats/{chat_id}/messages/{message_id}/validate
-Подтвердить AI-ответ (ai_is_valid = true).
+### POST /chats/messages/{message_id}/validate
+Подтвердить AI-ответ (ai_is_valid = true). Можно передать отредактированный текст.
+
+**Request (optional):**
+```json
+{
+  "edited_content": "Исправленный текст ответа"
+}
+```
 
 ### POST /chats/messages/{message_id}/reject
 Отклонить AI-ответ и создать правило коррекции.
@@ -472,6 +505,223 @@ Telegram Bot webhook. Не требует авторизации.
   }
 ]
 ```
+
+---
+
+## Departments (admin only)
+
+### POST /departments
+Создать отдел.
+
+### GET /departments
+Список отделов организации.
+
+### GET /departments/{id}
+Получить отдел.
+
+### PATCH /departments/{id}
+Обновить отдел.
+
+### DELETE /departments/{id}
+Удалить отдел (users -> NULL, rules -> CASCADE).
+
+### POST /departments/{id}/head/{user_id}
+Назначить руководителя отдела.
+
+### DELETE /departments/{id}/head
+Снять руководителя.
+
+### POST /departments/visibility
+Создать правило видимости (симметричное).
+
+**Request:**
+```json
+{
+  "department_a_id": "uuid",
+  "department_b_id": "uuid"
+}
+```
+
+### DELETE /departments/visibility/{id}
+Удалить правило видимости.
+
+### GET /departments/visibility
+Список правил видимости организации.
+
+### POST /organizations/{id}/context/upload
+Загрузить файл с описанием структуры организации. Текст извлекается через Tika и записывается в org_context. Добавляется в system prompt всех ролей.
+
+---
+
+## In-App Notifications
+
+### GET /in-app-notifications
+Список in-app уведомлений текущего пользователя.
+
+### GET /in-app-notifications/unread-count
+Счётчик непрочитанных уведомлений.
+
+**Response:**
+```json
+{
+  "count": 5
+}
+```
+
+### PATCH /in-app-notifications/{id}/read
+Отметить уведомление как прочитанное.
+
+### POST /in-app-notifications/read-all
+Отметить все уведомления как прочитанные.
+
+---
+
+## Tasks
+
+### GET /tasks
+Список задач.
+
+**Query params:**
+- `status` — фильтр по статусу (created, in_progress, done, overdue)
+- `assignee_user_id` — фильтр по исполнителю
+
+Админ видит все задачи организации, сотрудник — только свои.
+
+### POST /tasks
+Создать задачу.
+
+**Request:**
+```json
+{
+  "title": "Подготовить отчёт",
+  "description": "Квартальный финансовый отчёт",
+  "assignee_user_id": "uuid",
+  "deadline": "2026-04-15T18:00:00"
+}
+```
+
+### GET /tasks/{task_id}
+Получить задачу.
+
+### PATCH /tasks/{task_id}
+Обновить задачу.
+
+**Request:**
+```json
+{
+  "status": "in_progress",
+  "title": "Новое название"
+}
+```
+
+### DELETE /tasks/{task_id}
+Деактивировать задачу.
+
+---
+
+## Task Polls
+
+### GET /task-polls/today
+Сегодняшний утренний опрос текущего пользователя.
+
+### GET /task-polls
+История опросов.
+
+**Query params:**
+- `limit` — количество (default: 30, max: 100)
+
+### GET /task-polls/{poll_id}
+Получить опрос.
+
+### POST /task-polls/{poll_id}/submit
+Отправить ответы на опрос.
+
+**Request:**
+```json
+{
+  "responses": [
+    {
+      "task_id": "uuid",
+      "new_status": "in_progress",
+      "comment": "Работаю над этим"
+    }
+  ]
+}
+```
+
+---
+
+## Task Reports
+
+### GET /task-reports
+Список вечерних отчётов.
+
+### GET /task-reports/{report_id}
+Получить отчёт.
+
+---
+
+## Files
+
+### POST /files/upload
+Загрузить файл.
+
+**Request:** multipart/form-data с полями file, user_id, is_public.
+
+### GET /files
+Список файлов.
+
+### GET /files/{file_id}
+Метаданные файла.
+
+### GET /files/{file_id}/download
+Скачать бинарное содержимое файла.
+
+### DELETE /files/{file_id}
+Soft-delete файла.
+
+### GET /files/{file_id}/rag-status
+Статус RAG-индексации файла.
+
+### PATCH /files/{file_id}/public
+Переключить публичность файла (is_public).
+
+---
+
+## RAG
+
+### POST /rag/docs/ingest
+Индексировать документ (загрузка + RAG pipeline).
+
+**Request:** multipart/form-data с полем file.
+
+### DELETE /rag/docs/{file_id}
+Удалить документ из RAG-индекса.
+
+### POST /rag/docs/{file_id}/retry
+Повторить индексацию (через IngestQueue).
+
+### GET /rag/docs/find
+Найти релевантные документы.
+
+**Query params:**
+- `query` — поисковый запрос (обязательный)
+- `top_k` — количество результатов (default: 5)
+
+### GET /rag/docs/{file_id}/search/abstract
+Vector-first поиск внутри документа.
+
+**Query params:**
+- `query` — поисковый запрос
+- `top_k` — количество результатов (default: 5)
+
+### GET /rag/docs/{file_id}/search/concrete
+TSV-first поиск внутри документа.
+
+**Query params:**
+- `query` — поисковый запрос
+- `top_k` — количество результатов (default: 5)
+- `tsv_weight` — вес полнотекстового скора (default: 1.0)
 
 ---
 

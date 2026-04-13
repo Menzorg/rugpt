@@ -74,6 +74,12 @@ async def list_tasks(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    if current_user.get("is_head") and not current_user.get("is_admin"):
+        visible_ids = await engine.department_service.get_visible_user_ids(
+            current_user["user_id"], current_user["org_id"],
+        )
+        tasks = [t for t in tasks if t.assignee_user_id in visible_ids]
+
     return [TaskResponse(**t.to_dict()) for t in tasks]
 
 
@@ -89,6 +95,11 @@ async def create_task(
         assignee_uuid = UUID(request.assignee_user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid assignee_user_id")
+
+    if not await engine.department_service.check_visible(
+        current_user["user_id"], assignee_uuid, current_user["org_id"],
+    ):
+        raise HTTPException(status_code=403, detail="Assignee not visible")
 
     deadline = None
     if request.deadline:
@@ -156,6 +167,11 @@ async def update_task(
             assignee_uuid = UUID(request.assignee_user_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid assignee_user_id")
+
+        if not await engine.department_service.check_visible(
+            current_user["user_id"], assignee_uuid, current_user["org_id"],
+        ):
+            raise HTTPException(status_code=403, detail="Assignee not visible")
 
     deadline = None
     if request.deadline:

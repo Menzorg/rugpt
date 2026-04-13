@@ -31,6 +31,7 @@ from .routes import (
     task_reports_router,
     files_router,
     rag_router,
+    departments_router,
 )
 
 # Configure logging
@@ -105,6 +106,7 @@ app.include_router(task_polls_router, prefix="/api/v1", tags=["task-polls"])
 app.include_router(task_reports_router, prefix="/api/v1", tags=["task-reports"])
 app.include_router(files_router, prefix="/api/v1", tags=["files"])
 app.include_router(rag_router, prefix="/api/v1", tags=["rag"])
+app.include_router(departments_router, prefix="/api/v1", tags=["departments"])
 
 
 @app.get("/")

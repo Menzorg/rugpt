@@ -20,9 +20,9 @@ class OrgStorage(BaseStorage):
     async def create(self, org: Organization) -> Organization:
         """Create a new organization"""
         query = """
-            INSERT INTO organizations (id, name, slug, description, timezone, is_active, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id, name, slug, description, timezone, is_active, created_at, updated_at
+            INSERT INTO organizations (id, name, slug, description, timezone, org_context, is_active, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id, name, slug, description, timezone, org_context, is_active, created_at, updated_at
         """
         row = await self.fetchrow(
             query,
@@ -31,6 +31,7 @@ class OrgStorage(BaseStorage):
             org.slug,
             org.description,
             org.timezone,
+            org.org_context,
             org.is_active,
             org.created_at,
             org.updated_at
@@ -40,7 +41,7 @@ class OrgStorage(BaseStorage):
     async def get_by_id(self, org_id: UUID) -> Optional[Organization]:
         """Get organization by ID"""
         query = """
-            SELECT id, name, slug, description, timezone, is_active, created_at, updated_at
+            SELECT id, name, slug, description, timezone, org_context, is_active, created_at, updated_at
             FROM organizations
             WHERE id = $1
         """
@@ -50,7 +51,7 @@ class OrgStorage(BaseStorage):
     async def get_by_slug(self, slug: str) -> Optional[Organization]:
         """Get organization by slug"""
         query = """
-            SELECT id, name, slug, description, timezone, is_active, created_at, updated_at
+            SELECT id, name, slug, description, timezone, org_context, is_active, created_at, updated_at
             FROM organizations
             WHERE slug = $1
         """
@@ -61,14 +62,14 @@ class OrgStorage(BaseStorage):
         """List all organizations"""
         if active_only:
             query = """
-                SELECT id, name, slug, description, timezone, is_active, created_at, updated_at
+                SELECT id, name, slug, description, timezone, org_context, is_active, created_at, updated_at
                 FROM organizations
                 WHERE is_active = true
                 ORDER BY name
             """
         else:
             query = """
-                SELECT id, name, slug, description, timezone, is_active, created_at, updated_at
+                SELECT id, name, slug, description, timezone, org_context, is_active, created_at, updated_at
                 FROM organizations
                 ORDER BY name
             """
@@ -80,9 +81,9 @@ class OrgStorage(BaseStorage):
         org.updated_at = datetime.utcnow()
         query = """
             UPDATE organizations
-            SET name = $2, slug = $3, description = $4, timezone = $5, is_active = $6, updated_at = $7
+            SET name = $2, slug = $3, description = $4, timezone = $5, org_context = $6, is_active = $7, updated_at = $8
             WHERE id = $1
-            RETURNING id, name, slug, description, timezone, is_active, created_at, updated_at
+            RETURNING id, name, slug, description, timezone, org_context, is_active, created_at, updated_at
         """
         row = await self.fetchrow(
             query,
@@ -91,6 +92,7 @@ class OrgStorage(BaseStorage):
             org.slug,
             org.description,
             org.timezone,
+            org.org_context,
             org.is_active,
             org.updated_at
         )
@@ -124,6 +126,7 @@ class OrgStorage(BaseStorage):
             slug=row["slug"],
             description=row["description"],
             timezone=row["timezone"],
+            org_context=row.get("org_context", ""),
             is_active=row["is_active"],
             created_at=row["created_at"],
             updated_at=row["updated_at"]

@@ -128,6 +128,14 @@ async def get_role_users(
         raise HTTPException(status_code=403, detail="Access denied")
 
     users = await roles_service.get_users_with_role(role_uuid)
+
+    # Filter by visibility
+    engine = get_engine_service()
+    visible_ids = await engine.department_service.get_visible_user_ids(
+        current_user["user_id"], current_user["org_id"],
+    )
+    users = [u for u in users if u.id in visible_ids]
+
     return {
         "role": RoleResponse(**role.to_dict()),
         "users": [u.to_dict() for u in users]
