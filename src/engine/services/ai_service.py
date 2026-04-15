@@ -9,14 +9,17 @@ from __future__ import annotations
 import logging
 import re
 from typing import Optional, List, TYPE_CHECKING
-from uuid import UUID
+from uuid import UUID, uuid4
 
+from ..config import Config
+from ..models.agent_run import AgentRun
 from ..models.message import Message, Mention, MentionType, SenderType
 from ..models.role import Role
 from ..storage.role_storage import RoleStorage
 from ..storage.user_storage import UserStorage
 from ..storage.message_storage import MessageStorage
 from ..storage.chat_storage import ChatStorage
+from ..storage.agent_run_storage import AgentRunStorage
 from ..llm.providers.ollama import OllamaProvider
 from ..llm.providers.base import LLMMessage
 from .prompt_cache import PromptCache
@@ -24,6 +27,7 @@ from .prompt_cache import PromptCache
 # Avoid circular import: agents.executor -> services -> ai_service -> agents.executor
 if TYPE_CHECKING:
     from ..agents.executor import AgentExecutor
+    from ..kafka.producer import KafkaProducerService
 
 logger = logging.getLogger("rugpt.services.ai")
 
@@ -40,6 +44,8 @@ class AIService:
         llm_provider: Optional[OllamaProvider] = None,
         prompt_cache: Optional[PromptCache] = None,
         agent_executor: Optional[AgentExecutor] = None,
+        agent_run_storage: Optional[AgentRunStorage] = None,
+        kafka_producer: Optional["KafkaProducerService"] = None,
     ):
         self.role_storage = role_storage
         self.user_storage = user_storage
@@ -48,6 +54,55 @@ class AIService:
         self.llm = llm_provider or OllamaProvider()
         self.prompt_cache = prompt_cache
         self.agent_executor = agent_executor
+        self.agent_run_storage = agent_run_storage
+        self.kafka_producer = kafka_producer
+
+    def _is_async_mode(self) -> bool:
+        """Async path enabled iff both Kafka producer and agent_run storage are wired AND Kafka is enabled."""
+        return (
+            self.kafka_producer is not None
+            and self.kafka_producer.enabled
+            and self.agent_run_storage is not None
+        )
+
+    async def _enqueue_agent_run(
+        self,
+        message: Message,
+        responder_id: UUID,
+        strip_username: Optional[str] = None,
+        role_code: str = "",
+    ) -> Optional[UUID]:
+        """Create AgentRun row + publish to agent.requests. Returns request_id or None on failure."""
+        if not self._is_async_mode():
+            return None
+        request_id = uuid4()
+        run = AgentRun(
+            request_id=request_id,
+            chat_id=message.chat_id,
+            user_message_id=message.id,
+            triggering_user_id=message.sender_id,
+            role_code=role_code or "",
+            status="pending",
+        )
+        try:
+            await self.agent_run_storage.create(run)
+            await self.kafka_producer.send(
+                Config.KAFKA_TOPIC_AGENT_REQUESTS,
+                {
+                    "request_id": str(request_id),
+                    "chat_id": str(message.chat_id),
+                    "user_message_id": str(message.id),
+                    "triggering_user_id": str(message.sender_id),
+                    "responder_id": str(responder_id),
+                    "strip_username": strip_username,
+                    "role_code": role_code or "",
+                },
+                key=str(message.chat_id),
+            )
+            return request_id
+        except Exception as e:
+            logger.error(f"Failed to enqueue agent run: {e}")
+            return None
 
     async def try_auto_respond(
         self,
@@ -59,7 +114,12 @@ class AIService:
         Auto-respond if chat has a system user participant.
         Called when message has no @@ mentions.
 
-        Finds system user among chat participants → generate_response().
+        Async mode (Kafka enabled): publishes to agent.requests and returns None —
+        the AI message will arrive later via chat.events WS broadcast. Returns None
+        does NOT mean "no handler"; check try_auto_respond_async_enqueued if the
+        caller needs to know whether a pending run was scheduled.
+
+        Sync fallback: directly calls generate_response and returns the Message.
         """
         chat = await self.chat_storage.get_by_id(chat_id)
         if not chat:
@@ -70,6 +130,12 @@ class AIService:
                 continue
             participant = await self.user_storage.get_by_id(pid)
             if participant and participant.is_system:
+                if self._is_async_mode():
+                    await self._enqueue_agent_run(
+                        message=message,
+                        responder_id=participant.id,
+                    )
+                    return None
                 return await self.generate_response(
                     message=message,
                     responder_id=participant.id,
@@ -83,11 +149,25 @@ class AIService:
         org_id: UUID
     ) -> List[Message]:
         """
-        Process @@ mentions in a message and generate AI responses.
-        Returns list of AI response messages.
+        Process @@ mentions in a message and enqueue AI responses.
+
+        Async mode (Kafka enabled): each mention -> AgentRun + Kafka publish;
+        returns empty list. The caller should also consult `has_pending_agent_runs`
+        to set `agent_pending=true` in the HTTP response.
+
+        Sync fallback: returns list of generated AI messages inline.
         """
         ai_mentions = [m for m in message.mentions if m.type == MentionType.AI_ROLE]
         if not ai_mentions:
+            return []
+
+        if self._is_async_mode():
+            for mention in ai_mentions:
+                await self._enqueue_agent_run(
+                    message=message,
+                    responder_id=mention.user_id,
+                    strip_username=mention.username,
+                )
             return []
 
         responses = []
@@ -101,6 +181,11 @@ class AIService:
                 responses.append(response)
 
         return responses
+
+    def has_pending_agent_runs(self, message: Message) -> bool:
+        """Does this message trigger any agent work? Used for agent_pending HTTP flag.
+        Cheap check — no storage hit, uses in-memory message attrs only."""
+        return any(m.type == MentionType.AI_ROLE for m in (message.mentions or []))
 
     async def generate_response(
         self,

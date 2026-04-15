@@ -24,8 +24,18 @@ from ..storage.user_file_storage import UserFileStorage
 from ..storage.correction_rule_storage import CorrectionRuleStorage
 from ..storage.device_storage import DeviceStorage
 from ..storage.department_storage import DepartmentStorage
+from ..storage.project_storage import ProjectStorage
+from ..storage.task_event_storage import TaskEventStorage
+from ..storage.agent_run_storage import AgentRunStorage
 from ..storage.storage_adapter import LocalStorageAdapter
 from .chat_service import ChatService
+from .project_service import ProjectService
+from .task_event_service import TaskEventService
+from .reference_service import ReferenceService
+from .task_notification_service import TaskNotificationService
+from ..kafka.producer import KafkaProducerService
+from ..kafka.consumer import KafkaConsumerLoop
+from ..kafka.agent_handler import AgentRequestHandler
 from .mention_service import MentionService
 from .ai_service import AIService
 from .prompt_cache import PromptCache
@@ -82,6 +92,9 @@ class EngineService:
         self.correction_rule_storage = CorrectionRuleStorage(self.postgres_dsn)
         self.device_storage = DeviceStorage(self.postgres_dsn)
         self.department_storage = DepartmentStorage(self.postgres_dsn)
+        self.project_storage = ProjectStorage(self.postgres_dsn)
+        self.task_event_storage = TaskEventStorage(self.postgres_dsn)
+        self.agent_run_storage = AgentRunStorage(self.postgres_dsn)
 
         # Initialize LLM provider (kept for health checks / model listing)
         self.llm_provider = OllamaProvider()
@@ -99,8 +112,40 @@ class EngineService:
         # Initialize in-app notification service
         self.in_app_notification_service = InAppNotificationService(self.in_app_notification_storage)
 
-        # Initialize task service
-        self.task_service = TaskService(self.task_storage, self.in_app_notification_service)
+        # Initialize chat/task_event/project services (order matters):
+        # ChatService -> TaskEventService -> ProjectService -> TaskService
+        self.chat_service = ChatService(self.chat_storage, self.message_storage)
+        self.task_event_service = TaskEventService(self.task_event_storage)
+        self.project_service = ProjectService(self.project_storage, self.chat_service)
+
+        # Kafka producer — event bus to NestJS (chat.events) + internal queue (agent.requests).
+        # No-op when Config.KAFKA_ENABLED=false, so tests without Kafka keep working.
+        self.kafka_producer = KafkaProducerService()
+
+        # TaskNotificationService — PM agent posts notifications to direct chats
+        # via chat_service + message_storage, publishes to chat.events for live WS delivery.
+        self.task_notification_service = TaskNotificationService(
+            chat_service=self.chat_service,
+            message_storage=self.message_storage,
+            user_storage=self.user_storage,
+            kafka_producer=self.kafka_producer,
+        )
+
+        # Initialize task service with chat/event/project/notification integration
+        self.task_service = TaskService(
+            self.task_storage,
+            self.in_app_notification_service,
+            chat_service=self.chat_service,
+            task_event_service=self.task_event_service,
+            project_service=self.project_service,
+            task_notification_service=self.task_notification_service,
+        )
+
+        # Reference service (parallel to mentions, resolves !<uuid>/!!<uuid> in messages)
+        self.reference_service = ReferenceService(
+            task_storage=self.task_storage,
+            project_storage=self.project_storage,
+        )
 
         # Initialize task poll service
         self.task_poll_service = TaskPollService(
@@ -216,8 +261,7 @@ class EngineService:
             enabled=Config.SCHEDULER_ENABLED,
         )
 
-        # Initialize services (after storages)
-        self.chat_service = ChatService(self.chat_storage, self.message_storage)
+        # Initialize remaining services (chat_service already created above)
         self.mention_service = MentionService(self.user_storage)
         self.ai_service = AIService(
             role_storage=self.role_storage,
@@ -227,6 +271,22 @@ class EngineService:
             llm_provider=self.llm_provider,
             prompt_cache=self.prompt_cache,
             agent_executor=self.agent_executor,
+            agent_run_storage=self.agent_run_storage,
+            kafka_producer=self.kafka_producer,
+        )
+
+        # Kafka consumer for agent.requests topic (async inference).
+        # Created here; started in initialize() after storages are connected.
+        self._agent_request_handler = AgentRequestHandler(
+            ai_service=self.ai_service,
+            message_storage=self.message_storage,
+            agent_run_storage=self.agent_run_storage,
+            kafka_producer=self.kafka_producer,
+        )
+        self.agent_request_consumer = KafkaConsumerLoop(
+            topic=Config.KAFKA_TOPIC_AGENT_REQUESTS,
+            group_id=Config.KAFKA_CONSUMER_GROUP_AGENT_RUNNERS,
+            handler=self._agent_request_handler,
         )
 
         # Initialize correction rule service
@@ -267,12 +327,27 @@ class EngineService:
         await self.correction_rule_storage.init()
         await self.device_storage.init()
         await self.department_storage.init()
+        await self.project_storage.init()
+        await self.task_event_storage.init()
+        await self.agent_run_storage.init()
 
         await self.rag_store.init()
 
         # Wire the shared pool into the RAG tool (avoids per-call pool creation)
         from ..agents.tools.rag_tool import init_rag_pool
         init_rag_pool(self.user_file_storage.pg_pool)
+
+        # Start Kafka producer (no-op when KAFKA_ENABLED=false)
+        try:
+            await self.kafka_producer.start()
+        except Exception as e:
+            logger.error(f"Kafka producer failed to start: {e}")
+
+        # Start Kafka consumer loop for agent.requests (no-op when disabled)
+        try:
+            await self.agent_request_consumer.start()
+        except Exception as e:
+            logger.error(f"Kafka agent.requests consumer failed to start: {e}")
 
         # Start background scheduler
         await self.scheduler_service.start()
@@ -300,10 +375,21 @@ class EngineService:
         await self.correction_rule_storage.close()
         await self.device_storage.close()
         await self.department_storage.close()
+        await self.project_storage.close()
+        await self.task_event_storage.close()
+        await self.agent_run_storage.close()
         await self.rag_store.close()
         await self.scheduler_service.stop()
         await self.notification_service.close()
         await self.ai_service.close()
+        try:
+            await self.agent_request_consumer.stop()
+        except Exception as e:
+            logger.error(f"Kafka consumer failed to stop: {e}")
+        try:
+            await self.kafka_producer.stop()
+        except Exception as e:
+            logger.error(f"Kafka producer failed to stop: {e}")
 
         self._initialized = False
         logger.info("EngineService closed")

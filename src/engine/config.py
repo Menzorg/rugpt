@@ -44,6 +44,15 @@ class Config:
     REDIS_DB = os.getenv("REDIS_DB", "0")
     REDIS_URL = os.getenv("REDIS_URL", f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}")
 
+    # Kafka settings (item 10: PM-agent + async inference via agent.requests / chat.events)
+    KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    KAFKA_ENABLED = os.getenv("KAFKA_ENABLED", "true").lower() == "true"
+    KAFKA_TOPIC_AGENT_REQUESTS = os.getenv("KAFKA_TOPIC_AGENT_REQUESTS", "agent.requests")
+    KAFKA_TOPIC_CHAT_EVENTS = os.getenv("KAFKA_TOPIC_CHAT_EVENTS", "chat.events")
+    KAFKA_CONSUMER_GROUP_AGENT_RUNNERS = os.getenv(
+        "KAFKA_CONSUMER_GROUP_AGENT_RUNNERS", "engine-agent-runners"
+    )
+
     # Session TTL (seconds)
     SESSION_TTL = int(os.getenv("SESSION_TTL", "3600"))
 

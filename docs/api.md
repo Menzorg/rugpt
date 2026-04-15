@@ -617,6 +617,95 @@ Telegram Bot webhook. Не требует авторизации.
 ### DELETE /tasks/{task_id}
 Деактивировать задачу.
 
+### GET /tasks/my?include_done=&project_id=
+Задачи где юзер — assignee, отсортированы по приоритету (item 9).
+Optional `project_id` фильтр (item 11).
+
+### GET /tasks/created-by-me?include_done=&project_id=
+Задачи где юзер — creator (item 9). Optional `project_id` фильтр.
+
+### GET /tasks/archive?limit=
+Архив задач: done или cancelled, где юзер был creator/assignee (item 11).
+
+### POST /tasks/{task_id}/take
+Assignee берёт в работу: `created` → `in_progress` (item 9).
+
+### POST /tasks/{task_id}/mark-done
+Assignee отмечает готово: `in_progress` → `awaiting_review` (item 9).
+
+### POST /tasks/{task_id}/accept
+Creator принимает: `awaiting_review` → `done` (item 9).
+
+### POST /tasks/{task_id}/reject
+Creator возвращает с комментарием: `awaiting_review` → `in_progress` (item 9).
+Body: `{ comment?: string }`.
+
+### PATCH /tasks/{task_id}/deadline
+Creator напрямую меняет срок (item 9). Body: `{ deadline: ISO8601 }`.
+
+### POST /tasks/{task_id}/deadline-proposal
+Assignee предлагает новый срок (item 9). Body: `{ proposed_deadline: ISO8601 }`.
+
+### POST /tasks/{task_id}/deadline-proposal/accept
+Creator принимает предложение (item 9).
+
+### POST /tasks/{task_id}/deadline-proposal/reject
+Creator отклоняет предложение (item 9).
+
+### GET /tasks/{task_id}/chat
+Чат задачи (item 11). 404 если не видим через `can_see_task`.
+
+### GET /tasks/{task_id}/events?limit=
+Audit trail задачи (item 11). Список `task_events` по убыванию времени.
+
+---
+
+## Projects (item 11)
+
+Группировка задач. Head/admin могут создавать/редактировать/удалять.
+
+### GET /projects?include_archived=
+Список проектов текущей org.
+
+### POST /projects
+Создать проект (head/admin). Body: `{ name: string, description?: string }`.
+
+### GET /projects/{project_id}
+Один проект. 404 если cross-org.
+
+### PATCH /projects/{project_id}
+Обновить проект (head/admin). Body: `{ name?: string, description?: string }`.
+
+### DELETE /projects/{project_id}
+Soft-delete (head/admin). Архивирует чат проекта.
+
+### GET /projects/{project_id}/chat
+Резолв чата проекта.
+
+---
+
+## Chats (item 11 + item 10 updates)
+
+### GET /chats/my?type=direct|task|project
+Опциональный фильтр по типу чата (item 11).
+
+### GET /chats/{chat_id}/messages
+Теперь каждое сообщение содержит поле `references: MessageReference[]` —
+per-viewer резолв `!<task>` / `!!<project>` ссылок (item 11).
+
+### POST /chats/{chat_id}/messages
+Response формат изменён (item 10):
+```json
+{
+  "user_message": { ... },
+  "ai_responses": [],        // пустой при async mode (Kafka enabled)
+  "agent_pending": true      // true если есть @@mentions и Kafka работает
+}
+```
+В async режиме AI-ответы прилетают позже через WS `message` event
+(доставляются через Kafka `chat.events`). В sync fallback режиме (Kafka
+disabled) `ai_responses` содержит ответы inline как раньше.
+
 ---
 
 ## Task Polls

@@ -9,7 +9,7 @@ from typing import Optional, List
 from uuid import UUID
 
 from .base import BaseStorage
-from ..models.chat import Chat, ChatType
+from ..models.chat import Chat, ChatType, _coerce_chat_type
 
 logger = logging.getLogger("rugpt.storage.chat")
 
@@ -22,15 +22,17 @@ class ChatStorage(BaseStorage):
         query = """
             INSERT INTO chats (
                 id, org_id, type, name, participants, created_by,
+                task_id, project_id,
                 is_active, created_at, updated_at, last_message_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING *
         """
         row = await self.fetchrow(
             query,
             chat.id, chat.org_id, chat.type.value, chat.name,
             [str(p) for p in chat.participants], chat.created_by,
+            chat.task_id, chat.project_id,
             chat.is_active, chat.created_at, chat.updated_at, chat.last_message_at
         )
         return self._row_to_chat(row)
@@ -54,22 +56,41 @@ class ChatStorage(BaseStorage):
         row = await self.fetchrow(query, str(user1_id), str(user2_id))
         return self._row_to_chat(row) if row else None
 
-    async def list_by_user(self, user_id: UUID, active_only: bool = True) -> List[Chat]:
-        """List chats for a user"""
+    async def list_by_user(
+        self,
+        user_id: UUID,
+        active_only: bool = True,
+        chat_type: Optional[str] = None,
+    ) -> List[Chat]:
+        """List chats for a user, optionally filtered by type."""
+        conditions = ["$1 = ANY(participants)"]
+        params: List = [str(user_id)]
         if active_only:
-            query = """
-                SELECT * FROM chats
-                WHERE $1 = ANY(participants) AND is_active = true
-                ORDER BY last_message_at DESC NULLS LAST, created_at DESC
-            """
-        else:
-            query = """
-                SELECT * FROM chats
-                WHERE $1 = ANY(participants)
-                ORDER BY last_message_at DESC NULLS LAST, created_at DESC
-            """
-        rows = await self.fetch(query, str(user_id))
+            conditions.append("is_active = true")
+        if chat_type is not None:
+            params.append(chat_type)
+            conditions.append(f"type = ${len(params)}")
+        query = f"""
+            SELECT * FROM chats
+            WHERE {' AND '.join(conditions)}
+            ORDER BY last_message_at DESC NULLS LAST, created_at DESC
+        """
+        rows = await self.fetch(query, *params)
         return [self._row_to_chat(row) for row in rows]
+
+    async def get_by_task_id(self, task_id: UUID) -> Optional[Chat]:
+        """Get chat associated with a task (if any)."""
+        row = await self.fetchrow(
+            "SELECT * FROM chats WHERE task_id = $1 LIMIT 1", task_id,
+        )
+        return self._row_to_chat(row) if row else None
+
+    async def get_by_project_id(self, project_id: UUID) -> Optional[Chat]:
+        """Get chat associated with a project (if any)."""
+        row = await self.fetchrow(
+            "SELECT * FROM chats WHERE project_id = $1 LIMIT 1", project_id,
+        )
+        return self._row_to_chat(row) if row else None
 
     async def list_by_org(self, org_id: UUID, active_only: bool = True) -> List[Chat]:
         """List all chats in organization"""
@@ -138,13 +159,19 @@ class ChatStorage(BaseStorage):
         if participants and isinstance(participants[0], str):
             participants = [UUID(p) for p in participants]
 
+        keys = set(row.keys())
+        task_id = row["task_id"] if "task_id" in keys else None
+        project_id = row["project_id"] if "project_id" in keys else None
+
         return Chat(
             id=row["id"],
             org_id=row["org_id"],
-            type=ChatType(row["type"]),
+            type=_coerce_chat_type(row["type"]),
             name=row["name"],
             participants=participants,
             created_by=row["created_by"],
+            task_id=task_id,
+            project_id=project_id,
             is_active=row["is_active"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],

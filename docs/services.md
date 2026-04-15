@@ -420,18 +420,91 @@ class MentionService:
 
 ```python
 class TaskService:
-    async def create(org_id, title, description, assignee_user_id, deadline?) -> Task
+    # CRUD
+    async def create(org_id, title, assignee_user_id, description?, deadline?,
+                     created_by_user_id?, project_id?) -> Task
     async def get(task_id) -> Task?
-    async def list_tasks(org_id, status?, assignee_user_id?) -> List[Task]
-    async def update(task_id, ...) -> Task?
-    async def deactivate(task_id) -> bool
-    async def check_overdue() -> int  # Помечает просроченные, шлёт in-app уведомления
-    async def list_active_for_polls(assignee_user_id) -> List[Task]  # status != 'done'
+    async def list_by_assignee(user_id, status?) -> List[Task]
+    async def list_by_org(org_id, status?) -> List[Task]
+    async def list_my_tasks(user_id, include_done?) -> List[dict]  # with priority + creator
+    async def list_tasks_created_by(user_id, include_done?) -> List[dict]
+    async def list_archived(user_id, org_id, limit?) -> List[dict]  # done | cancelled
+    async def update(task_id, title?, description?, assignee_user_id?,
+                     deadline?, project_id=_UNSET, actor_user_id?) -> Task?
+    async def deactivate(task_id, user?) -> bool
+
+    # Status transitions (item 9)
+    async def take_task(task_id, user: User) -> Task          # created -> in_progress
+    async def mark_done(task_id, user: User) -> Task          # in_progress -> awaiting_review
+    async def accept_task(task_id, user: User) -> Task        # awaiting_review -> done
+    async def reject_task(task_id, user, comment?) -> Task    # awaiting_review -> in_progress
+
+    # Deadline negotiation (item 9)
+    async def set_deadline(task_id, user, deadline) -> Task
+    async def propose_deadline(task_id, user, proposed) -> Task
+    async def accept_proposed_deadline(task_id, user) -> Task
+    async def reject_proposed_deadline(task_id, user) -> Task
+
+    # Scheduler
+    async def check_overdue() -> List[Task]  # Помечает просроченные
 ```
 
-**Статусы:** created | in_progress | done | overdue
+**Статусы:** `created | in_progress | awaiting_review | done | overdue`
 
-При создании задачи отправляется in-app уведомление `new_task` исполнителю.
+**Owners:** `created_by_user_id` — кто поставил (item 9), `assignee_user_id` —
+исполнитель. Admin может действовать от лица creator'а.
+
+**Boundaries на переходы (item 9):**
+- Assignee: `take_task`, `mark_done`, `propose_deadline`
+- Creator: `accept_task`, `reject_task`, `set_deadline`, `accept/reject_proposed_deadline`
+
+**Hook-ки (items 10/11):**
+- После каждого перехода — `_record_event(...)` пишет в `task_events` (item 11)
+- После каждого перехода — `_notify('notify_<name>', task, user)` в PM-агент
+  через `TaskNotificationService` (item 10). Silent no-op если Kafka disabled
+- `create` — auto-create task chat + link to project chat (item 11)
+- `deactivate` — archive task chat + archive project chat если это была
+  последняя активная задача проекта (item 11)
+
+**В TaskService DI инжектится:** `chat_service`, `task_event_service`,
+`project_service`, `task_notification_service` — все опциональные
+`Optional[...] = None` для обратной совместимости с тестами.
+
+---
+
+## TaskNotificationService (item 10)
+
+**Файл:** `src/engine/services/task_notification_service.py`
+
+PM-агент как автоматический уведомитель по задачам. Постит plain-text
+сообщения в личный direct-chat между PM system user (`username='pm'`) и
+каждой заинтересованной стороной. Публикует в Kafka `chat.events` для
+live-доставки через WS.
+
+```python
+class TaskNotificationService:
+    async def notify_take(task, actor)                   # assignee взял -> creator
+    async def notify_mark_done(task, actor)              # готово -> creator
+    async def notify_accept(task, actor)                 # принято -> assignee
+    async def notify_reject(task, actor, comment?)       # возврат -> assignee
+    async def notify_set_deadline(task, actor)           # новый срок -> assignee
+    async def notify_propose_deadline(task, actor)       # предложение -> creator
+    async def notify_accept_proposed_deadline(task, actor)   # -> assignee
+    async def notify_reject_proposed_deadline(task, actor)   # -> assignee
+    async def notify_overdue(task)                       # -> обе стороны
+```
+
+**Правило адресации:** уведомляется сторона, которая **не инициировала**
+изменение.
+
+**Реализация `_post()`:**
+1. Lazy-lookup PM user (`user_storage.get_system_user_by_username('pm')`),
+   cached after first call
+2. Lazy-create direct chat PM↔recipient через `chat_service.create_direct_chat`
+   (идемпотентно — возвращает существующий, если есть)
+3. Persist message в БД (`sender_type=ai_role`, `ai_is_valid=true`)
+4. Publish в Kafka `chat.events` с полным payload
+5. Kafka publish failures не ломают DB persist (best-effort)
 
 ---
 
@@ -571,46 +644,167 @@ class CryptoService:
 
 ---
 
+## ProjectService (item 11)
+
+**Файл:** `src/engine/services/project_service.py`
+
+CRUD проектов с head/admin-guard и multi-tenancy через `org_id`.
+
+```python
+class ProjectService:
+    async def create(name, user: User, description?) -> Project   # head/admin only
+    async def get(project_id, user) -> Project?                    # cross-org скрыт
+    async def list_by_org(org_id, include_archived?) -> List[Project]
+    async def update(project_id, user, name?, description?) -> Project  # head/admin
+    async def delete(project_id, user) -> bool  # soft delete + archive_project_chat
+```
+
+---
+
+## TaskEventService (item 11)
+
+**Файл:** `src/engine/services/task_event_service.py`
+
+Тонкая обёртка для записи audit trail задач. `TaskService` вызывает
+`_record_event` после каждого перехода.
+
+```python
+class TaskEventService:
+    async def record(task_id, actor_user_id, event_type, payload?) -> TaskEvent
+    async def list_for_task(task_id, limit?) -> List[TaskEvent]
+```
+
+**Event types:** `created, took, marked_done, accepted, rejected, deadline_set,
+deadline_proposed, deadline_proposal_accepted, deadline_proposal_rejected,
+assignee_changed, project_changed, cancelled, overdue`.
+
+---
+
+## ReferenceService (item 11)
+
+**Файл:** `src/engine/services/reference_service.py`
+
+Parse + per-viewer batch-resolve `!<task-uuid>` / `!!<project-uuid>` в
+тексте сообщений. Интегрируется в `GET /chats/{id}/messages` — возвращает
+поле `references: [{type, id, title, accessible, position}]` в каждом
+сообщении.
+
+```python
+class ReferenceService:
+    def parse(content: str) -> List[Tuple[ref_type, uuid, position)]
+    async def resolve_batch(
+        contents: List[Tuple[message_id, content]],
+        actor: User,
+    ) -> Dict[message_id, List[dict]]
+```
+
+Visibility:
+- Task: creator OR assignee OR same-org admin -> accessible, иначе gray pill
+- Project: same org + is_active -> accessible
+
+---
+
+## Kafka services (item 10)
+
+### KafkaProducerService
+
+**Файл:** `src/engine/kafka/producer.py`
+
+Тонкая обёртка над `aiokafka.AIOKafkaProducer` с idempotent producer
+semantics (`enable_idempotence=True`, `acks='all'`), JSON-сериализацией
+с поддержкой UUID/datetime. Single instance в `EngineService`, start/stop
+в `initialize()`/`close()`.
+
+```python
+class KafkaProducerService:
+    async def start()
+    async def stop()
+    async def send(topic, value: dict, key: Optional[str] = None)
+    # No-op when Config.KAFKA_ENABLED=false
+```
+
+### KafkaConsumerLoop
+
+**Файл:** `src/engine/kafka/consumer.py`
+
+Background asyncio task, запускается через `asyncio.create_task` в
+`EngineService.initialize()`. At-least-once delivery: handler вызывается
+для каждого сообщения, offset коммитится только после успешного handle.
+При exception offset не коммитится → Kafka redeliver.
+
+```python
+class KafkaConsumerLoop:
+    def __init__(topic, group_id, handler, bootstrap_servers?)
+    async def start()
+    async def stop()
+```
+
+### AgentRequestHandler
+
+**Файл:** `src/engine/kafka/agent_handler.py`
+
+Callable для `KafkaConsumerLoop`, обслуживает топик `agent.requests`.
+Идемпотентный через атомарный CAS в `agent_runs` таблице.
+
+Pipeline:
+1. `mark_running` (atomic `UPDATE WHERE status='pending' RETURNING`)
+2. Load user message by id
+3. `AIService.generate_response()` — существующий sync pipeline
+4. `mark_done(result_message_id)` + publish в `chat.events`
+5. Any exception → `mark_failed(error)` + re-raise (Kafka redelivery skip)
+
+---
+
 ## Зависимости сервисов
 
 ```
 EngineService (singleton)
-    +-- org_storage
-    +-- user_storage
-    +-- role_storage
-    +-- chat_storage
-    +-- message_storage
-    +-- calendar_storage
-    +-- notification_channel_storage
-    +-- notification_log_storage
-    +-- task_storage
-    +-- task_poll_storage
-    +-- task_report_storage
-    +-- in_app_notification_storage
-    +-- user_file_storage
-    +-- correction_rule_storage
-    +-- device_storage
-    +-- rag_store
+    +-- Storages:
+    |   +-- org_storage, user_storage, role_storage, chat_storage, message_storage
+    |   +-- calendar_storage
+    |   +-- notification_channel_storage, notification_log_storage
+    |   +-- task_storage, task_poll_storage, task_report_storage
+    |   +-- in_app_notification_storage
+    |   +-- user_file_storage, correction_rule_storage, device_storage
+    |   +-- rag_store
+    |   +-- department_storage (item 8)
+    |   +-- project_storage, task_event_storage (item 11)
+    |   +-- agent_run_storage (item 10)
     |
-    +-- storage_adapter (LocalStorageAdapter)
-    +-- prompt_cache
-    +-- tool_registry (calendar, task, rag, web, role_call)
-    +-- agent_executor (llm, prompt_cache, tool_registry)
+    +-- Agents & LLM:
+    |   +-- storage_adapter (LocalStorageAdapter)
+    |   +-- prompt_cache
+    |   +-- tool_registry (calendar, task, rag, web, role_call)
+    |   +-- agent_executor (llm, prompt_cache, tool_registry)
     |
-    +-- calendar_service (calendar_storage)
-    +-- in_app_notification_service (in_app_notification_storage)
-    +-- task_service (task_storage, in_app_notification_service)
-    +-- task_poll_service (task_poll_storage, task_service, in_app_notification_service)
-    +-- task_report_service (task_report_storage, task_poll_storage, user_storage, in_app_notification_service)
-    +-- file_service (user_file_storage, storage_adapter)
-    +-- rag_service (rag_store, user_file_storage)
-    +-- notification_service (channel_storage, log_storage, senders)
-    +-- scheduler_service (calendar, notifications, agent_executor, role_storage,
-    |                       user_storage, org_storage, task_service, task_poll_service, task_report_service)
+    +-- Kafka (item 10):
+    |   +-- kafka_producer (KafkaProducerService)
+    |   +-- agent_request_consumer (KafkaConsumerLoop on agent.requests)
+    |   +-- _agent_request_handler (AgentRequestHandler)
     |
-    +-- chat_service (chat_storage, message_storage)
-    +-- mention_service (user_storage)
-    +-- ai_service (role_storage, user_storage, chat_storage, message_storage,
-    |               prompt_cache, agent_executor)
-    +-- correction_rule_service (correction_rule_storage, agent_executor)
+    +-- Services (order matters for DI):
+    |   +-- calendar_service (calendar_storage)
+    |   +-- department_service (department_storage, user_storage)
+    |   +-- in_app_notification_service (in_app_notification_storage)
+    |   +-- chat_service (chat_storage, message_storage)
+    |   +-- task_event_service (task_event_storage)                    item 11
+    |   +-- project_service (project_storage, chat_service)            item 11
+    |   +-- task_notification_service (chat_service, message_storage,  item 10
+    |   |                              user_storage, kafka_producer)
+    |   +-- task_service (task_storage, in_app_notification_service,
+    |   |                 chat_service, task_event_service,
+    |   |                 project_service, task_notification_service)
+    |   +-- task_poll_service (task_poll_storage, task_service, in_app_notification_service)
+    |   +-- task_report_service (task_report_storage, task_poll_storage,
+    |   |                        user_storage, in_app_notification_service)
+    |   +-- reference_service (task_storage, project_storage)          item 11
+    |   +-- mention_service (user_storage)
+    |   +-- ai_service (role_storage, user_storage, chat_storage,
+    |   |               message_storage, prompt_cache, agent_executor,
+    |   |               agent_run_storage, kafka_producer)             item 10 async mode
+    |   +-- correction_rule_service (correction_rule_storage, agent_executor)
+    |   +-- file_service (user_file_storage, storage_adapter)
+    |   +-- rag_service (rag_store, user_file_storage)
+    |   +-- notification_service (channel_storage, log_storage, senders)
+    |   +-- scheduler_service (calendar, notifications, agent_executor, ...)
 ```

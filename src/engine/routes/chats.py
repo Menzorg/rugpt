@@ -6,7 +6,7 @@ API endpoints for chats and messages.
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 
 from ..services.engine_service import get_engine_service, EngineService
@@ -18,11 +18,6 @@ router = APIRouter(prefix="/api/v1/chats", tags=["chats"])
 
 class CreateDirectChatRequest(BaseModel):
     other_user_id: UUID
-
-
-class CreateGroupChatRequest(BaseModel):
-    name: str
-    participant_ids: List[UUID]
 
 
 class SendMessageRequest(BaseModel):
@@ -45,6 +40,8 @@ class ChatResponse(BaseModel):
     name: Optional[str]
     participants: List[str]
     created_by: Optional[str]
+    task_id: Optional[str] = None
+    project_id: Optional[str] = None
     is_active: bool
     created_at: str
     updated_at: str
@@ -61,6 +58,14 @@ class MentionResponse(BaseModel):
     position: int
 
 
+class ReferenceResponse(BaseModel):
+    type: str
+    id: str
+    title: Optional[str] = None
+    accessible: bool
+    position: int
+
+
 class MessageResponse(BaseModel):
     id: str
     chat_id: str
@@ -68,6 +73,7 @@ class MessageResponse(BaseModel):
     sender_id: str
     content: str
     mentions: List[MentionResponse]
+    references: List[ReferenceResponse] = []
     reply_to_id: Optional[str]
     ai_is_valid: Optional[bool]
     ai_edited: bool
@@ -89,10 +95,13 @@ def get_engine() -> EngineService:
 @router.get("/my", response_model=List[ChatResponse])
 async def list_my_chats(
     user_id: UUID,  # In real app, get from JWT
+    type: Optional[str] = Query(None, description="direct | task | project"),
     engine: EngineService = Depends(get_engine)
 ):
-    """List current user's chats"""
-    chats = await engine.chat_service.list_user_chats(user_id)
+    """List current user's chats. Optional ?type filter."""
+    if type is not None and type not in ("direct", "task", "project"):
+        raise HTTPException(status_code=400, detail="Invalid chat type")
+    chats = await engine.chat_service.list_user_chats(user_id, chat_type=type)
     return [ChatResponse(**chat.to_dict()) for chat in chats]
 
 
@@ -112,29 +121,6 @@ async def create_direct_chat(
 
     chat = await engine.chat_service.create_direct_chat(
         user_id, request.other_user_id, org_id
-    )
-    return ChatResponse(**chat.to_dict())
-
-
-@router.post("/group", response_model=ChatResponse)
-async def create_group_chat(
-    request: CreateGroupChatRequest,
-    user_id: UUID,  # In real app, get from JWT
-    org_id: UUID,
-    engine: EngineService = Depends(get_engine)
-):
-    """Create group chat"""
-    # Visibility check for all participants
-    visible_ids = await engine.department_service.get_visible_user_ids(
-        user_id, org_id,
-    )
-    for pid in request.participant_ids:
-        if pid not in visible_ids:
-            raise HTTPException(status_code=403, detail=f"User {pid} not visible")
-
-    participants = [user_id] + request.participant_ids
-    chat = await engine.chat_service.create_group_chat(
-        request.name, participants, user_id, org_id
     )
     return ChatResponse(**chat.to_dict())
 
@@ -202,19 +188,41 @@ async def archive_chat(
 @router.get("/{chat_id}/messages", response_model=List[MessageResponse])
 async def list_messages(
     chat_id: UUID,
+    user_id: UUID,  # viewer — needed to compute per-viewer reference accessibility
     limit: int = 50,
     before_id: Optional[UUID] = None,
     engine: EngineService = Depends(get_engine)
 ):
-    """List messages in chat"""
+    """List messages in chat. Response includes a `references` field per message
+    with per-viewer resolution of !<task_uuid> and !!<project_uuid>."""
     messages = await engine.chat_service.list_messages(chat_id, limit, before_id)
-    return [MessageResponse(**msg.to_dict()) for msg in messages]
+
+    actor = await engine.user_storage.get_by_id(user_id)
+    refs_by_msg = {}
+    if actor is not None and messages:
+        refs_by_msg = await engine.reference_service.resolve_batch(
+            [(m.id, m.content or "") for m in messages], actor,
+        )
+
+    out = []
+    for msg in messages:
+        d = msg.to_dict()
+        d["references"] = refs_by_msg.get(msg.id, [])
+        out.append(MessageResponse(**d))
+    return out
 
 
 class SendMessageResponse(BaseModel):
-    """Response for send message including AI responses"""
+    """Response for send message.
+
+    ai_responses is kept for backward compat with sync fallback path (Kafka disabled).
+    When Kafka-backed async inference is active, ai_responses is empty and the
+    client should watch for WS `message` events with sender_type=ai_role.
+    agent_pending=True hints the UI to show a typing indicator.
+    """
     user_message: MessageResponse
     ai_responses: List[MessageResponse] = []
+    agent_pending: bool = False
 
 
 @router.post("/{chat_id}/messages", response_model=SendMessageResponse)
@@ -238,21 +246,40 @@ async def send_message(
         reply_to_id=request.reply_to_id,
     )
 
-    # Process @@ mentions - trigger AI responses
+    # Process @@ mentions -> AI responses (sync path) OR enqueue (async path)
     ai_responses = []
     ai_mentions = [m for m in mentions if m.type.value == "ai_role"]
+    agent_pending = False
 
     if ai_mentions:
         ai_messages = await engine.ai_service.process_ai_mentions(message, org_id)
+        # Async mode: process_ai_mentions returns empty list, enqueue happened internally
+        if not ai_messages and engine.ai_service._is_async_mode():
+            agent_pending = True
         ai_responses = [MessageResponse(**msg.to_dict()) for msg in ai_messages]
     else:
         ai_msg = await engine.ai_service.try_auto_respond(message, chat_id, user_id)
         if ai_msg:
             ai_responses = [MessageResponse(**ai_msg.to_dict())]
+        elif engine.ai_service._is_async_mode():
+            # Auto-respond path may have enqueued if there's a system user in the chat.
+            # We can't cheaply tell if enqueue happened without extra DB lookup; err
+            # on the side of showing the pending indicator when async mode is on and
+            # the chat has at least one system participant.
+            chat = await engine.chat_service.get_chat(chat_id)
+            if chat:
+                for pid in chat.participants:
+                    if pid == user_id:
+                        continue
+                    u = await engine.user_storage.get_by_id(pid)
+                    if u and u.is_system:
+                        agent_pending = True
+                        break
 
     return SendMessageResponse(
         user_message=MessageResponse(**message.to_dict()),
-        ai_responses=ai_responses
+        ai_responses=ai_responses,
+        agent_pending=agent_pending,
     )
 
 

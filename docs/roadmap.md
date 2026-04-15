@@ -195,83 +195,217 @@ AI-роли получают доступ к загруженным докуме
 - В карточке задачи: кнопка "Изменить срок" (создатель) / "Предложить другой срок" (исполнитель)
 - В карточке: кнопки "Принять" / "Вернуть в работу" для `awaiting_review`
 
-### 10. Агент "Проджект-менеджер" (PM)
+### 10. Агент "Проджект-менеджер" (PM) + Kafka event bus -- РЕАЛИЗОВАНО (требуется ручная верификация)
 
-PM-агент — четвёртый агент на главной странице, доступен всем. Выполняет две роли:
+PM-агент как личный уведомитель по задачам + **фундамент асинхронного
+инференса через Kafka**. П.10 в итоге закрыл сразу три задачи: PM-агент,
+часть п.5 (очереди к нейронкам через Kafka), и решил архитектурный пробел
+«проактивная доставка сообщений от Engine в WS клиентам».
 
-**A. Conversational agent для команд (см. п.12)**
-- `agent_type='simple'` (ReAct loop), `tools=[task_*, chat_*, summary_*, notify_*]`
-- System prompt в `src/engine/prompts/pm.md`
-- Отвечает на команды в естественном языке и вызывает соответствующие tools
+Подробная спецификация: `docs/superpowers/specs/2026-04-14-pm-agent-and-kafka-bus-design.md`.
 
-**B. Личный уведомитель по задачам**
-- PM подписан на события в таблице tasks (через triggers, scheduler polling, или service-level hook)
-- При изменении задачи PM пишет в **личный direct-чат** с заинтересованным пользователем (НЕ в чат задачи)
-- Правило: уведомляем того, кто **не инициировал** изменение
+**Что реализовано (engine + webclient, 2026-04-14):**
 
-**Кому что приходит:**
-| Кто поменял | Событие | Получатель уведомления от PM |
-|---|---|---|
-| Исполнитель | `created → in_progress` | Создатель |
-| Исполнитель | `in_progress → awaiting_review` | Создатель (с кнопками «Принять», «Вернуть») |
-| Создатель | `awaiting_review → done` | Исполнитель |
-| Создатель | `awaiting_review → in_progress` | Исполнитель (с комментарием возврата) |
-| Создатель | изменил срок | Исполнитель |
-| Исполнитель | предложил новый срок | Создатель (с кнопками «Принять», «Отклонить») |
-| Создатель | переназначил | Старый и новый исполнитель |
-| Создатель | отменил | Исполнитель |
-| Scheduler | задача стала `overdue` | Исполнитель и создатель |
+**Kafka инфраструктура:**
+- Apache Kafka 3.7.0 (Apache License 2.0), KRaft mode, single-node в Docker
+- `docker-compose.kafka.yml` + `scripts/kafka_up.sh`/`kafka_down.sh`/`kafka_init.sh`
+- Два топика с разной retention: `agent.requests` (24h, внутренняя очередь
+  инференса), `chat.events` (1h, доставка сообщений в WS)
+- `aiokafka` (Engine, Python), `kafkajs` (WebClient, TypeScript)
+- `Config.KAFKA_BOOTSTRAP_SERVERS` + `KAFKA_ENABLED` флаг — весь Kafka-код
+  работает как no-op когда выключен, тесты без Kafka продолжают работать
 
-**Сообщения PM содержат:**
-- Краткий текст описания события
-- Ссылку на задачу (открывает чат задачи)
-- Иногда — интерактивные кнопки (Принять / Вернуть / Отклонить)
+**PM агент:**
+- Миграция `018_pm_role_and_agent_runs.sql`: роль `pm` в системной org +
+  system user `pm` (идемпотентно через `ON CONFLICT DO NOTHING`)
+- `src/engine/prompts/pm.md` — system prompt для conversational режима
+- `TaskNotificationService` — 9 методов (`notify_take`, `notify_mark_done`,
+  `notify_accept`, `notify_reject`, `notify_set_deadline`,
+  `notify_propose_deadline`, `notify_accept_proposed_deadline`,
+  `notify_reject_proposed_deadline`, `notify_overdue`)
+- Сообщения идут **от лица PM system user** (`sender_type=ai_role`,
+  `ai_is_valid=true`) в lazy-созданный direct-chat между PM и получателем
+- Правило адресации: уведомляется сторона, которая **не инициировала**
+  изменение (assignee-действия → creator, creator-действия → assignee,
+  scheduler/overdue → обе стороны)
+- Hook-integration в `TaskService` через helper `_notify(method, ...)`,
+  вызывается после `_record_event` во всех методах перехода +
+  `check_overdue`
+- Deep-link в тексте уведомления: `/chat/task/<uuid>` (страница из п.11,
+  вместо изначально планировавшегося `/tasks#<id>`)
+- **НЕ реализовано** (намеренно отброшено в дизайне):
+  - Интерактивные кнопки «Принять» / «Вернуть» / «Отклонить» в сообщениях
+    PM — юзер идёт в `/chat/task/<id>` для действий
+  - `acting_on_behalf_of_user_id` поле и `POST /api/v1/messages/{id}/action`
+    эндпоинт
 
-**Реализация:** Seed-миграция добавляет роль `pm` в RuGPT org. Engine получает новый сервис `TaskNotificationService`, который реагирует на изменения task через event-hook в `TaskService.update()` и постит сообщения в direct-чат с PM от лица system user PM-роли. Интерактивные кнопки — через `message.metadata.actions[]`, обработка кликов — новый эндпоинт `POST /api/v1/messages/{id}/action`.
+**Kafka event bus (фундамент для async доставки):**
+- `KafkaProducerService` — aiokafka с `enable_idempotence=True`, JSON
+  сериализация, UUID/datetime поддержка
+- `KafkaConsumerLoop` — background asyncio task, at-least-once с manual
+  commit; при exception offset не коммитится → Kafka redeliver
+- `chat.events` topic: publisher в Engine (TaskNotificationService +
+  AgentRequestHandler), consumer в NestJS (`KafkaConsumerService` →
+  `SocketGateway.broadcastToChat(chatId, msg)` → `io.to('chat:<id>').emit(...)`)
+- Broadcast pattern: каждый NestJS instance в своей consumer group
+  (`webclient-<hostname>-<pid>`), все instance'ы получают все события
 
-### 11. Проекты (группировка задач) и чаты задач
+**Асинхронный агентный инференс (начало п.5):**
+- Таблица `agent_runs(request_id PK, status, ...)` для идемпотентности при
+  Kafka redelivery. Атомарный CAS `mark_running` через
+  `UPDATE WHERE status='pending' RETURNING`
+- `AIService` — два режима:
+  - Async (Kafka enabled): `process_ai_mentions` и `try_auto_respond`
+    публикуют в `agent.requests`, возвращают пустой `ai_responses`
+  - Sync fallback: старый синхронный путь через `generate_response()`,
+    тесты существующего контракта не ломаются
+- `AgentRequestHandler` — callable для KafkaConsumerLoop:
+  1. Atomic CAS `pending → running`, если уже running/done/failed — skip
+  2. Load user message by id
+  3. Вызов `AIService.generate_response()` — существующая синхронная
+     логика (context build, LangGraph ReAct loop, tools, persistence)
+  4. `mark_done` + publish в `chat.events`
+  5. При exception: `mark_failed`, re-raise чтобы offset не коммитился
+- Kafka consumer для `agent.requests` — background task в том же uvicorn
+  (через `asyncio.create_task` в `EngineService.initialize`)
+- HTTP response `POST /chats/{id}/messages` получил новое поле
+  `agent_pending: bool` — для typing indicator на фронте
 
-Группировка задач + автоматические чаты для обсуждения.
+**NestJS (webclient):**
+- `KafkaModule` + `KafkaConsumerService` с подпиской на `chat.events`
+- `SocketGateway.broadcastToChat(chatId, msg)` — новый public метод
+- `ChatService.saveMessage` возвращает `agentPending?: boolean`
+- Зарегистрирован в `AppModule`
 
-**Модель данных:**
-- Новое поле `tasks.project text` (nullable)
-- Индекс `(org_id, project)`
-- Без отдельной таблицы проектов — список = `SELECT DISTINCT project FROM tasks WHERE org_id=...`
+**Тесты:**
+- Engine: **131 passed** (109 до п.10 + 22 новых)
+  - `test_task_notifications.py` — 12 тестов TaskNotificationService с моками
+  - `test_agent_runs_idempotency.py` — 5 тестов атомарного CAS на реальной БД
+    (including concurrent `asyncio.gather` → exactly-one-wins)
+  - `test_ai_service_async.py` — 9 тестов async/sync branching
+  - `test_agent_request_handler.py` — 6 тестов consumer handler
+  - `tests/integration/test_kafka_end_to_end.py` — 2 e2e теста с живым
+    Kafka (PM notification доставляется в `chat.events`, `@@mention` →
+    publish в `agent.requests` + agent_run row создаётся)
+- Backend NestJS: `tsc --noEmit` exit 0
 
-**Чаты задач и проектов (новые типы chat):**
-- `chats.kind text NOT NULL DEFAULT 'direct'` — расширяется до `'direct'|'group'|'task'|'project'`
-- `chats.task_id uuid REFERENCES tasks(id) ON DELETE CASCADE` (для kind='task')
-- `chats.project_name text` (для kind='project')
+**Отклонения от исходного плана роадмапа (обоснованные):**
+- Исходный план подразумевал полу-синхронный PM (event-hook в
+  `TaskService.update()` → прямой `message_storage.create`). Реализовано
+  через Kafka event bus — потому что без него проактивные сообщения из
+  Engine не долетают до подключённых WS-клиентов (см. обсуждение в дизайн-
+  доке, P2 из investigation).
+- Интерактивные кнопки в сообщениях PM отброшены. Юзер переходит в
+  `/chat/task/<id>` по ссылке в тексте.
+- Deep-link `/tasks#<id>` заменён на `/chat/task/<id>` (страница из п.11).
 
-**Автоматическое создание:**
-- При создании задачи **автоматически** создаётся `chat(kind='task', task_id=...)`. Участники: creator + assignee
-- При создании задачи с новым проектом — **автоматически** создаётся `chat(kind='project', project_name=...)`. Участники: все у кого есть задачи в этом проекте
-- При добавлении новой задачи в существующий проект — новые участники автоматически добавляются в чат проекта
-- При переназначении задачи — новый исполнитель добавляется в её чат, старый удаляется (или остаётся как "наблюдатель", решить при имплементации)
+**Разблокировано:**
+- **п.12 (команды агентам)** — вся инфраструктура event bus + async
+  агенты уже работает. Остаётся добавить tools `chat_post`,
+  `project_chat_post`, `summary_*`, `notify_*` в PM role и расширить
+  prompt
+- **п.5 (очереди к нейронкам)** — частично закрыто: `agent.requests` как
+  очередь задач для inference. Масштабирование через `gunicorn --workers N`
+  — Kafka consumer group сама распределит partition'ы
+- Любая будущая проактивная коммуникация Engine→фронт (scheduler алерты,
+  batch отчёты) — пользуется тем же `chat.events` каналом
 
-**Что НЕ пишется в чаты:**
-- **Никаких системных сообщений** о статусах, дедлайнах, приёмке. Чаты задач и проектов остаются для **живого общения** и сообщений AI-агентов по команде
-- Audit trail задачи хранится отдельно (новая таблица `task_events` или audit-триггер на tasks). В UI карточки задачи — кнопка "История изменений" → модалка
-- Уведомления о событиях — через PM-чат (см. п.10), не в чат задачи
+**Оставшееся (follow-up):**
+- Ручная верификация в браузере под живым Engine+NestJS+фронт
+- Typing indicator на фронте через `agent_pending` (сейчас работает
+  через regexp `/@@\w+/`, функционально эквивалентно)
+- Cleanup politics для `agent_runs` старше 30 дней (scheduler job)
+- Dead letter queue для хронически упавших runs
+- Раскатка Kafka на prod-машину Engine (5090/Proxmox) + open порт `9092`
+  на WireGuard VPN интерфейс для NestJS консьюмера
 
-**Видимость:**
-- Чат задачи: участники = creator + assignee + admin (admin через глобальное правило)
-- Чат проекта: участники = все у кого есть задачи в этом проекте + admin
-- Удалённая задача — чат остаётся как архив (`tasks.deleted_at`), кроме случаев когда админ явно удалит чат
+### 11. Проекты (группировка задач) и чаты задач -- РЕАЛИЗОВАНО (требуется ручная верификация)
 
-**Упоминания задач и проектов:**
-- Расширить `mention_service`:
-  - `@task:<id>` — точная ссылка по UUID
-  - `@task:"название"` — поиск по имени, fuzzy match в org
-  - `@project:"название"` — ссылка на проект
-- Упомянутая сущность = кликабельная pill в сообщении, ведёт в чат задачи/проекта
-- Если у читателя нет видимости — pill отображается как "недоступно"
+Группировка задач + автоматические чаты для обсуждения, audit trail и
+кликабельные ссылки `!<task>` / `!!<project>` в сообщениях.
 
-**WebClient:**
-- В форме создания/редактирования задачи — поле "Проект" с автокомплитом из существующих
-- В списке задач — клик по задаче открывает её чат, клик по pill проекта открывает чат проекта
-- В сайдбаре — раздел "Проекты" со списком (DISTINCT project, сортировка по непрочитанным)
-- В чате задачи — pinned-карточка задачи сверху (статус, срок, исполнитель, кнопки управления для создателя)
+Подробная спецификация: `docs/superpowers/specs/2026-04-13-projects-and-task-chats-design.md`.
+
+**Что реализовано (engine + webclient, 2026-04-13/14):**
+
+- **Миграция `017_projects_and_task_chats.sql`** — таблицы `projects`, `task_events`,
+  колонки `tasks.project_id`, `chats.task_id`, `chats.project_id`; legacy `main`/`group`
+  типы конвертированы в `direct`, default `type='direct'`; partial-индексы
+  `idx_projects_org`, `idx_tasks_project`, `idx_chats_task`, `idx_chats_project`,
+  `idx_task_events_task(task_id, created_at DESC)`.
+- **Отдельная таблица проектов** (вместо изначально планировавшегося `tasks.project text`):
+  дубликаты имён в одной org разрешены, soft-delete через `is_active`, `created_by_user_id`
+  для аудита.
+- **Audit trail** — таблица `task_events` + `TaskEventService`. Каждый переход статуса
+  (`created`, `took`, `marked_done`, `accepted`, `rejected`, `deadline_set`,
+  `deadline_proposed`, `deadline_proposal_accepted|rejected`, `assignee_changed`,
+  `project_changed`, `cancelled`, `overdue`) пишется отдельным событием.
+  **В чаты задач/проектов системные сообщения НЕ пишутся** — всё в `task_events`.
+- **Auto-создание чатов**:
+  - `TaskService.create()` → `ChatService.create_task_chat()` (участники: creator + assignee,
+    chat.type=TASK, chat.task_id).
+  - Если передан `project_id` → `ensure_project_chat_membership()` лениво создаёт project-chat
+    или мерджит участников в существующий. Идемпотентно, реактивирует архивированный чат
+    (решает race с `archive_project_chat`).
+  - `TaskService.update()` при смене assignee → `add_task_chat_participant`, при смене
+    `project_id` → `ensure_project_chat_membership` в новом проекте. Старый project-chat
+    остаётся как наблюдатель (монотонный рост participants — осознано).
+  - `TaskService.deactivate()` → `archive_task_chat`; если последняя активная задача в
+    проекте — `archive_project_chat`.
+- **Чистка group-чатов** — `ChatType.GROUP`, `ChatService.create_group_chat`, роут
+  `POST /api/v1/chats/group`, `CreateGroupChatRequest`, frontend `isGroup`, NestJS
+  `createGroupChat` — всё удалено. Legacy строки в БД сконвертированы.
+- **Ссылки `!<task-uuid>` / `!!<project-uuid>`** — параллельная подсистема к `@`/`@@`.
+  `ReferenceService` парсит regex `!!(UUID)|!(UUID)`, `resolve_batch` делает per-viewer
+  проверку через `can_see_task` (creator / assignee / same-org admin) и проверку
+  `org_id`/`is_active` для проектов. Результат ездит в response сообщения как поле
+  `references: [{type, id, title, accessible, position}]`. Недоступные — `accessible=false`,
+  `title=null`, кросс-org не утекает.
+- **Права**: только `is_head || is_admin` могут создавать/редактировать/удалять проекты;
+  multi-tenancy по `org_id` на всех уровнях (service + route), кросс-org сущности
+  скрываются как 404.
+- **Engine API**:
+  - `/projects` CRUD + `/projects/{id}/chat`;
+  - `/tasks/{id}/chat`, `/tasks/{id}/events`;
+  - `POST/PATCH /tasks` принимают `project_id`, `PATCH` поддерживает отдельный
+    `detach_project` для явного сброса;
+  - `/tasks/my` и `/tasks/created-by-me` принимают `?project_id`;
+  - `/chats/my?type=direct|task|project` серверный фильтр;
+  - `/chats/{id}/messages` возвращает `references` per-viewer.
+- **WebClient (NestJS proxy)**: адаптер дополнен командами `get_projects`, `get_project`,
+  `create_project`, `update_project`, `delete_project`, `get_project_chat`, `get_task_chat`,
+  `get_task_events`; новый `ProjectModule` (controller + service); `TaskService.listMy`/
+  `listCreatedByMe` принимают `projectId?`, `getChat`, `getEvents`; `TaskController` —
+  новые endpoints `:id/chat`, `:id/events`; common types обновлены (`ChatType.TASK/PROJECT`,
+  `ReferenceType`, `MessageReference`, `Task.projectId`, новые `Project`, `TaskEvent`).
+- **Frontend (Next.js)**: новые роуты `/chat/task/[id]`, `/chat/project/[id]` с
+  pinned card + HTTP-polling чатом (WS-интеграция — follow-up); `Sidebar` — секции
+  «Задачи» и «Проекты» через `useSidebarTaskProjectChats`; `ChatInput` — `detectReference`
+  autocomplete для `!`/`!!` с клавиатурной навигацией; `MessageBubble` — рендеринг
+  pills через `references`, серые pills для недоступных; форма создания задачи —
+  dropdown проектов + inline «+ создать проект» (head/admin); кнопка «Чат» в строке
+  задачи → `/chat/task/{id}`; история задачи через `<details>` в pinned card.
+- **Покрытие тестами (engine pytest)**: 68 новых тестов в 8 файлах (`test_projects`,
+  `test_task_events`, `test_task_chat_auto_create`, `test_project_chat_integration`,
+  `test_multitenancy_guards`, `test_references`, `test_sidebar_filter`,
+  `test_migration_017`). Весь suite: 97 passed.
+
+**Отклонения от исходного плана роадмапа (обоснованные):**
+- Отдельная таблица `projects` вместо `tasks.project text` — позволяет soft-delete,
+  хранить description и created_by_user_id, мигрировать переименование без обновления
+  всех задач.
+- Ссылки через `!<uuid>` / `!!<uuid>` вместо `@task:<id>`/`@task:"имя"`/`@project:"имя"` —
+  не переиспользуют `MentionService` (избегаем type confusion в `Mention.user_id`),
+  UI вставляет UUID через autocomplete, пользователь печатает `!`/`!!` и выбирает.
+- Audit trail как отдельная таблица `task_events` (выбрано из двух опций, указанных
+  в плане).
+
+**Оставшееся (follow-up):**
+- Полноценная WebSocket-интеграция для task/project chat pages (сейчас HTTP polling после
+  send — работает, но без live-апдейта от других участников).
+- Колонка «Проект» в tasks-table (сейчас фильтр только через sidebar).
+- Отдельная страница «Архив задач» для доступа к закрытым.
+- Ручная верификация в браузере (см. ниже).
 
 ### 12. Команды агентам
 

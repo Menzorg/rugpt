@@ -117,6 +117,7 @@ def create_task_tools(
                                 description=description or None,
                                 assignee_user_id=assignee_uuid,
                                 deadline=dl,
+                                created_by_user_id=UUID(user_id) if user_id else None,
                             )
                         )
                     )
@@ -130,6 +131,7 @@ def create_task_tools(
                         description=description or None,
                         assignee_user_id=assignee_uuid,
                         deadline=dl,
+                        created_by_user_id=UUID(user_id) if user_id else None,
                     )
                 )
                 return f"Task '{title}' created (id={task.id})"
@@ -214,7 +216,6 @@ def create_task_tools(
                                 task_id=task_uuid,
                                 title=title or None,
                                 description=description or None,
-                                status=status or None,
                             )
                         )
                     )
@@ -226,7 +227,6 @@ def create_task_tools(
                         task_id=task_uuid,
                         title=title or None,
                         description=description or None,
-                        status=status or None,
                     )
                 )
                 if not updated:

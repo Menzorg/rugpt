@@ -195,11 +195,67 @@ class NotificationLogStorage(BaseStorage):
 class TaskStorage(BaseStorage):
     async def create(task: Task) -> Task
     async def get_by_id(task_id: UUID) -> Task?
-    async def list_by_org(org_id, status?, assignee_user_id?) -> List[Task]
-    async def list_active_for_polls(assignee_user_id: UUID) -> List[Task]  # status != 'done'
+    async def list_by_assignee(user_id, status?) -> List[Task]
+    async def list_by_assignee_with_priority(user_id, include_done?) -> List[dict]  # + creator role
+    async def list_by_creator_with_assignee(user_id, include_done?) -> List[dict]
+    async def list_archived_for_user(user_id, org_id, limit?) -> List[dict]  # item 11: done | cancelled
+    async def list_by_org(org_id, status?) -> List[Task]
+    async def list_active_for_polls(user_id) -> List[Task]
+    async def list_active_with_deadline() -> List[Task]  # scheduler overdue check
     async def update(task: Task) -> Task
-    async def deactivate(task_id: UUID) -> bool
+    async def deactivate(task_id) -> bool
+    async def count_active_in_project(project_id) -> int  # item 11
+    async def get_many_by_ids(ids: List[UUID]) -> Dict[UUID, Task]  # item 11 batch for references
 ```
+
+---
+
+## ProjectStorage (item 11)
+
+**Файл:** `src/engine/storage/project_storage.py`
+
+```python
+class ProjectStorage(BaseStorage):
+    async def create(project) -> Project
+    async def get_by_id(project_id) -> Project?
+    async def list_by_org(org_id, include_archived?) -> List[Project]
+    async def update(project) -> Project
+    async def deactivate(project_id) -> bool
+    async def get_many_by_ids(ids) -> Dict[UUID, Project]  # batch for references
+```
+
+---
+
+## TaskEventStorage (item 11)
+
+**Файл:** `src/engine/storage/task_event_storage.py`
+
+```python
+class TaskEventStorage(BaseStorage):
+    async def create(event: TaskEvent) -> TaskEvent  # JSONB payload
+    async def list_by_task(task_id, limit?) -> List[TaskEvent]  # DESC by created_at
+```
+
+---
+
+## AgentRunStorage (item 10)
+
+**Файл:** `src/engine/storage/agent_run_storage.py`
+
+Idempotency для асинхронных agent executions через атомарный CAS.
+
+```python
+class AgentRunStorage(BaseStorage):
+    async def create(run: AgentRun) -> AgentRun  # status=pending
+    async def get(request_id) -> AgentRun?
+    async def mark_running(request_id) -> bool
+    # Atomic CAS: UPDATE WHERE status='pending' RETURNING
+    # True iff this caller won the race (Kafka redelivery safety)
+    async def mark_done(request_id, result_message_id)
+    async def mark_failed(request_id, error: str)
+```
+
+**Статусы:** `pending | running | done | failed`
 
 ---
 
@@ -557,3 +613,7 @@ CREATE TABLE tables_rows_chunks (
 | 012 | rag_schema.sql | pgvector, chunks, tables_rows_chunks, RAG-поля в user_files |
 | 013 | rag_functions.sql | SQL-функции гибридного поиска (7 функций) |
 | 014 | org_timezone.sql | timezone в organizations |
+| 015 | departments.sql | departments, department_visibility, dept поля на users, org_context (item 8) |
+| 016 | task_ownership.sql | tasks.created_by_user_id, awaiting_review_at, proposed_deadline, proposed_deadline_by (item 9) |
+| 017 | projects_and_task_chats.sql | projects, task_events, tasks.project_id, chats.task_id/project_id, legacy main/group→direct (item 11) |
+| 018 | pm_role_and_agent_runs.sql | PM role + system user `pm`, agent_runs таблица для async idempotency (item 10) |
