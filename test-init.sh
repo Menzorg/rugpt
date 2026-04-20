@@ -16,15 +16,10 @@ NC='\033[0m' # No Color
 
 # Загружаем переменные окружения
 if [ -f .env ]; then
-    while IFS='=' read -r key value; do
-        # Пропускаем комментарии и пустые строки
-        [[ $key =~ ^#.*$ ]] && continue
-        [[ -z $key ]] && continue
-        # Убираем кавычки если есть
-        value="${value%\"}"
-        value="${value#\"}"
-        export "$key=$value"
-    done < .env
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
 fi
 
 # Параметры БД
@@ -101,9 +96,16 @@ if [ "$EXISTING" -gt 0 ]; then
 fi
 echo -e "${GREEN}OK${NC}"
 
+# Выбираем python: venv движка (где bcrypt) или системный
+if [ -x ./venv/bin/python ]; then
+    PYTHON_BIN=./venv/bin/python
+else
+    PYTHON_BIN=python3
+fi
+
 # Хешируем пароль (bcrypt)
 echo -e "${YELLOW}Генерация хеша пароля...${NC}"
-PASSWORD_HASH=$(python3 -c "
+PASSWORD_HASH=$($PYTHON_BIN -c "
 import bcrypt
 password = '$TEST_ADMIN_PASSWORD'.encode('utf-8')
 salt = bcrypt.gensalt(rounds=12)
@@ -159,7 +161,7 @@ VALUES (
     'lawyer',
     'Корпоративный юрист-ассистент',
     'You are a corporate lawyer assistant. Help with legal questions, contract review, and compliance matters.',
-    'qwen2.5:7b',
+    'qwen3:14b',
     'simple',
     '{}',
     '[]',
@@ -183,7 +185,7 @@ VALUES (
     'humorist',
     'Корпоративный юморист-ассистент',
     'You are a corporate humor assistant. Answer questions with humor and positivity.',
-    'qwen2.5:7b',
+    'qwen3:14b',
     'simple',
     '{}',
     '[]',
@@ -197,7 +199,7 @@ echo -e "${GREEN}OK: Юморист ($ROLE_HUMORIST_ID)${NC}"
 
 # Создаем пользователя-юриста
 echo -e "${YELLOW}Создание пользователя '$TEST_USER1_NAME'...${NC}"
-USER1_HASH=$(python3 -c "
+USER1_HASH=$($PYTHON_BIN -c "
 import bcrypt
 password = '$TEST_USER1_PASSWORD'.encode('utf-8')
 salt = bcrypt.gensalt(rounds=12)
@@ -224,7 +226,7 @@ echo -e "${GREEN}OK: $TEST_USER1_NAME ($USER1_ID) -> роль Юрист${NC}"
 
 # Создаем пользователя-юмориста
 echo -e "${YELLOW}Создание пользователя '$TEST_USER2_NAME'...${NC}"
-USER2_HASH=$(python3 -c "
+USER2_HASH=$($PYTHON_BIN -c "
 import bcrypt
 password = '$TEST_USER2_PASSWORD'.encode('utf-8')
 salt = bcrypt.gensalt(rounds=12)

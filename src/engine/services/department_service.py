@@ -103,7 +103,10 @@ class DepartmentService:
         if not viewer:
             return set()
 
-        all_users = await self._user_storage.list_by_org(org_id)
+        org_users = await self._user_storage.list_by_org(org_id)
+        # System AI users live in RuGPT system org but must be visible everywhere.
+        system_users = await self._user_storage.get_system_users()
+        all_users = list(org_users) + list(system_users)
 
         # Admin sees everyone
         if viewer.is_admin:
