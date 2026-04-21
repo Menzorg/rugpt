@@ -69,9 +69,6 @@ class CorrectionRuleService:
         if ai_message.sender_type != SenderType.AI_ROLE:
             raise ValueError(f"Message {ai_message_id} is not an AI message")
 
-        if ai_message.sender_id != user_id:
-            raise ValueError(f"User {user_id} is not the owner of this AI role response")
-
         # 2. Get the original user question (reply_to_id)
         original_message = None
         if ai_message.reply_to_id:
@@ -79,13 +76,56 @@ class CorrectionRuleService:
 
         user_question = original_message.content if original_message else ""
 
-        # 3. Determine role_id and org_id
-        responder = await self.user_storage.get_by_id(user_id)
-        if not responder or not responder.role_id:
-            raise ValueError(f"User {user_id} has no assigned role")
+        # Authorization: admin bypass, or rejecter must be the role-owner,
+        # or — for mirror responses (is_system + no role_id) — the user who
+        # triggered the reply.
+        rejecter = await self.user_storage.get_by_id(user_id)
+        if not rejecter:
+            raise ValueError(f"User {user_id} not found")
 
-        role_id = responder.role_id
-        org_id = responder.org_id
+        ai_sender = await self.user_storage.get_by_id(ai_message.sender_id)
+        is_mirror_response = (
+            ai_sender is not None
+            and ai_sender.is_system
+            and ai_sender.role_id is None
+        )
+
+        if not rejecter.is_admin:
+            if ai_message.sender_id != user_id:
+                if not is_mirror_response:
+                    raise ValueError(
+                        f"User {user_id} is not the owner of this AI role response"
+                    )
+                if not original_message or original_message.sender_id != user_id:
+                    raise ValueError(
+                        f"User {user_id} did not trigger this mirror response"
+                    )
+
+        # 3. Determine effective role_id / org_id for the CorrectionRule.
+        # Priority:
+        #   a) AI sender has its own role (domain or system AI) — the rule
+        #      belongs to that role
+        #   b) Mirror response — the rule belongs to the triggering user's role
+        #   c) Fallback — rejecter's own role (legacy path, same as role-owner
+        #      rejecting their own response)
+        if ai_sender is not None and ai_sender.role_id is not None:
+            role_id = ai_sender.role_id
+            org_id = ai_sender.org_id
+        elif is_mirror_response and original_message is not None:
+            triggering_user = await self.user_storage.get_by_id(original_message.sender_id)
+            if triggering_user is None or triggering_user.role_id is None:
+                raise ValueError(
+                    f"Cannot determine role: mirror trigger {original_message.sender_id} has no role"
+                )
+            role_id = triggering_user.role_id
+            org_id = triggering_user.org_id
+        elif rejecter.role_id is not None:
+            role_id = rejecter.role_id
+            org_id = rejecter.org_id
+        else:
+            raise ValueError(
+                f"Cannot determine role for correction (rejecter {user_id} has no role)"
+            )
 
         # 4. Reject the AI message (set ai_is_valid = false)
         await self.message_storage.reject(ai_message_id)

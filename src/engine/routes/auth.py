@@ -44,6 +44,7 @@ class LoginResponse(BaseModel):
     name: Optional[str] = None
     username: Optional[str] = None
     is_admin: bool = False
+    role_id: Optional[str] = None
     department_id: Optional[str] = None
     is_head: bool = False
     device_id: Optional[str] = None
@@ -179,6 +180,7 @@ async def login(request: LoginRequest):
         name=user.name,
         username=user.username,
         is_admin=user.is_admin,
+        role_id=str(user.role_id) if user.role_id else None,
         department_id=str(user.department_id) if user.department_id else None,
         is_head=user.is_head,
         device_id=device_id,
@@ -233,7 +235,8 @@ async def register(request: RegisterRequest):
         org_id=str(user.org_id),
         name=user.name,
         username=user.username,
-        is_admin=user.is_admin
+        is_admin=user.is_admin,
+        role_id=str(user.role_id) if user.role_id else None,
     )
 
 

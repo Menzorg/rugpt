@@ -64,9 +64,20 @@ class MentionService:
             # First try to find user in the sender's organization
             user = await self.user_storage.get_by_username(username, org_id)
 
-            # Fallback: try system users (@@mirror, @@ai_gpt4, etc.)
+            # Fallback: try system users bound to a role (e.g. @@pm, @@reasoner,
+            # @@doc_search). Explicitly skip mirror — mirror (system user without
+            # role_id) channels the sender's own role, so allowing it as a
+            # mention means observers in a shared chat would see a response that
+            # reflects someone else's role and could wrongly validate it. Mirror
+            # is only reachable via a direct 1-on-1 chat.
             if not user:
-                user = await self.user_storage.get_system_user_by_username(username)
+                candidate = await self.user_storage.get_system_user_by_username(username)
+                if candidate is not None and candidate.role_id is None:
+                    logger.info(
+                        f"Mention @@{username} skipped: mirror is not mentionable"
+                    )
+                    candidate = None
+                user = candidate
 
             if user:
                 # Check visibility if sender_id provided
