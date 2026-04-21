@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger("rugpt.agents.tools.document")
 
 _MAX_RESULTS = 30
-_SUMMARY_MAX_CHARS = 100
+_SUMMARY_MAX_CHARS = 400
 
 
 class ListDocumentsInput(BaseModel):
