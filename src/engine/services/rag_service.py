@@ -7,7 +7,7 @@ from urllib.parse import quote
 from uuid import UUID
 
 from bs4 import BeautifulSoup
-from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from tika import parser
 
@@ -52,9 +52,9 @@ class RAGService:
         self,
         store: RAG_store | None = None,
         *,
-        ollama_model: str,
-        ollama_embeddings_base_url: str,
-        ollama_base_url: str,
+        embedding_model: str,
+        llm_base_url: str,
+        llm_api_key: str,
         chunk_size: int,
         chunk_overlap: int,
         summary_input_max_chars: int,
@@ -67,13 +67,15 @@ class RAGService:
         # UserFileStorage для обновления rag_status в процессе индексации.
         # Опциональный: если не передан, обновление статусов не производится.
         self._file_storage = file_storage
-        self._embeddings = OllamaEmbeddings(
-            model=ollama_model,
-            base_url=ollama_embeddings_base_url,
+        self._embeddings = OpenAIEmbeddings(
+            model=embedding_model,
+            base_url=llm_base_url,
+            api_key=llm_api_key,
         )
-        self._summary_llm = ChatOllama(  # type: ignore[call-arg]
+        self._summary_llm = ChatOpenAI(
             model=Config.RAG_SUMMARY_MODEL,
-            base_url=ollama_base_url,
+            base_url=llm_base_url,
+            api_key=llm_api_key,
             temperature=0,
         )
         self._splitter = RecursiveCharacterTextSplitter(
@@ -218,6 +220,9 @@ class RAGService:
             raise ValueError("file_id is required for RAG ingest.")
 
         fid = str(file_id)
+        logger.info(
+            f"rag ingest: file_id={fid} filename={filename!r} size={len(data)}B org={org_id} user={user_id}"
+        )
         size_kb = round(len(data) / 1024, 1)
 
         # Помечаем документ как «индексация начата»
@@ -374,14 +379,19 @@ class RAGService:
         top_k: int,
     ) -> list[RelatedDoc]:
         """Return top-k related docs in org/user scope using SQL hybrid search."""
+        logger.info(
+            f"rag find_docs: query={query!r} top_k={top_k} org={org_id} user={user_id}"
+        )
         query_embedding = self._embed_query(query)
-        return await self._store.call_search_related_docs(
+        docs = await self._store.call_search_related_docs(
             org_id=org_id,
             user_id=user_id,
             query=query,
             query_embedding=query_embedding,
             top_k=top_k,
         )
+        logger.info(f"rag find_docs: returned {len(docs)} docs")
+        return docs
 
     async def search_abstract_in_doc(
         self,

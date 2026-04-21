@@ -103,7 +103,11 @@ class ChatService:
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
-        return await self.chat_storage.create(chat)
+        created = await self.chat_storage.create(chat)
+        logger.info(
+            f"create_direct_chat: id={created.id} users=[{user1_id}, {user2_id}] org={org_id}"
+        )
+        return created
 
     async def get_chat(self, chat_id: UUID) -> Optional[Chat]:
         """Get chat by ID"""
@@ -138,7 +142,11 @@ class ChatService:
             participants=participants,
             created_by=creator_id,
         )
-        return await self.chat_storage.create(chat)
+        created = await self.chat_storage.create(chat)
+        logger.info(
+            f"create_task_chat: id={created.id} task={task_id} participants={participants}"
+        )
+        return created
 
     async def get_task_chat(self, task_id: UUID) -> Optional[Chat]:
         """Get chat attached to a task (if any)."""

@@ -1,20 +1,26 @@
 #!/bin/bash
 #
 # test-init.sh
-# Создает тестовую организацию, руководителя, роли и тестовых пользователей для RuGPT
+# Создаёт тестовую организацию с отделами, правилами видимости и сотрудниками.
+#
+# Структура:
+#   - 1 admin: Иван Петрович (без отдела)
+#   - 3 отдела: Юристы, Маркетинг, Бухгалтеры
+#   - 6 сотрудников (по 2 на отдел), head на каждый отдел
+#   - 2 правила видимости: Юристы↔Маркетинг, Юристы↔Бухгалтеры
+#     (Маркетинг и Бухгалтеры друг друга НЕ видят)
+#   - 2 AI-роли: lawyer, accountant (promt-файлы в src/engine/prompts/)
 #
 # Usage: ./test-init.sh
-#
 
 set -e
 
-# Цвета для вывода
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Загружаем переменные окружения
+# Загружаем .env
 if [ -f .env ]; then
     set -a
     # shellcheck disable=SC1091
@@ -22,7 +28,6 @@ if [ -f .env ]; then
     set +a
 fi
 
-# Параметры БД
 DB_HOST=${DB_HOST:-localhost}
 DB_PORT=${DB_PORT:-5432}
 DB_NAME=${DB_NAME:-rugpt}
@@ -33,34 +38,58 @@ DB_PASSWORD=${DB_PASSWORD:-}
 TEST_ORG_NAME="Тестовая Компания"
 TEST_ORG_SLUG="test-company"
 TEST_ORG_DESC="Тестовая организация для разработки"
+DEFAULT_PASSWORD="test123"
 
-TEST_ADMIN_NAME="Иван Петрович"
-TEST_ADMIN_USERNAME="ivan_petrovich"
-TEST_ADMIN_EMAIL="admin@testcompany.ru"
-TEST_ADMIN_PASSWORD="test123"
+# Admin
+ADMIN_NAME="Иван Петрович"
+ADMIN_USERNAME="ivan_petrovich"
+ADMIN_EMAIL="admin@testcompany.ru"
 
-TEST_USER1_NAME="Анна Юрьевна"
-TEST_USER1_USERNAME="anna_lawyer"
-TEST_USER1_EMAIL="anna@testcompany.ru"
-TEST_USER1_PASSWORD="test123"
+# Юристы
+U_ANNA_NAME="Анна Юрьевна"
+U_ANNA_USERNAME="anna_lawyer"
+U_ANNA_EMAIL="anna@testcompany.ru"
 
-TEST_USER2_NAME="Пётр Смешнов"
-TEST_USER2_USERNAME="petr_humor"
-TEST_USER2_EMAIL="petr@testcompany.ru"
-TEST_USER2_PASSWORD="test123"
+U_DMITRY_NAME="Дмитрий Правов"
+U_DMITRY_USERNAME="dmitry_lawyer"
+U_DMITRY_EMAIL="dmitry@testcompany.ru"
 
-# Генерируем UUID
+# Маркетинг
+U_OLEG_NAME="Олег Продажев"
+U_OLEG_USERNAME="oleg_marketer"
+U_OLEG_EMAIL="oleg@testcompany.ru"
+
+U_ELENA_NAME="Елена Постова"
+U_ELENA_USERNAME="elena_marketer"
+U_ELENA_EMAIL="elena@testcompany.ru"
+
+# Бухгалтеры
+U_OLGA_NAME="Ольга Кассова"
+U_OLGA_USERNAME="olga_accountant"
+U_OLGA_EMAIL="olga@testcompany.ru"
+
+U_SERGEY_NAME="Сергей Счётов"
+U_SERGEY_USERNAME="sergey_accountant"
+U_SERGEY_EMAIL="sergey@testcompany.ru"
+
+# UUIDs
 ORG_ID=$(cat /proc/sys/kernel/random/uuid)
 ADMIN_ID=$(cat /proc/sys/kernel/random/uuid)
 ROLE_LAWYER_ID=$(cat /proc/sys/kernel/random/uuid)
-ROLE_HUMORIST_ID=$(cat /proc/sys/kernel/random/uuid)
-USER1_ID=$(cat /proc/sys/kernel/random/uuid)
-USER2_ID=$(cat /proc/sys/kernel/random/uuid)
+ROLE_ACCOUNTANT_ID=$(cat /proc/sys/kernel/random/uuid)
+DEPT_LAWYERS_ID=$(cat /proc/sys/kernel/random/uuid)
+DEPT_MARKETING_ID=$(cat /proc/sys/kernel/random/uuid)
+DEPT_ACCOUNTING_ID=$(cat /proc/sys/kernel/random/uuid)
+U_ANNA_ID=$(cat /proc/sys/kernel/random/uuid)
+U_DMITRY_ID=$(cat /proc/sys/kernel/random/uuid)
+U_OLEG_ID=$(cat /proc/sys/kernel/random/uuid)
+U_ELENA_ID=$(cat /proc/sys/kernel/random/uuid)
+U_OLGA_ID=$(cat /proc/sys/kernel/random/uuid)
+U_SERGEY_ID=$(cat /proc/sys/kernel/random/uuid)
 
 echo -e "${YELLOW}=== RuGPT Test Data Initialization ===${NC}"
 echo ""
 
-# Функция для выполнения SQL
 run_sql() {
     if [ -n "$DB_PASSWORD" ]; then
         PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "$1"
@@ -69,212 +98,187 @@ run_sql() {
     fi
 }
 
-# Проверяем подключение к БД
 echo -e "${YELLOW}Проверка подключения к БД...${NC}"
 if ! run_sql "SELECT 1" > /dev/null 2>&1; then
     echo -e "${RED}Ошибка: не удалось подключиться к БД${NC}"
-    echo "Проверьте настройки в .env"
     exit 1
 fi
 echo -e "${GREEN}OK${NC}"
 
-# Проверяем что таблицы существуют
 echo -e "${YELLOW}Проверка схемы БД...${NC}"
 if ! run_sql "SELECT 1 FROM organizations LIMIT 1" > /dev/null 2>&1; then
-    echo -e "${RED}Ошибка: таблицы не созданы. Запустите миграции: ./migrate.sh${NC}"
+    echo -e "${RED}Ошибка: таблицы не созданы. Запустите ./migrate.sh${NC}"
     exit 1
 fi
 echo -e "${GREEN}OK${NC}"
 
-# Проверяем нет ли уже тестовых данных
 echo -e "${YELLOW}Проверка существующих данных...${NC}"
-EXISTING=$(run_sql "SELECT email FROM users WHERE email = '$TEST_ADMIN_EMAIL'" 2>/dev/null | grep -c "$TEST_ADMIN_EMAIL" || true)
+EXISTING=$(run_sql "SELECT email FROM users WHERE email = '$ADMIN_EMAIL'" 2>/dev/null | grep -c "$ADMIN_EMAIL" || true)
 if [ "$EXISTING" -gt 0 ]; then
-    echo -e "${YELLOW}Тестовый пользователь уже существует!${NC}"
-    echo "Для пересоздания сначала запустите: ./test-del.sh"
+    echo -e "${YELLOW}Тестовый admin уже существует. Запустите ./test-del.sh для пересоздания${NC}"
     exit 0
 fi
 echo -e "${GREEN}OK${NC}"
 
-# Выбираем python: venv движка (где bcrypt) или системный
+# Python с bcrypt
 if [ -x ./venv/bin/python ]; then
     PYTHON_BIN=./venv/bin/python
 else
     PYTHON_BIN=python3
 fi
 
-# Хешируем пароль (bcrypt)
-echo -e "${YELLOW}Генерация хеша пароля...${NC}"
+echo -e "${YELLOW}Хеширование общего пароля...${NC}"
 PASSWORD_HASH=$($PYTHON_BIN -c "
 import bcrypt
-password = '$TEST_ADMIN_PASSWORD'.encode('utf-8')
-salt = bcrypt.gensalt(rounds=12)
-hashed = bcrypt.hashpw(password, salt)
-print(hashed.decode('utf-8'))
+pwd = '$DEFAULT_PASSWORD'.encode('utf-8')
+print(bcrypt.hashpw(pwd, bcrypt.gensalt(rounds=12)).decode('utf-8'))
 ")
 echo -e "${GREEN}OK${NC}"
 
-# Создаем организацию
-echo -e "${YELLOW}Создание тестовой организации...${NC}"
+# ============================================
+# Организация
+# ============================================
+echo -e "${YELLOW}Создание организации...${NC}"
 run_sql "
 INSERT INTO organizations (id, name, slug, description, is_active, created_at, updated_at)
-VALUES (
-    '$ORG_ID',
-    '$TEST_ORG_NAME',
-    '$TEST_ORG_SLUG',
-    '$TEST_ORG_DESC',
-    true,
-    NOW(),
-    NOW()
-);
+VALUES ('$ORG_ID', '$TEST_ORG_NAME', '$TEST_ORG_SLUG', '$TEST_ORG_DESC', true, NOW(), NOW());
 " > /dev/null
 echo -e "${GREEN}OK: $TEST_ORG_NAME ($ORG_ID)${NC}"
 
-# Создаем руководителя
-echo -e "${YELLOW}Создание тестового руководителя...${NC}"
+# ============================================
+# Роли
+# ============================================
+echo -e "${YELLOW}Создание роли lawyer...${NC}"
+run_sql "
+INSERT INTO roles (id, org_id, name, code, description, system_prompt, model_name,
+                   agent_type, agent_config, tools, prompt_file, is_active, created_at, updated_at)
+VALUES (
+    '$ROLE_LAWYER_ID', '$ORG_ID',
+    'Юрист', 'lawyer',
+    'Корпоративный юрист-ассистент',
+    'Вы — AI-юрист корпоративный.',
+    'google/gemma-4-31B-it',
+    'simple', '{}', '[]', 'lawyer.md',
+    true, NOW(), NOW()
+);
+" > /dev/null
+echo -e "${GREEN}OK: lawyer ($ROLE_LAWYER_ID)${NC}"
+
+echo -e "${YELLOW}Создание роли accountant...${NC}"
+run_sql "
+INSERT INTO roles (id, org_id, name, code, description, system_prompt, model_name,
+                   agent_type, agent_config, tools, prompt_file, is_active, created_at, updated_at)
+VALUES (
+    '$ROLE_ACCOUNTANT_ID', '$ORG_ID',
+    'Бухгалтер', 'accountant',
+    'Корпоративный бухгалтер-ассистент',
+    'Вы — AI-бухгалтер.',
+    'google/gemma-4-31B-it',
+    'simple', '{}', '[]', 'accountant.md',
+    true, NOW(), NOW()
+);
+" > /dev/null
+echo -e "${GREEN}OK: accountant ($ROLE_ACCOUNTANT_ID)${NC}"
+
+# ============================================
+# Отделы
+# ============================================
+echo -e "${YELLOW}Создание отделов...${NC}"
+run_sql "
+INSERT INTO departments (id, org_id, name, created_at, updated_at) VALUES
+    ('$DEPT_LAWYERS_ID',    '$ORG_ID', 'Юристы',     NOW(), NOW()),
+    ('$DEPT_MARKETING_ID',  '$ORG_ID', 'Маркетинг',  NOW(), NOW()),
+    ('$DEPT_ACCOUNTING_ID', '$ORG_ID', 'Бухгалтеры', NOW(), NOW());
+" > /dev/null
+echo -e "${GREEN}OK: 3 отдела${NC}"
+
+# ============================================
+# Правила видимости
+# Таблица department_visibility требует department_a_id < department_b_id.
+# LEAST/GREATEST на UUID в Postgres сравнивают лексикографически — подходит.
+# ============================================
+echo -e "${YELLOW}Создание правил видимости...${NC}"
+run_sql "
+INSERT INTO department_visibility (org_id, department_a_id, department_b_id)
+VALUES
+    ('$ORG_ID',
+     LEAST('$DEPT_LAWYERS_ID'::uuid, '$DEPT_MARKETING_ID'::uuid),
+     GREATEST('$DEPT_LAWYERS_ID'::uuid, '$DEPT_MARKETING_ID'::uuid)),
+    ('$ORG_ID',
+     LEAST('$DEPT_LAWYERS_ID'::uuid, '$DEPT_ACCOUNTING_ID'::uuid),
+     GREATEST('$DEPT_LAWYERS_ID'::uuid, '$DEPT_ACCOUNTING_ID'::uuid));
+" > /dev/null
+echo -e "${GREEN}OK: 2 правила (Юристы↔Маркетинг, Юристы↔Бухгалтеры)${NC}"
+
+# ============================================
+# Admin (без отдела)
+# ============================================
+echo -e "${YELLOW}Создание admin: $ADMIN_NAME...${NC}"
 run_sql "
 INSERT INTO users (id, org_id, name, username, email, password_hash, is_admin, is_active, created_at, updated_at)
-VALUES (
-    '$ADMIN_ID',
-    '$ORG_ID',
-    '$TEST_ADMIN_NAME',
-    '$TEST_ADMIN_USERNAME',
-    '$TEST_ADMIN_EMAIL',
-    '$PASSWORD_HASH',
-    true,
-    true,
-    NOW(),
-    NOW()
-);
+VALUES ('$ADMIN_ID', '$ORG_ID', '$ADMIN_NAME', '$ADMIN_USERNAME', '$ADMIN_EMAIL',
+        '$PASSWORD_HASH', true, true, NOW(), NOW());
 " > /dev/null
-echo -e "${GREEN}OK: $TEST_ADMIN_NAME ($ADMIN_ID)${NC}"
+echo -e "${GREEN}OK: $ADMIN_NAME ($ADMIN_ID)${NC}"
 
-# Создаем роль "Юрист"
-echo -e "${YELLOW}Создание роли 'Юрист'...${NC}"
-run_sql "
-INSERT INTO roles (id, org_id, name, code, description, system_prompt, model_name,
-                   agent_type, agent_config, tools, prompt_file, is_active, created_at, updated_at)
-VALUES (
-    '$ROLE_LAWYER_ID',
-    '$ORG_ID',
-    'Юрист',
-    'lawyer',
-    'Корпоративный юрист-ассистент',
-    'You are a corporate lawyer assistant. Help with legal questions, contract review, and compliance matters.',
-    'qwen3:14b',
-    'simple',
-    '{}',
-    '[]',
-    'lawyer.md',
-    true,
-    NOW(),
-    NOW()
-);
-" > /dev/null
-echo -e "${GREEN}OK: Юрист ($ROLE_LAWYER_ID)${NC}"
+# ============================================
+# Сотрудники
+# insert_user <id> <name> <username> <email> <dept_id|NULL> <is_head> <role_id|NULL>
+# ============================================
+insert_user() {
+    local uid="$1" name="$2" uname="$3" email="$4" dept="$5" is_head="$6" role="$7"
+    local role_sql="NULL"
+    local dept_sql="NULL"
+    [ "$role" != "NULL" ] && role_sql="'$role'"
+    [ "$dept" != "NULL" ] && dept_sql="'$dept'"
+    run_sql "
+    INSERT INTO users (id, org_id, name, username, email, password_hash,
+                       role_id, department_id, is_head, is_admin, is_active, created_at, updated_at)
+    VALUES ('$uid', '$ORG_ID', '$name', '$uname', '$email', '$PASSWORD_HASH',
+            $role_sql, $dept_sql, $is_head, false, true, NOW(), NOW());
+    " > /dev/null
+    echo -e "${GREEN}OK: $name${NC}"
+}
 
-# Создаем роль "Юморист"
-echo -e "${YELLOW}Создание роли 'Юморист'...${NC}"
-run_sql "
-INSERT INTO roles (id, org_id, name, code, description, system_prompt, model_name,
-                   agent_type, agent_config, tools, prompt_file, is_active, created_at, updated_at)
-VALUES (
-    '$ROLE_HUMORIST_ID',
-    '$ORG_ID',
-    'Юморист',
-    'humorist',
-    'Корпоративный юморист-ассистент',
-    'You are a corporate humor assistant. Answer questions with humor and positivity.',
-    'qwen3:14b',
-    'simple',
-    '{}',
-    '[]',
-    'humorist.md',
-    true,
-    NOW(),
-    NOW()
-);
-" > /dev/null
-echo -e "${GREEN}OK: Юморист ($ROLE_HUMORIST_ID)${NC}"
+echo -e "${YELLOW}Создание сотрудников...${NC}"
+insert_user "$U_ANNA_ID"   "$U_ANNA_NAME"   "$U_ANNA_USERNAME"   "$U_ANNA_EMAIL"   "$DEPT_LAWYERS_ID"    true  "$ROLE_LAWYER_ID"
+insert_user "$U_DMITRY_ID" "$U_DMITRY_NAME" "$U_DMITRY_USERNAME" "$U_DMITRY_EMAIL" "$DEPT_LAWYERS_ID"    false "$ROLE_LAWYER_ID"
+insert_user "$U_OLEG_ID"   "$U_OLEG_NAME"   "$U_OLEG_USERNAME"   "$U_OLEG_EMAIL"   "$DEPT_MARKETING_ID"  true  "NULL"
+insert_user "$U_ELENA_ID"  "$U_ELENA_NAME"  "$U_ELENA_USERNAME"  "$U_ELENA_EMAIL"  "$DEPT_MARKETING_ID"  false "NULL"
+insert_user "$U_OLGA_ID"   "$U_OLGA_NAME"   "$U_OLGA_USERNAME"   "$U_OLGA_EMAIL"   "$DEPT_ACCOUNTING_ID" true  "$ROLE_ACCOUNTANT_ID"
+insert_user "$U_SERGEY_ID" "$U_SERGEY_NAME" "$U_SERGEY_USERNAME" "$U_SERGEY_EMAIL" "$DEPT_ACCOUNTING_ID" false "$ROLE_ACCOUNTANT_ID"
 
-# Создаем пользователя-юриста
-echo -e "${YELLOW}Создание пользователя '$TEST_USER1_NAME'...${NC}"
-USER1_HASH=$($PYTHON_BIN -c "
-import bcrypt
-password = '$TEST_USER1_PASSWORD'.encode('utf-8')
-salt = bcrypt.gensalt(rounds=12)
-hashed = bcrypt.hashpw(password, salt)
-print(hashed.decode('utf-8'))
-")
-run_sql "
-INSERT INTO users (id, org_id, name, username, email, password_hash, role_id, is_admin, is_active, created_at, updated_at)
-VALUES (
-    '$USER1_ID',
-    '$ORG_ID',
-    '$TEST_USER1_NAME',
-    '$TEST_USER1_USERNAME',
-    '$TEST_USER1_EMAIL',
-    '$USER1_HASH',
-    '$ROLE_LAWYER_ID',
-    false,
-    true,
-    NOW(),
-    NOW()
-);
-" > /dev/null
-echo -e "${GREEN}OK: $TEST_USER1_NAME ($USER1_ID) -> роль Юрист${NC}"
-
-# Создаем пользователя-юмориста
-echo -e "${YELLOW}Создание пользователя '$TEST_USER2_NAME'...${NC}"
-USER2_HASH=$($PYTHON_BIN -c "
-import bcrypt
-password = '$TEST_USER2_PASSWORD'.encode('utf-8')
-salt = bcrypt.gensalt(rounds=12)
-hashed = bcrypt.hashpw(password, salt)
-print(hashed.decode('utf-8'))
-")
-run_sql "
-INSERT INTO users (id, org_id, name, username, email, password_hash, role_id, is_admin, is_active, created_at, updated_at)
-VALUES (
-    '$USER2_ID',
-    '$ORG_ID',
-    '$TEST_USER2_NAME',
-    '$TEST_USER2_USERNAME',
-    '$TEST_USER2_EMAIL',
-    '$USER2_HASH',
-    '$ROLE_HUMORIST_ID',
-    false,
-    true,
-    NOW(),
-    NOW()
-);
-" > /dev/null
-echo -e "${GREEN}OK: $TEST_USER2_NAME ($USER2_ID) -> роль Юморист${NC}"
-
+# ============================================
+# Сводка
+# ============================================
 echo ""
 echo -e "${GREEN}=== Тестовые данные созданы ===${NC}"
 echo ""
-echo "Организация:"
-echo "  ID:   $ORG_ID"
-echo "  Имя:  $TEST_ORG_NAME"
-echo "  Slug: $TEST_ORG_SLUG"
+echo "Организация:  $TEST_ORG_NAME (id=$ORG_ID, slug=$TEST_ORG_SLUG)"
 echo ""
-echo "Руководитель (admin):"
-echo "  ID:       $ADMIN_ID"
-echo "  Имя:      $TEST_ADMIN_NAME"
-echo "  Username: $TEST_ADMIN_USERNAME"
-echo "  Email:    $TEST_ADMIN_EMAIL"
-echo "  Пароль:   $TEST_ADMIN_PASSWORD"
-echo "  isAdmin:  true"
+echo "Отделы:"
+echo "  Юристы      id=$DEPT_LAWYERS_ID"
+echo "  Маркетинг   id=$DEPT_MARKETING_ID"
+echo "  Бухгалтеры  id=$DEPT_ACCOUNTING_ID"
+echo ""
+echo "Правила видимости:"
+echo "  Юристы ↔ Маркетинг"
+echo "  Юристы ↔ Бухгалтеры"
+echo "  (Маркетинг и Бухгалтеры друг друга НЕ видят)"
 echo ""
 echo "Роли:"
-echo "  Юрист:    $ROLE_LAWYER_ID (code: lawyer, prompt: lawyer.md)"
-echo "  Юморист:  $ROLE_HUMORIST_ID (code: humorist, prompt: humorist.md)"
+echo "  lawyer      id=$ROLE_LAWYER_ID   prompt=lawyer.md"
+echo "  accountant  id=$ROLE_ACCOUNTANT_ID   prompt=accountant.md"
 echo ""
-echo "Пользователи:"
-echo "  $TEST_USER1_NAME: $TEST_USER1_EMAIL / $TEST_USER1_PASSWORD -> Юрист"
-echo "  $TEST_USER2_NAME: $TEST_USER2_EMAIL / $TEST_USER2_PASSWORD -> Юморист"
+echo "Сотрудники (пароль у всех: $DEFAULT_PASSWORD):"
+echo "  $ADMIN_EMAIL  — $ADMIN_NAME  [admin] (без отдела)"
+echo "  $U_ANNA_EMAIL  — $U_ANNA_NAME  [head] Юристы, lawyer"
+echo "  $U_DMITRY_EMAIL  — $U_DMITRY_NAME  Юристы, lawyer"
+echo "  $U_OLEG_EMAIL  — $U_OLEG_NAME  [head] Маркетинг"
+echo "  $U_ELENA_EMAIL  — $U_ELENA_NAME  Маркетинг"
+echo "  $U_OLGA_EMAIL  — $U_OLGA_NAME  [head] Бухгалтеры, accountant"
+echo "  $U_SERGEY_EMAIL  — $U_SERGEY_NAME  Бухгалтеры, accountant"
 echo ""
-echo -e "${YELLOW}Для входа (admin) используйте:${NC}"
-echo "  Email:    $TEST_ADMIN_EMAIL"
-echo "  Password: $TEST_ADMIN_PASSWORD"
+echo -e "${YELLOW}Вход для admin:${NC}"
+echo "  Email:    $ADMIN_EMAIL"
+echo "  Password: $DEFAULT_PASSWORD"

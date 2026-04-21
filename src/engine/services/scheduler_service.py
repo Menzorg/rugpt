@@ -17,6 +17,7 @@ from typing import Optional, TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from .calendar_service import CalendarService
+from ..logging_context import bind_correlation_id, correlation_id_var
 
 if TYPE_CHECKING:
     from ..agents.executor import AgentExecutor
@@ -131,6 +132,9 @@ class SchedulerService:
         logger.info(f"Scheduler found {len(due_events)} due event(s)")
 
         for event in due_events:
+            # Per-event correlation_id so one scheduler tick fan-out stays
+            # greppable in logs even though there's no upstream HTTP trace.
+            token = bind_correlation_id(f"sched-evt-{event.id}")
             try:
                 await self.calendar_service.mark_triggered(event)
                 logger.info(
@@ -146,6 +150,8 @@ class SchedulerService:
 
             except Exception as e:
                 logger.error(f"Failed to process event {event.id}: {e}")
+            finally:
+                correlation_id_var.reset(token)
 
     async def _build_notification_content(self, event) -> str:
         """
@@ -243,6 +249,15 @@ class SchedulerService:
         Timezone-dependent (per-org local hour):
         - morning polls, evening reports
         """
+        # Bind a fresh correlation_id for this scheduler tick so every log line
+        # from jobs below inherits it — otherwise they'd land under "-".
+        tick_token = bind_correlation_id(f"sched-tick-{int(datetime.now(timezone.utc).timestamp())}")
+        try:
+            await self._process_task_jobs_inner()
+        finally:
+            correlation_id_var.reset(tick_token)
+
+    async def _process_task_jobs_inner(self):
         # Always: check overdue tasks
         if self.task_service:
             try:

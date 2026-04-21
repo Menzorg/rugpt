@@ -11,7 +11,7 @@ from typing import List, Optional
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 
 from ..result import AgentResult
 
@@ -19,7 +19,7 @@ logger = logging.getLogger("rugpt.agents.graphs.chain")
 
 
 async def run_chain_agent(
-    llm: ChatOllama,
+    llm: ChatOpenAI,
     system_prompt: str,
     messages: List[dict],
     agent_config: dict,
@@ -39,7 +39,7 @@ async def run_chain_agent(
     passed to each step as context.
 
     Args:
-        llm: ChatOllama instance
+        llm: ChatOpenAI instance
         system_prompt: Base system prompt
         messages: Conversation history
         agent_config: Must contain "steps" list

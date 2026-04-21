@@ -12,8 +12,11 @@ import logging
 from typing import Awaitable, Callable, Optional
 
 from ..config import Config
+from ..logging_context import bind_correlation_id, correlation_id_var
 
 logger = logging.getLogger("rugpt.kafka.consumer")
+
+_CORRELATION_FIELD = "_correlation_id"
 
 MessageHandler = Callable[[dict], Awaitable[None]]
 
@@ -68,7 +71,18 @@ class KafkaConsumerLoop:
                 batch = await consumer.getmany(timeout_ms=1000, max_records=10)
                 for tp, messages in batch.items():
                     for msg in messages:
+                        # Rebind correlation_id from payload so the handler's
+                        # logs stay in the same trace as the original producer.
+                        incoming_cid = (
+                            msg.value.get(_CORRELATION_FIELD)
+                            if isinstance(msg.value, dict)
+                            else None
+                        )
+                        token = bind_correlation_id(incoming_cid)
                         try:
+                            logger.info(
+                                f"Kafka received: topic={self.topic} offset={msg.offset}"
+                            )
                             await self.handler(msg.value)
                             await consumer.commit({tp: msg.offset + 1})
                         except Exception as e:
@@ -77,6 +91,8 @@ class KafkaConsumerLoop:
                                 exc_info=True,
                             )
                             # no commit -> redelivered
+                        finally:
+                            correlation_id_var.reset(token)
         except asyncio.CancelledError:
             pass
         finally:

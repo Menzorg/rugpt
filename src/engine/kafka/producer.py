@@ -14,8 +14,11 @@ from typing import Any, Optional
 from uuid import UUID
 
 from ..config import Config
+from ..logging_context import get_correlation_id
 
 logger = logging.getLogger("rugpt.kafka.producer")
+
+_CORRELATION_FIELD = "_correlation_id"
 
 
 def _json_default(o: Any) -> Any:
@@ -58,7 +61,15 @@ class KafkaProducerService:
             logger.info("Kafka producer stopped")
 
     async def send(self, topic: str, value: dict, key: Optional[str] = None) -> None:
-        """Send a JSON-serializable value to a topic. No-op when disabled."""
+        """Send a JSON-serializable value to a topic. No-op when disabled.
+
+        Injects the current correlation_id into the payload under
+        `_correlation_id` so the downstream consumer can rebind it and keep
+        the trace coherent across the async boundary.
+        """
         if not self.enabled or self._producer is None:
             return
+        if _CORRELATION_FIELD not in value:
+            value = {**value, _CORRELATION_FIELD: get_correlation_id()}
+        logger.info(f"Kafka send: topic={topic} key={key}")
         await self._producer.send_and_wait(topic, value=value, key=key)

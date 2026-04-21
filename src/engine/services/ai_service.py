@@ -20,8 +20,6 @@ from ..storage.user_storage import UserStorage
 from ..storage.message_storage import MessageStorage
 from ..storage.chat_storage import ChatStorage
 from ..storage.agent_run_storage import AgentRunStorage
-from ..llm.providers.ollama import OllamaProvider
-from ..llm.providers.base import LLMMessage
 from .prompt_cache import PromptCache
 
 # Avoid circular import: agents.executor -> services -> ai_service -> agents.executor
@@ -41,7 +39,6 @@ class AIService:
         user_storage: UserStorage,
         chat_storage: ChatStorage,
         message_storage: MessageStorage,
-        llm_provider: Optional[OllamaProvider] = None,
         prompt_cache: Optional[PromptCache] = None,
         agent_executor: Optional[AgentExecutor] = None,
         agent_run_storage: Optional[AgentRunStorage] = None,
@@ -51,7 +48,6 @@ class AIService:
         self.user_storage = user_storage
         self.chat_storage = chat_storage
         self.message_storage = message_storage
-        self.llm = llm_provider or OllamaProvider()
         self.prompt_cache = prompt_cache
         self.agent_executor = agent_executor
         self.agent_run_storage = agent_run_storage
@@ -76,6 +72,10 @@ class AIService:
         if not self._is_async_mode():
             return None
         request_id = uuid4()
+        logger.info(
+            f"Enqueue agent run: request_id={request_id} chat={message.chat_id} "
+            f"responder={responder_id} role={role_code or '-'}"
+        )
         run = AgentRun(
             request_id=request_id,
             chat_id=message.chat_id,
@@ -130,6 +130,10 @@ class AIService:
                 continue
             participant = await self.user_storage.get_by_id(pid)
             if participant and participant.is_system:
+                logger.info(
+                    f"try_auto_respond: chat={chat_id} responder={participant.id} "
+                    f"mode={'async' if self._is_async_mode() else 'sync'}"
+                )
                 if self._is_async_mode():
                     await self._enqueue_agent_run(
                         message=message,
@@ -160,6 +164,12 @@ class AIService:
         ai_mentions = [m for m in message.mentions if m.type == MentionType.AI_ROLE]
         if not ai_mentions:
             return []
+
+        mode = "async" if self._is_async_mode() else "sync"
+        logger.info(
+            f"process_ai_mentions: message={message.id} chat={message.chat_id} "
+            f"mentions={len(ai_mentions)} mode={mode}"
+        )
 
         if self._is_async_mode():
             for mention in ai_mentions:
@@ -206,6 +216,10 @@ class AIService:
             responder_id: User ID of who should respond (system user or regular user)
             strip_username: If set, strip @@username from message content before sending to LLM
         """
+        logger.info(
+            f"generate_response: message={message.id} responder={responder_id}"
+        )
+
         # Find responder
         responder = await self.user_storage.get_by_id(responder_id)
         if not responder:
@@ -273,32 +287,21 @@ class AIService:
         return None
 
     async def _call_llm(self, role: Role, conv_messages: List[dict], user_id: Optional[UUID] = None) -> Optional[str]:
-        """Call LLM via AgentExecutor or fallback to OllamaProvider."""
-        if self.agent_executor:
-            result = await self.agent_executor.execute(
-                role=role,
-                messages=conv_messages,
-                temperature=0.7,
-                max_tokens=256,
-                user_id=user_id,
-            )
-            if result.finish_reason == "error":
-                logger.error(f"Agent error: {result.error}")
-                return None
-            return result.content
-
-        # Fallback: old OllamaProvider
-        llm_messages = self._dicts_to_llm_messages(conv_messages, role)
-        response = await self.llm.generate(
-            messages=llm_messages,
-            model=role.model_name,
+        """Call LLM via AgentExecutor."""
+        if not self.agent_executor:
+            logger.error("AIService has no agent_executor — cannot generate response")
+            return None
+        result = await self.agent_executor.execute(
+            role=role,
+            messages=conv_messages,
             temperature=0.7,
             max_tokens=256,
+            user_id=user_id,
         )
-        if response.finish_reason == "error":
-            logger.error(f"LLM error: {response.content}")
+        if result.finish_reason == "error":
+            logger.error(f"Agent error: {result.error}")
             return None
-        return response.content
+        return result.content
 
     async def _build_conversation(
         self,
@@ -324,19 +327,6 @@ class AIService:
         messages.append({"role": "user", "content": content})
 
         return messages
-
-    def _dicts_to_llm_messages(self, conv_messages: List[dict], role: Role) -> List[LLMMessage]:
-        """Convert dict messages to LLMMessage objects (fallback for old OllamaProvider)"""
-        llm_messages = []
-        system_prompt = (
-            self.prompt_cache.get_prompt(role) if self.prompt_cache
-            else (role.system_prompt or "")
-        )
-        if system_prompt:
-            llm_messages.append(LLMMessage(role="system", content=system_prompt))
-        for msg in conv_messages:
-            llm_messages.append(LLMMessage(role=msg["role"], content=msg["content"]))
-        return llm_messages
 
     def _strip_mention(self, content: str, username: str) -> str:
         """Remove @@username from message content."""
@@ -374,14 +364,6 @@ class AIService:
         await self.chat_storage.update_last_message(chat_id)
         return created
 
-    async def check_llm_health(self) -> bool:
-        """Check if LLM is available"""
-        return await self.llm.health_check()
-
-    async def list_available_models(self) -> List[str]:
-        """List available LLM models"""
-        return await self.llm.list_models()
-
     async def close(self):
-        """Close LLM client"""
-        await self.llm.close()
+        """No LLM client to close — inference goes through AgentExecutor which is owned by EngineService."""
+        return None

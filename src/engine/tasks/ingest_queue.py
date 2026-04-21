@@ -49,9 +49,9 @@ def _run_ingest_sync(
         file_storage = UserFileStorage(postgres_dsn=Config.POSTGRES_DSN)
         rag_service = RAGService(
             store=rag_store,
-            ollama_model=Config.EMBEDDING_MODEL,
-            ollama_embeddings_base_url=Config.LLM_BASE_URL,
-            ollama_base_url=Config.LLM_BASE_URL,
+            embedding_model=Config.EMBEDDING_MODEL,
+            llm_base_url=Config.LLM_BASE_URL,
+            llm_api_key=Config.LLM_API_KEY,
             chunk_size=Config.RAG_CHUNK_SIZE,
             chunk_overlap=Config.RAG_CHUNK_OVERLAP,
             summary_input_max_chars=Config.RAG_SUMMARY_INPUT_MAX_CHARS,

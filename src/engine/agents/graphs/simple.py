@@ -2,7 +2,7 @@
 Simple Agent Graph
 
 Two modes:
-- No tools: prompt -> LLM -> response (equivalent to old OllamaProvider flow)
+- No tools: prompt -> LLM -> response (direct LLM call)
 - With tools: ReAct agent (LLM decides when to call tools)
 """
 import logging
@@ -11,7 +11,7 @@ from typing import List, Optional
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
 from ..result import AgentResult, ToolCall
@@ -20,7 +20,7 @@ logger = logging.getLogger("rugpt.agents.graphs.simple")
 
 
 async def run_simple_agent(
-    llm: ChatOllama,
+    llm: ChatOpenAI,
     system_prompt: str,
     messages: List[dict],
     tools: Optional[List[BaseTool]] = None,
@@ -31,11 +31,11 @@ async def run_simple_agent(
     """
     Run simple agent.
 
-    Without tools: direct LLM call (like old OllamaProvider).
+    Without tools: direct LLM call.
     With tools: LangGraph ReAct agent that can call tools.
 
     Args:
-        llm: ChatOllama instance
+        llm: ChatOpenAI instance
         system_prompt: System prompt text
         messages: Conversation history as list of {"role": str, "content": str}
         tools: Optional list of LangChain tools
@@ -68,7 +68,7 @@ async def run_simple_agent(
 
 
 async def _direct_llm_call(
-    llm: ChatOllama,
+    llm: ChatOpenAI,
     messages: list,
 ) -> AgentResult:
     """Direct LLM invocation without tools"""
@@ -94,7 +94,7 @@ async def _direct_llm_call(
 
 
 async def _react_agent_call(
-    llm: ChatOllama,
+    llm: ChatOpenAI,
     messages: list,
     system_prompt: str,
     tools: List[BaseTool],

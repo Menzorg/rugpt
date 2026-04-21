@@ -14,6 +14,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Config
+from .logging_context import (
+    CorrelationIDFilter,
+    CorrelationIDMiddleware,
+    RequestLoggingMiddleware,
+)
 from .services.engine_service import get_engine_service, init_engine_service
 from .tasks.ingest_queue import ingest_queue
 from .routes import (
@@ -35,11 +40,14 @@ from .routes import (
     projects_router,
 )
 
-# Configure logging
+# Configure logging with correlation_id in every record
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s [%(correlation_id)s] %(name)s %(levelname)s: %(message)s",
 )
+_correlation_filter = CorrelationIDFilter()
+for _handler in logging.root.handlers:
+    _handler.addFilter(_correlation_filter)
 logger = logging.getLogger("rugpt.app")
 
 # Suppress noisy loggers
@@ -52,6 +60,15 @@ app = FastAPI(
     description="Corporate AI Assistant with Role System and Multi-tenancy",
     version="0.1.0"
 )
+
+# Request logging — added first so it runs INSIDE the correlation_id scope
+# (FastAPI executes the outermost middleware first on the way in, which means
+# middlewares added later wrap the ones added earlier).
+app.add_middleware(RequestLoggingMiddleware)
+
+# Correlation ID middleware — binds X-Correlation-ID for the whole request
+# lifecycle so every subsequent log line carries it.
+app.add_middleware(CorrelationIDMiddleware)
 
 # Add CORS middleware
 app.add_middleware(

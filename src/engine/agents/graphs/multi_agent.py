@@ -14,7 +14,7 @@ import operator
 from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 
 from ..result import AgentResult
@@ -30,7 +30,7 @@ class MultiAgentState(TypedDict):
 
 
 async def run_multi_agent(
-    llm: ChatOllama,
+    llm: ChatOpenAI,
     system_prompt: str,
     messages: List[dict],
     agent_config: dict,
@@ -56,7 +56,7 @@ async def run_multi_agent(
     }
 
     Args:
-        llm: ChatOllama instance
+        llm: ChatOpenAI instance
         system_prompt: Base system prompt
         messages: Conversation history
         agent_config: Must contain "graph" with nodes/edges/entry
@@ -143,7 +143,7 @@ async def run_multi_agent(
         )
 
 
-def _make_node_fn(llm: ChatOllama, system_prompt: str, instruction: str):
+def _make_node_fn(llm: ChatOpenAI, system_prompt: str, instruction: str):
     """Create an async node function for the StateGraph"""
     async def node_fn(state: MultiAgentState) -> dict:
         context = state.get("current_output", "")

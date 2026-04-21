@@ -60,13 +60,20 @@ class Config:
     API_HOST = os.getenv("API_HOST", "127.0.0.1")
     API_PORT = int(os.getenv("API_PORT", "8100"))
 
-    # LLM settings
-    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")  # Ollama default
-    DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen2:0.5b")
+    # LLM settings — all inference (generation + embeddings) goes through a
+    # single OpenAI-compatible gateway (LiteLLM proxy on Zver). LiteLLM itself
+    # fans out to Ollama / vLLM behind the scenes based on model name.
+    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://192.168.1.80:4000/v1")
+    LLM_API_KEY = os.getenv("LLM_API_KEY", "sk-dummy")
+    DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "google/gemma-4-31B-it")
 
-    # OpenAI fallback (optional)
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    # Legacy OpenAI fields kept as aliases — some older code paths may still
+    # read them, but new code should use LLM_* above.
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", LLM_API_KEY)
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    # Perplexity API (web_search tool)
+    PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
 
     # JWT settings
     JWT_SECRET = os.getenv("JWT_SECRET", "rugpt-secret-key-change-in-production")
@@ -96,7 +103,7 @@ class Config:
     FILE_ALLOWED_TYPES = os.getenv("FILE_ALLOWED_TYPES", "pdf,docx")
 
     # RAG / Embeddings
-    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
     RAG_SUMMARY_MODEL = os.getenv("RAG_SUMMARY_MODEL", DEFAULT_MODEL)
     RAG_TIKA_SERVER_ENDPOINT = os.getenv("RAG_TIKA_SERVER_ENDPOINT", "http://localhost:9998")
     RAG_STORE_DSN = os.getenv("RAG_STORE_DSN", POSTGRES_DSN)

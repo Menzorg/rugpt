@@ -3,9 +3,14 @@ Task Tools
 
 LangChain tools for task management (create, query, update).
 Uses factory function to inject TaskService dependency.
+
+Tools are async — invoked directly in the running event loop (the same one
+that owns the asyncpg pool), so we just `await` service calls. No threading,
+no nested asyncio.run(). This avoids the `There is no current event loop`
+errors that the sync-wrapper approach produced under langchain-openai.
 """
-import asyncio
 import logging
+from datetime import datetime
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -28,7 +33,8 @@ class TaskCreateInput(BaseModel):
 
 
 class TaskQueryInput(BaseModel):
-    assignee_user_id: str = Field(default="", description="UUID of employee to filter tasks for (empty = all)")
+    assignee_user_id: str = Field(default="", description="UUID of employee the task is assigned to (empty = any)")
+    created_by_user_id: str = Field(default="", description="UUID of the user who CREATED the task (empty = any)")
     status: str = Field(default="", description="Filter by status: created, in_progress, done, overdue (empty = all)")
 
 
@@ -53,7 +59,7 @@ def create_task_tools(
     Returns (task_create_tool, task_query_tool, task_update_tool).
     """
 
-    def _task_create(
+    async def _task_create_async(
         title: str,
         assignee_user_id: str,
         description: str = "",
@@ -67,193 +73,178 @@ def create_task_tools(
             description: Task description
             deadline: Deadline in ISO format
         """
+        logger.info(
+            f"tool task_create: title={title!r} assignee={assignee_user_id} deadline={deadline!r}"
+        )
         try:
-            from datetime import datetime
-
-            # Extract user_id and org_id from RunnableConfig
             configurable = (config or {}).get("configurable", {})
             user_id = configurable.get("user_id", "")
             org_id = configurable.get("org_id", "")
 
             assignee_uuid = UUID(assignee_user_id)
-            dl = None
-            if deadline:
-                dl = datetime.fromisoformat(deadline)
+            dl = datetime.fromisoformat(deadline) if deadline else None
 
             # Visibility check: can the caller see the assignee?
             if user_id and org_id:
                 from ...services.engine_service import get_engine_service
                 engine = get_engine_service()
-                loop_check = asyncio.get_event_loop()
-                if loop_check.is_running():
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        visible = pool.submit(
-                            lambda: asyncio.run(
-                                engine.department_service.check_visible(
-                                    UUID(user_id), assignee_uuid, UUID(org_id),
-                                )
-                            )
-                        ).result()
-                else:
-                    visible = loop_check.run_until_complete(
-                        engine.department_service.check_visible(
-                            UUID(user_id), assignee_uuid, UUID(org_id),
-                        )
-                    )
+                visible = await engine.department_service.check_visible(
+                    UUID(user_id), assignee_uuid, UUID(org_id),
+                )
                 if not visible:
                     return "Cannot assign task: user not visible to you."
 
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    loop.run_in_executor(
-                        pool,
-                        lambda: asyncio.run(
-                            task_service.create(
-                                org_id=default_org_id or UUID('00000000-0000-0000-0000-000000000000'),
-                                title=title,
-                                description=description or None,
-                                assignee_user_id=assignee_uuid,
-                                deadline=dl,
-                                created_by_user_id=UUID(user_id) if user_id else None,
-                            )
-                        )
-                    )
-                    logger.info(f"task_create: scheduled '{title}' for {assignee_user_id}")
-                    return f"Task '{title}' created for employee {assignee_user_id}"
-            else:
-                task = loop.run_until_complete(
-                    task_service.create(
-                        org_id=default_org_id or UUID('00000000-0000-0000-0000-000000000000'),
-                        title=title,
-                        description=description or None,
-                        assignee_user_id=assignee_uuid,
-                        deadline=dl,
-                        created_by_user_id=UUID(user_id) if user_id else None,
-                    )
-                )
-                return f"Task '{title}' created (id={task.id})"
+            # Prefer the caller's org from RunnableConfig (set by executor to
+            # the initiator's org, not the role's system org). Fallback to
+            # default_org_id for legacy callers.
+            task_org_id = (
+                UUID(org_id) if org_id
+                else default_org_id
+                or UUID('00000000-0000-0000-0000-000000000000')
+            )
+            task = await task_service.create(
+                org_id=task_org_id,
+                title=title,
+                description=description or None,
+                assignee_user_id=assignee_uuid,
+                deadline=dl,
+                created_by_user_id=UUID(user_id) if user_id else None,
+            )
+            return f"Task '{title}' created (id={task.id})"
         except Exception as e:
             logger.error(f"task_create failed: {e}")
             return f"Failed to create task: {e}"
 
-    def _task_query(
+    async def _task_query_async(
         assignee_user_id: str = "",
+        created_by_user_id: str = "",
         status: str = "",
         config: Annotated[RunnableConfig, InjectedToolArg] = None,
     ) -> str:
-        """Query tasks. Can filter by employee and/or status.
+        """Query tasks. Filter by assignee, creator, and/or status.
         Args:
-            assignee_user_id: UUID of employee (empty = all in org)
+            assignee_user_id: UUID of assignee (empty = any)
+            created_by_user_id: UUID of creator (empty = any)
             status: Filter by status (empty = all)
         """
+        logger.info(
+            f"tool task_query: assignee={assignee_user_id!r} creator={created_by_user_id!r} status={status!r}"
+        )
         try:
-            # Extract user_id and org_id from RunnableConfig
             configurable = (config or {}).get("configurable", {})
             user_id = configurable.get("user_id", "")
             org_id = configurable.get("org_id", "")
 
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                logger.info(f"task_query: assignee={assignee_user_id}, status={status}")
-                return "Task query executed. (Use API for full results)"
-            else:
+            query_org_id = (
+                UUID(org_id) if org_id
+                else default_org_id
+                or UUID('00000000-0000-0000-0000-000000000000')
+            )
+
+            if created_by_user_id:
+                include_done = status == "" or status == "done"
+                rows = await task_service.list_tasks_created_by(
+                    UUID(created_by_user_id), include_done=include_done,
+                )
+                tasks = [r["task"] for r in rows]
+                if status:
+                    tasks = [t for t in tasks if t.status == status]
                 if assignee_user_id:
-                    tasks = loop.run_until_complete(
-                        task_service.list_by_assignee(UUID(assignee_user_id), status or None)
-                    )
-                else:
-                    tasks = loop.run_until_complete(
-                        task_service.list_by_org(
-                            default_org_id or UUID('00000000-0000-0000-0000-000000000000'),
-                            status or None,
-                        )
-                    )
+                    aid = UUID(assignee_user_id)
+                    tasks = [t for t in tasks if t.assignee_user_id == aid]
+            elif assignee_user_id:
+                tasks = await task_service.list_by_assignee(
+                    UUID(assignee_user_id), status or None,
+                )
+            else:
+                tasks = await task_service.list_by_org(
+                    query_org_id, status or None,
+                )
 
-                # Filter tasks by visibility
-                if user_id and org_id:
-                    from ...services.engine_service import get_engine_service
-                    engine = get_engine_service()
-                    visible_ids = loop.run_until_complete(
-                        engine.department_service.get_visible_user_ids(
-                            UUID(user_id), UUID(org_id),
-                        )
-                    )
-                    tasks = [t for t in tasks if t.assignee_user_id in visible_ids]
+            # Filter tasks by visibility
+            if user_id and org_id:
+                from ...services.engine_service import get_engine_service
+                engine = get_engine_service()
+                visible_ids = await engine.department_service.get_visible_user_ids(
+                    UUID(user_id), UUID(org_id),
+                )
+                tasks = [t for t in tasks if t.assignee_user_id in visible_ids]
 
-                if not tasks:
-                    return "No tasks found."
-                lines = []
-                for t in tasks[:20]:
-                    dl = f", deadline: {t.deadline.isoformat()}" if t.deadline else ""
-                    lines.append(f"- [{t.status}] {t.title}{dl}")
-                return f"Tasks ({len(tasks)} total):\n" + "\n".join(lines)
+            if not tasks:
+                return "No tasks found."
+            lines = []
+            for t in tasks[:20]:
+                dl = f", deadline: {t.deadline.isoformat()}" if t.deadline else ""
+                short_id = str(t.id)[:8]
+                lines.append(f"- [{t.status}] {t.title}{dl} (id={t.id}, short={short_id})")
+            return f"Tasks ({len(tasks)} total):\n" + "\n".join(lines)
         except Exception as e:
             logger.error(f"task_query failed: {e}")
             return f"Failed to query tasks: {e}"
 
-    def _task_update(task_id: str, status: str = "", title: str = "", description: str = "") -> str:
-        """Update a task's status or details.
+    async def _task_update_async(
+        task_id: str,
+        status: str = "",
+        title: str = "",
+        description: str = "",
+    ) -> str:
+        """Modify an existing task. Use this when changing an already-created task — do NOT call task_create for edits.
         Args:
-            task_id: UUID of the task
+            task_id: UUID of the task (get it from task_query output)
             status: New status (created, in_progress, done)
             title: New title (empty = keep current)
             description: New description (empty = keep current)
         """
+        logger.info(
+            f"tool task_update: task={task_id} status={status!r} title_set={bool(title)}"
+        )
         try:
             task_uuid = UUID(task_id)
-
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    loop.run_in_executor(
-                        pool,
-                        lambda: asyncio.run(
-                            task_service.update(
-                                task_id=task_uuid,
-                                title=title or None,
-                                description=description or None,
-                            )
-                        )
-                    )
-                    logger.info(f"task_update: scheduled update for {task_id}")
-                    return f"Task {task_id} update scheduled"
-            else:
-                updated = loop.run_until_complete(
-                    task_service.update(
-                        task_id=task_uuid,
-                        title=title or None,
-                        description=description or None,
-                    )
+            updated = None
+            if title or description:
+                updated = await task_service.update(
+                    task_id=task_uuid,
+                    title=title or None,
+                    description=description or None,
                 )
                 if not updated:
                     return f"Task {task_id} not found"
-                return f"Task '{updated.title}' updated (status={updated.status})"
+            if status:
+                updated = await task_service.update_status(task_uuid, status)
+                if not updated:
+                    return f"Task {task_id} not found"
+            if updated is None:
+                return "Nothing to update: no status, title, or description provided"
+            return f"Task '{updated.title}' updated (status={updated.status})"
+        except ValueError as e:
+            logger.error(f"task_update validation failed: {e}")
+            return f"Invalid input: {e}"
         except Exception as e:
             logger.error(f"task_update failed: {e}")
             return f"Failed to update task: {e}"
 
     create_tool = StructuredTool.from_function(
-        func=_task_create,
+        coroutine=_task_create_async,
         name="task_create",
         description="Create a task for an employee. Use when a manager assigns work via chat (e.g. '@@oleg check the contract by Friday').",
         args_schema=TaskCreateInput,
     )
 
     query_tool = StructuredTool.from_function(
-        func=_task_query,
+        coroutine=_task_query_async,
         name="task_query",
         description="Query tasks. Filter by employee and/or status (created, in_progress, done, overdue).",
         args_schema=TaskQueryInput,
     )
 
     update_tool = StructuredTool.from_function(
-        func=_task_update,
+        coroutine=_task_update_async,
         name="task_update",
-        description="Update a task's status or details.",
+        description=(
+            "Modify an existing task: change status, title, or description. "
+            "Use this for ANY change to an already-created task — do NOT call task_create "
+            "to 'update' an existing task. Requires the task UUID from task_query."
+        ),
         args_schema=TaskUpdateInput,
     )
 

@@ -70,8 +70,12 @@ class TaskNotificationService:
         task_id: UUID,
     ) -> None:
         """Lazy-create direct chat PM<->recipient and post a message from PM."""
+        logger.info(
+            f"PM notify: recipient={recipient_user_id} task={task_id}"
+        )
         pm_id = await self._get_pm_user_id()
         if pm_id is None:
+            logger.warning(f"PM notify dropped: PM system user not found (task={task_id})")
             return
 
         chat = await self.chat_service.create_direct_chat(

@@ -9,14 +9,13 @@ org_id and user_id are injected via RunnableConfig — LLM sees only `query`.
 Pool lifecycle: call init_rag_pool(pool) once during engine startup to set the
 shared asyncpg pool. The pool is reused across all calls without reconnecting.
 """
-import concurrent.futures
 import logging
 from typing import Annotated, Optional
 
 import asyncpg
 from langchain_core.tools import tool, InjectedToolArg
 from langchain_core.runnables import RunnableConfig
-from langchain_ollama.embeddings import OllamaEmbeddings
+from langchain_openai import OpenAIEmbeddings
 
 from ...config import Config
 
@@ -33,10 +32,11 @@ def init_rag_pool(pool: asyncpg.Pool) -> None:
     logger.info("RAG tool pool initialized")
 
 
-def _get_embeddings() -> OllamaEmbeddings:
-    return OllamaEmbeddings(
+def _get_embeddings() -> OpenAIEmbeddings:
+    return OpenAIEmbeddings(
         model=Config.EMBEDDING_MODEL,
         base_url=Config.LLM_BASE_URL,
+        api_key=Config.LLM_API_KEY,
     )
 
 
@@ -57,7 +57,9 @@ async def _search_rag_async(
         return "RAG search unavailable: database pool not initialized."
 
     emb = _get_embeddings()
-    query_embedding = emb.embed_query(query)
+    # aembed_query — async version; synchronous embed_query would block the
+    # event loop for the entire embeddings HTTP round-trip to LiteLLM.
+    query_embedding = await emb.aembed_query(query)
     emb_literal = "[" + ",".join(str(v) for v in query_embedding) + "]"
 
     async with _pool.acquire() as conn:

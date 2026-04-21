@@ -414,6 +414,7 @@ class TaskService:
 
     async def take_task(self, task_id: UUID, user: User) -> Task:
         """Assignee takes task: created -> in_progress."""
+        logger.info(f"take_task: task={task_id} user={user.id}")
         task = await self.storage.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
@@ -433,6 +434,7 @@ class TaskService:
 
     async def mark_done(self, task_id: UUID, user: User) -> Task:
         """Assignee marks task done: in_progress -> awaiting_review."""
+        logger.info(f"mark_done: task={task_id} user={user.id}")
         task = await self.storage.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
@@ -452,6 +454,7 @@ class TaskService:
 
     async def accept_task(self, task_id: UUID, user: User) -> Task:
         """Creator accepts: awaiting_review -> done."""
+        logger.info(f"accept_task: task={task_id} user={user.id}")
         task = await self.storage.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
@@ -472,6 +475,7 @@ class TaskService:
         self, task_id: UUID, user: User, comment: Optional[str] = None,
     ) -> Task:
         """Creator rejects: awaiting_review -> in_progress."""
+        logger.info(f"reject_task: task={task_id} user={user.id} has_comment={bool(comment)}")
         task = await self.storage.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
@@ -503,6 +507,7 @@ class TaskService:
         self, task_id: UUID, user: User, deadline: datetime,
     ) -> Task:
         """Creator changes deadline directly."""
+        logger.info(f"set_deadline: task={task_id} user={user.id} deadline={deadline.isoformat()}")
         task = await self.storage.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
@@ -529,6 +534,7 @@ class TaskService:
         self, task_id: UUID, user: User, proposed: datetime,
     ) -> Task:
         """Assignee proposes alternative deadline."""
+        logger.info(f"propose_deadline: task={task_id} user={user.id} proposed={proposed.isoformat()}")
         task = await self.storage.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
@@ -548,6 +554,7 @@ class TaskService:
 
     async def accept_proposed_deadline(self, task_id: UUID, user: User) -> Task:
         """Creator accepts assignee's deadline proposal."""
+        logger.info(f"accept_proposed_deadline: task={task_id} user={user.id}")
         task = await self.storage.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
@@ -573,6 +580,7 @@ class TaskService:
 
     async def reject_proposed_deadline(self, task_id: UUID, user: User) -> Task:
         """Creator rejects assignee's deadline proposal."""
+        logger.info(f"reject_proposed_deadline: task={task_id} user={user.id}")
         task = await self.storage.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
@@ -599,6 +607,7 @@ class TaskService:
         """Check for overdue tasks and update their status. Called by scheduler."""
         now = datetime.utcnow()
         tasks = await self.storage.list_active_with_deadline()
+        logger.info(f"check_overdue: scanning {len(tasks)} tasks with deadline")
         overdue_tasks = []
 
         for task in tasks:

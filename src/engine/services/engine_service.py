@@ -54,7 +54,6 @@ from .rag_service import RAGService
 from ..storage.rag_store import RAG_store
 from ..notifications.telegram_sender import TelegramSender
 from ..notifications.email_sender import EmailSender
-from ..llm.providers.ollama import OllamaProvider
 
 logger = logging.getLogger("rugpt.services.engine")
 
@@ -96,9 +95,6 @@ class EngineService:
         self.project_storage = ProjectStorage(self.postgres_dsn)
         self.task_event_storage = TaskEventStorage(self.postgres_dsn)
         self.agent_run_storage = AgentRunStorage(self.postgres_dsn)
-
-        # Initialize LLM provider (kept for health checks / model listing)
-        self.llm_provider = OllamaProvider()
 
         # Initialize prompt cache (prompts dir relative to project root)
         prompts_dir = str(Config.BASE_DIR / "src" / "engine" / "prompts")
@@ -178,9 +174,9 @@ class EngineService:
         )
         self.rag_service = RAGService(
             store=self.rag_store,
-            ollama_model=Config.EMBEDDING_MODEL,
-            ollama_embeddings_base_url=Config.LLM_BASE_URL,
-            ollama_base_url=Config.LLM_BASE_URL,
+            embedding_model=Config.EMBEDDING_MODEL,
+            llm_base_url=Config.LLM_BASE_URL,
+            llm_api_key=Config.LLM_API_KEY,
             chunk_size=Config.RAG_CHUNK_SIZE,
             chunk_overlap=Config.RAG_CHUNK_OVERLAP,
             summary_input_max_chars=Config.RAG_SUMMARY_INPUT_MAX_CHARS,
@@ -222,6 +218,8 @@ class EngineService:
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
         from src.engine.agents.tools.list_documents import list_documents
+        from ..agents.tools.user_tool import create_user_tools
+        from ..agents.tools.document_tool import create_document_tools
 
         # Create calendar tools wired to CalendarService
         cal_create_tool, cal_query_tool = create_calendar_tools(self.calendar_service)
@@ -241,9 +239,22 @@ class EngineService:
         self.tool_registry.register("role_call", role_call)
         self.tool_registry.register("list_documents", list_documents)
 
-        # Initialize agent executor (replaces direct OllamaProvider for generation)
+        (user_search_tool,) = create_user_tools(
+            user_storage=self.user_storage,
+            role_storage=self.role_storage,
+            department_service=self.department_service,
+        )
+        self.tool_registry.register("user_search", user_search_tool)
+
+        (list_documents_tool,) = create_document_tools(
+            user_file_storage=self.user_file_storage,
+        )
+        self.tool_registry.register("list_documents", list_documents_tool)
+
+        # Initialize agent executor (LiteLLM-backed generation)
         self.agent_executor = AgentExecutor(
             base_url=Config.LLM_BASE_URL,
+            api_key=Config.LLM_API_KEY,
             default_model=Config.DEFAULT_MODEL,
             prompt_cache=self.prompt_cache,
             tool_registry=self.tool_registry,
@@ -271,7 +282,6 @@ class EngineService:
             user_storage=self.user_storage,
             chat_storage=self.chat_storage,
             message_storage=self.message_storage,
-            llm_provider=self.llm_provider,
             prompt_cache=self.prompt_cache,
             agent_executor=self.agent_executor,
             agent_run_storage=self.agent_run_storage,

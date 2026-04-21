@@ -56,6 +56,9 @@ class NotificationService:
         Tries channels by priority (highest first).
         Returns True if at least one channel succeeded.
         """
+        logger.info(
+            f"send_notification: user={user_id} event={event_id} role={role_id}"
+        )
         channels = await self.channel_storage.list_by_user(user_id, enabled_only=True)
 
         if not channels:

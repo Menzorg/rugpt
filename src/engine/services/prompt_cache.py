@@ -7,10 +7,29 @@ Supports cache clear without restart.
 """
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("rugpt.services.prompt_cache")
+
+_RU_WEEKDAYS = [
+    "понедельник", "вторник", "среда", "четверг",
+    "пятница", "суббота", "воскресенье",
+]
+_RU_MONTHS = [
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+]
+
+
+def _today_ru() -> str:
+    now = datetime.now()
+    return (
+        f"Сегодня: {_RU_WEEKDAYS[now.weekday()]}, "
+        f"{now.day} {_RU_MONTHS[now.month - 1]} {now.year} "
+        f"(ISO: {now.date().isoformat()})"
+    )
 
 
 class PromptCache:
@@ -56,6 +75,9 @@ class PromptCache:
                 role_prompt = self._cache.get(role.prompt_file, "")
         else:
             role_prompt = role.system_prompt or ""
+
+        if "{today}" in role_prompt:
+            role_prompt = role_prompt.replace("{today}", _today_ru())
 
         if org_context:
             return f"{org_context}\n\n---\n\n{role_prompt}"

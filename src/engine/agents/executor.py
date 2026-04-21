@@ -8,8 +8,9 @@ from typing import List, Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 
+from ..config import Config
 from ..models.role import Role
 from ..services.prompt_cache import PromptCache
 from .result import AgentResult
@@ -38,20 +39,23 @@ class AgentExecutor:
         prompt_cache: PromptCache,
         tool_registry: Optional[ToolRegistry] = None,
         timeout: float = 300.0,
+        api_key: Optional[str] = None,
     ):
         self.base_url = base_url
         self.default_model = default_model
         self.prompt_cache = prompt_cache
         self.tool_registry = tool_registry or ToolRegistry()
         self.timeout = timeout
+        self.api_key = api_key or Config.LLM_API_KEY
 
-    def _create_llm(self, model: str, temperature: float = 0.7) -> ChatOllama:
-        """Create a ChatOllama instance for the given model"""
-        return ChatOllama(
+    def _create_llm(self, model: str, temperature: float = 0.7) -> ChatOpenAI:
+        """Create a ChatOpenAI instance pointed at the LiteLLM proxy."""
+        return ChatOpenAI(
             base_url=self.base_url,
+            api_key=self.api_key,
             model=model,
             temperature=temperature,
-            # Ollama-specific timeout handled via request_timeout
+            timeout=self.timeout,
         )
 
     async def execute(
@@ -80,15 +84,27 @@ class AgentExecutor:
         # Fetch org_context for injection into system prompt
         from ..services.engine_service import get_engine_service
         engine = get_engine_service()
-        org = await engine.org_storage.get_by_id(role.org_id)
+
+        # Resolve the INITIATOR's org — that's the scope tools should operate in.
+        # role.org_id is typically the RuGPT system org for cross-org roles (PM,
+        # reasoner, doc_search, web_search) and would point tools at the wrong
+        # place (no real users / files there). Fall back to role.org_id only
+        # when there is no initiator (e.g. scheduler-driven calls).
+        scope_org_id = role.org_id
+        if user_id is not None:
+            initiator = await engine.user_storage.get_by_id(user_id)
+            if initiator and initiator.org_id:
+                scope_org_id = initiator.org_id
+
+        org = await engine.org_storage.get_by_id(scope_org_id)
         org_context = org.org_context if org else ""
         system_prompt = self.prompt_cache.get_prompt(role, org_context=org_context)
         tools = self.tool_registry.resolve(role.tools) if role.tools else []
         llm = self._create_llm(model, temperature)
 
-        # RunnableConfig carries org_id/user_id for tools (e.g. rag_search)
+        # RunnableConfig carries initiator's org_id/user_id for tools.
         config = RunnableConfig(configurable={
-            "org_id": str(role.org_id) if role.org_id else "",
+            "org_id": str(scope_org_id) if scope_org_id else "",
             "user_id": str(user_id) if user_id else "",
         })
 

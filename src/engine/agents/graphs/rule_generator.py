@@ -11,7 +11,9 @@ Output: a clear, concise instruction for the AI role to follow in the future.
 import logging
 
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
+
+from ...config import Config
 
 logger = logging.getLogger("rugpt.agents.graphs.rule_generator")
 
@@ -56,8 +58,9 @@ async def generate_rule_text(
     Returns:
         Generated rule text string
     """
-    llm = ChatOllama(
+    llm = ChatOpenAI(
         base_url=base_url,
+        api_key=Config.LLM_API_KEY,
         model=model,
         temperature=temperature,
     )
