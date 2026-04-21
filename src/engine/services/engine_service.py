@@ -7,6 +7,7 @@ Singleton pattern - one instance per process.
 import logging
 from typing import Optional
 
+
 from ..config import Config
 from ..storage.org_storage import OrgStorage
 from ..storage.user_storage import UserStorage
@@ -220,6 +221,7 @@ class EngineService:
         from ..agents.tools.rag_tool import rag_search, init_rag_pool
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
+        from src.engine.agents.tools.list_documents import list_documents
 
         # Create calendar tools wired to CalendarService
         cal_create_tool, cal_query_tool = create_calendar_tools(self.calendar_service)
@@ -237,6 +239,7 @@ class EngineService:
         self.tool_registry.register("rag_search", rag_search)
         self.tool_registry.register("web_search", web_search)
         self.tool_registry.register("role_call", role_call)
+        self.tool_registry.register("list_documents", list_documents)
 
         # Initialize agent executor (replaces direct OllamaProvider for generation)
         self.agent_executor = AgentExecutor(
