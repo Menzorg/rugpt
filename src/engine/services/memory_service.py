@@ -49,7 +49,7 @@ class MemoryService:
 
     def __init__(
         self,
-        agent_executor: "AgentExecutor",
+        agent_executor: AgentExecutor,
         chat_storage: ChatStorage,
         message_storage: MessageStorage,
         memory_snapshot_storage: MemorySnapshotStorage,

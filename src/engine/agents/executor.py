@@ -115,6 +115,7 @@ class AgentExecutor:
             "user_id": str(user_id) if user_id else "",
         })
 
+        summary = ""
         # Memory: inject summary into the last user message and schedule re-summarisation.
         if chat_id is not None and self.memory_service is not None and messages:
             summary = await self.memory_service.get_summary_for_chat(chat_id)
@@ -149,7 +150,7 @@ class AgentExecutor:
 
         logger.info(
             f"Executing agent: role={role.code}, type={role.agent_type}, "
-            f"model={model}, tools={len(tools)}"
+            f"model={model}, tools={len(tools)}, chat_id={chat_id}, has_memory_summary={'yes' if chat_id and summary else 'no'}"
         )
 
         try:

@@ -28,6 +28,7 @@ from ..storage.department_storage import DepartmentStorage
 from ..storage.project_storage import ProjectStorage
 from ..storage.task_event_storage import TaskEventStorage
 from ..storage.agent_run_storage import AgentRunStorage
+from ..storage.memory_snapshot_storage import MemorySnapshotStorage
 from ..storage.storage_adapter import LocalStorageAdapter
 from .chat_service import ChatService
 from .project_service import ProjectService
@@ -49,6 +50,7 @@ from .task_poll_service import TaskPollService
 from .task_report_service import TaskReportService
 from .file_service import FileService
 from .correction_rule_service import CorrectionRuleService
+from .memory_service import MemoryService
 from .department_service import DepartmentService
 from .rag_service import RAGService
 from ..storage.rag_store import RAG_store
@@ -95,6 +97,7 @@ class EngineService:
         self.project_storage = ProjectStorage(self.postgres_dsn)
         self.task_event_storage = TaskEventStorage(self.postgres_dsn)
         self.agent_run_storage = AgentRunStorage(self.postgres_dsn)
+        self.memory_snapshot_storage = MemorySnapshotStorage(self.postgres_dsn)
 
         # Initialize prompt cache (prompts dir relative to project root)
         prompts_dir = str(Config.BASE_DIR / "src" / "engine" / "prompts")
@@ -251,7 +254,8 @@ class EngineService:
         )
         self.tool_registry.register("list_documents", list_documents_tool)
 
-        # Initialize agent executor (LiteLLM-backed generation)
+        # MemoryService needs AgentExecutor, so it is created after it.
+        # AgentExecutor receives memory_service via setter below to break the chicken-egg.
         self.agent_executor = AgentExecutor(
             base_url=Config.LLM_BASE_URL,
             api_key=Config.LLM_API_KEY,
@@ -259,6 +263,14 @@ class EngineService:
             prompt_cache=self.prompt_cache,
             tool_registry=self.tool_registry,
         )
+
+        self.memory_service = MemoryService(
+            agent_executor=self.agent_executor,
+            chat_storage=self.chat_storage,
+            message_storage=self.message_storage,
+            memory_snapshot_storage=self.memory_snapshot_storage,
+        )
+        self.agent_executor.memory_service = self.memory_service
 
         # Initialize scheduler (started in initialize(), stopped in close())
         self.scheduler_service = SchedulerService(
@@ -343,6 +355,7 @@ class EngineService:
         await self.project_storage.init()
         await self.task_event_storage.init()
         await self.agent_run_storage.init()
+        await self.memory_snapshot_storage.init()
 
         await self.rag_store.init()
 
@@ -391,6 +404,7 @@ class EngineService:
         await self.project_storage.close()
         await self.task_event_storage.close()
         await self.agent_run_storage.close()
+        await self.memory_snapshot_storage.close()
         await self.rag_store.close()
         await self.scheduler_service.stop()
         await self.notification_service.close()
