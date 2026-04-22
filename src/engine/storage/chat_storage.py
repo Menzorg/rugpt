@@ -127,6 +127,13 @@ class ChatStorage(BaseStorage):
         query = "UPDATE chats SET last_message_at = $2, updated_at = $2 WHERE id = $1"
         await self.execute(query, chat_id, datetime.utcnow())
 
+    async def update_mem_id(self, chat_id: UUID, mem_id: UUID) -> None:
+        """Set the active memory snapshot for a chat"""
+        await self.execute(
+            "UPDATE chats SET mem_id = $2, updated_at = $3 WHERE id = $1",
+            chat_id, mem_id, datetime.utcnow(),
+        )
+
     async def add_participant(self, chat_id: UUID, user_id: UUID) -> bool:
         """Add participant to chat"""
         query = """

@@ -3,8 +3,9 @@ Agent Executor
 
 Main router: dispatches execution to the right graph based on role.agent_type.
 """
+import asyncio
 import logging
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
@@ -18,6 +19,9 @@ from .tools.registry import ToolRegistry
 from .graphs.simple import run_simple_agent
 from .graphs.chain import run_chain_agent
 from .graphs.multi_agent import run_multi_agent
+
+if TYPE_CHECKING:
+    from ..services.memory_service import MemoryService
 
 logger = logging.getLogger("rugpt.agents.executor")
 
@@ -40,6 +44,7 @@ class AgentExecutor:
         tool_registry: Optional[ToolRegistry] = None,
         timeout: float = 300.0,
         api_key: Optional[str] = None,
+        memory_service: Optional["MemoryService"] = None,
     ):
         self.base_url = base_url
         self.default_model = default_model
@@ -47,6 +52,7 @@ class AgentExecutor:
         self.tool_registry = tool_registry or ToolRegistry()
         self.timeout = timeout
         self.api_key = api_key or Config.LLM_API_KEY
+        self.memory_service = memory_service
 
     def _create_llm(self, model: str, temperature: float = 0.7) -> ChatOpenAI:
         """Create a ChatOpenAI instance pointed at the LiteLLM proxy."""
@@ -65,6 +71,7 @@ class AgentExecutor:
         temperature: float = 0.7,
         max_tokens: int = 2048,
         user_id: Optional[UUID] = None,
+        chat_id: Optional[UUID] = None,
     ) -> AgentResult:
         """
         Execute agent for a role.
@@ -107,6 +114,22 @@ class AgentExecutor:
             "org_id": str(scope_org_id) if scope_org_id else "",
             "user_id": str(user_id) if user_id else "",
         })
+
+        # Memory: inject summary into the last user message and schedule re-summarisation.
+        if chat_id is not None and self.memory_service is not None and messages:
+            summary = await self.memory_service.get_summary_for_chat(chat_id)
+            if summary:
+                last = messages[-1]
+                messages = messages[:-1] + [{
+                    "role": last["role"],
+                    "content": f"Сводка диалога: {summary}\n\nСообщение пользователя:\n{last['content']}",
+                }]
+
+            resummary_needed = await self.memory_service.check_resummary_needed(chat_id)
+            if resummary_needed:
+                asyncio.create_task(
+                    self.memory_service.update_summary(chat_id, messages)
+                )
 
         # TODO: Load correction rules via RAG and append to system_prompt
         # When RAG is implemented, this will search for relevant rules

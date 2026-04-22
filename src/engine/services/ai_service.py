@@ -240,7 +240,7 @@ class AIService:
 
         # Generate
         try:
-            response_content = await self._call_llm(role, conv_messages, user_id=message.sender_id)
+            response_content = await self._call_llm(role, conv_messages, user_id=message.sender_id, chat_id=message.chat_id)
             if response_content is None:
                 return None
 
@@ -286,7 +286,7 @@ class AIService:
         logger.warning(f"User {responder.id} has no role")
         return None
 
-    async def _call_llm(self, role: Role, conv_messages: List[dict], user_id: Optional[UUID] = None) -> Optional[str]:
+    async def _call_llm(self, role: Role, conv_messages: List[dict], user_id: Optional[UUID] = None, chat_id: Optional[UUID] = None) -> Optional[str]:
         """Call LLM via AgentExecutor."""
         if not self.agent_executor:
             logger.error("AIService has no agent_executor — cannot generate response")
@@ -297,6 +297,7 @@ class AIService:
             temperature=0.7,
             max_tokens=256,
             user_id=user_id,
+            chat_id=chat_id,
         )
         if result.finish_reason == "error":
             logger.error(f"Agent error: {result.error}")
