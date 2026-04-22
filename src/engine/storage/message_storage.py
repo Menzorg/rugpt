@@ -156,6 +156,7 @@ class MessageStorage(BaseStorage):
             mentions_data = json.loads(mentions_data)
         mentions = [Mention.from_dict(m) for m in (mentions_data or [])]
 
+        keys = set(row.keys())
         return Message(
             id=row["id"],
             chat_id=row["chat_id"],
@@ -167,6 +168,7 @@ class MessageStorage(BaseStorage):
             ai_is_valid=row["ai_is_valid"],
             ai_edited=row["ai_edited"],
             is_deleted=row["is_deleted"],
+            mem_id=row["mem_id"] if "mem_id" in keys else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

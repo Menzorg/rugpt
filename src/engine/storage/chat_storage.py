@@ -162,6 +162,7 @@ class ChatStorage(BaseStorage):
         keys = set(row.keys())
         task_id = row["task_id"] if "task_id" in keys else None
         project_id = row["project_id"] if "project_id" in keys else None
+        mem_id = row["mem_id"] if "mem_id" in keys else None
 
         return Chat(
             id=row["id"],
@@ -172,6 +173,7 @@ class ChatStorage(BaseStorage):
             created_by=row["created_by"],
             task_id=task_id,
             project_id=project_id,
+            mem_id=mem_id,
             is_active=row["is_active"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],

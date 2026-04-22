@@ -56,6 +56,7 @@ class Chat:
     created_by: Optional[UUID] = None                # User who created the chat
     task_id: Optional[UUID] = None                   # Set iff type == TASK
     project_id: Optional[UUID] = None                # Set iff type == PROJECT
+    mem_id: Optional[UUID] = None                    # FK memory_snapshots (active memory for this chat)
     is_active: bool = True                           # Active/archived status
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
@@ -72,6 +73,7 @@ class Chat:
             "created_by": str(self.created_by) if self.created_by else None,
             "task_id": str(self.task_id) if self.task_id else None,
             "project_id": str(self.project_id) if self.project_id else None,
+            "mem_id": str(self.mem_id) if self.mem_id else None,
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
@@ -99,6 +101,7 @@ class Chat:
             created_by=_uuid_or_none(data.get("created_by")),
             task_id=_uuid_or_none(data.get("task_id")),
             project_id=_uuid_or_none(data.get("project_id")),
+            mem_id=_uuid_or_none(data.get("mem_id")),
             is_active=data.get("is_active", True),
             created_at=datetime.fromisoformat(data["created_at"]) if isinstance(data.get("created_at"), str) else data.get("created_at", datetime.utcnow()),
             updated_at=datetime.fromisoformat(data["updated_at"]) if isinstance(data.get("updated_at"), str) else data.get("updated_at", datetime.utcnow()),

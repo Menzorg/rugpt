@@ -10,6 +10,8 @@ from .chat import Chat, ChatType
 from .message import Message, Mention, SenderType, MentionType
 from .calendar_event import CalendarEvent
 from .notification import NotificationChannel, NotificationLog
+from .memory_snapshot import MemorySnapshot
+from .correction_rule import CorrectionRule
 
 __all__ = [
     'Organization',
@@ -24,4 +26,6 @@ __all__ = [
     'CalendarEvent',
     'NotificationChannel',
     'NotificationLog',
+    'MemorySnapshot',
+    'CorrectionRule',
 ]

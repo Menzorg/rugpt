@@ -78,6 +78,7 @@ class Message:
     ai_is_valid: Optional[bool] = None                 # None=pending, True=approved, False=rejected
     ai_edited: bool = False                           # AI response was edited by user
     is_deleted: bool = False                          # Soft delete flag
+    mem_id: Optional[UUID] = None                    # FK memory_snapshots (copied from chat on insert)
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -94,6 +95,7 @@ class Message:
             "ai_is_valid": self.ai_is_valid,
             "ai_edited": self.ai_edited,
             "is_deleted": self.is_deleted,
+            "mem_id": str(self.mem_id) if self.mem_id else None,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
@@ -116,6 +118,7 @@ class Message:
             ai_is_valid=data.get("ai_is_valid"),
             ai_edited=data.get("ai_edited", False),
             is_deleted=data.get("is_deleted", False),
+            mem_id=UUID(data["mem_id"]) if data.get("mem_id") and isinstance(data["mem_id"], str) else data.get("mem_id"),
             created_at=datetime.fromisoformat(data["created_at"]) if isinstance(data.get("created_at"), str) else data.get("created_at", datetime.utcnow()),
             updated_at=datetime.fromisoformat(data["updated_at"]) if isinstance(data.get("updated_at"), str) else data.get("updated_at", datetime.utcnow()),
         )
