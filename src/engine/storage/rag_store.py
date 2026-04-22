@@ -321,7 +321,7 @@ class RAG_store(BaseStorage):
         query: str,
         query_embedding: list[float],
         top_k: int,
-        tsv_weight: float,
+        tsv_weight: float = 1,
     ) -> list[ChunkSearchResult]:
         """Call SQL function search_rag in concrete mode for doc-scoped retrieval."""
         self._validate_embedding(query_embedding)
