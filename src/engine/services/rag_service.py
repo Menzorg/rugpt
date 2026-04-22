@@ -371,6 +371,10 @@ class RAGService:
                 )
         raise last_exc  # type: ignore[misc]
 
+    async def get_doc_by_id(self, file_id: str) -> RelatedDoc | None:
+        """Return document metadata by file_id, or None if not found."""
+        return await self._store.get_doc_by_id(file_id)
+
     async def find_docs(
         self,
         org_id: str,

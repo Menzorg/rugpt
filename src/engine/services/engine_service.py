@@ -217,12 +217,11 @@ class EngineService:
         from ..agents.tools.registry import ToolRegistry
         from ..agents.tools.calendar_tool import create_calendar_tools
         from ..agents.tools.task_tool import create_task_tools
-        from ..agents.tools.rag_tool import rag_search, init_rag_pool
+        from ..agents.tools.rag_tool import rag_search
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
-        from src.engine.agents.tools.list_documents import list_documents
+        from ..agents.tools.document_tool import list_documents
         from ..agents.tools.user_tool import create_user_tools
-        from ..agents.tools.document_tool import create_document_tools
 
         # Create calendar tools wired to CalendarService
         cal_create_tool, cal_query_tool = create_calendar_tools(self.calendar_service)
@@ -248,11 +247,6 @@ class EngineService:
             department_service=self.department_service,
         )
         self.tool_registry.register("user_search", user_search_tool)
-
-        (list_documents_tool,) = create_document_tools(
-            user_file_storage=self.user_file_storage,
-        )
-        self.tool_registry.register("list_documents", list_documents_tool)
 
         # MemoryService needs AgentExecutor, so it is created after it.
         # AgentExecutor receives memory_service via setter below to break the chicken-egg.
@@ -359,9 +353,13 @@ class EngineService:
 
         await self.rag_store.init()
 
-        # Wire the shared pool into the RAG tool (avoids per-call pool creation)
-        from ..agents.tools.rag_tool import init_rag_pool
-        init_rag_pool(self.user_file_storage.pg_pool)
+        # Wire the shared RAGService into the RAG tool
+        from ..agents.tools.rag_tool import init_rag_service
+        init_rag_service(self.rag_service)
+
+        # Wire the shared UserFileStorage into the document tool
+        from ..agents.tools.document_tool import init_document_service
+        init_document_service(self.user_file_storage)
 
         # Start Kafka producer (no-op when KAFKA_ENABLED=false)
         try:
