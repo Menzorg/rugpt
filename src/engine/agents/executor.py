@@ -139,6 +139,9 @@ class AgentExecutor:
             else:
                 logger.info("memory: re-summarisation not needed for chat=%s", chat_id)
 
+        # Inject rule to not tell user that memory is injected into his prompt
+        if summary != "":
+            system_prompt += "\n\n В запросе пользователя тебе будет дана сводка диалога. пользователь о ней не знает и говорить о ней пользователю не надо"
         # TODO: Load correction rules via RAG and append to system_prompt
         # When RAG is implemented, this will search for relevant rules
         # based on the user's question and inject them into the prompt:
