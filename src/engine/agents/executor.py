@@ -119,17 +119,24 @@ class AgentExecutor:
         if chat_id is not None and self.memory_service is not None and messages:
             summary = await self.memory_service.get_summary_for_chat(chat_id)
             if summary:
+                logger.info("memory: summary found for chat=%s (%d chars)", chat_id, len(summary))
                 last = messages[-1]
                 messages = messages[:-1] + [{
                     "role": last["role"],
                     "content": f"Сводка диалога: {summary}\n\nСообщение пользователя:\n{last['content']}",
                 }]
+                logger.info("memory: summary injected into last message for chat=%s", chat_id)
+            else:
+                logger.info("memory: no summary for chat=%s", chat_id)
 
             resummary_needed = await self.memory_service.check_resummary_needed(chat_id)
             if resummary_needed:
+                logger.info("memory: starting background update_summary for chat=%s", chat_id)
                 asyncio.create_task(
                     self.memory_service.update_summary(chat_id, messages)
                 )
+            else:
+                logger.info("memory: re-summarisation not needed for chat=%s", chat_id)
 
         # TODO: Load correction rules via RAG and append to system_prompt
         # When RAG is implemented, this will search for relevant rules
