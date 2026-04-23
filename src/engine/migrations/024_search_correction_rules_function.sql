@@ -17,6 +17,7 @@ RETURNS TABLE (
     src_ai_response_id      uuid,
     user_correction_text    text,
     extracted_lesson        text,
+    is_active               boolean,
     mem_dist                double precision,
     user_dist               double precision,
     r_mem                   bigint,
@@ -44,6 +45,7 @@ BEGIN
             cr.src_ai_response_id,
             cr.user_correction_text,
             cr.extracted_lesson,
+            cr.is_active,
             (cr.mem_embedding          <=> p_mem_embedding)      AS mem_dist,
             (cr.user_message_embedding <=> p_user_msg_embedding) AS user_dist
         FROM correction_rules cr
@@ -72,6 +74,7 @@ BEGIN
         r.src_ai_response_id,
         r.user_correction_text,
         r.extracted_lesson,
+        r.is_active,
         r.mem_dist,
         r.user_dist,
         r.r_mem,
