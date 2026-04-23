@@ -45,7 +45,7 @@ class AgentExecutor:
         tool_registry: Optional[ToolRegistry] = None,
         timeout: float = 300.0,
         api_key: Optional[str] = None,
-        memory_service: Optional[MemoryService] = None,
+        memory_service: Optional["MemoryService"] = None,
     ):
         self.base_url = base_url
         self.default_model = default_model
