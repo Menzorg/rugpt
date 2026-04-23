@@ -316,7 +316,11 @@ class EngineService:
             user_storage=self.user_storage,
             chat_service=self.chat_service,
             agent_executor=self.agent_executor,
+            embedding_model=Config.EMBEDDING_MODEL,
+            llm_base_url=Config.LLM_BASE_URL,
+            llm_api_key=Config.LLM_API_KEY,
         )
+        self.agent_executor.correction_rule_service = self.correction_rule_service
 
         self._initialized = False
         logger.info("EngineService created")

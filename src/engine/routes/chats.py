@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 
+from .auth import get_current_user
 from ..services.engine_service import get_engine_service, EngineService
 
 router = APIRouter(prefix="/api/v1/chats", tags=["chats"])
@@ -368,9 +369,13 @@ async def reject_message(
     message_id: UUID,
     request: RejectMessageRequest,
     user_id: UUID,  # In real app, get from JWT
-    engine: EngineService = Depends(get_engine)
+    engine: EngineService = Depends(get_engine),
+    current_user: dict = Depends(get_current_user)
 ):
     """Reject AI message and create correction rule"""
+    if not current_user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
     rule = await engine.correction_rule_service.reject_and_create_rule(
         ai_message_id=message_id,
         user_id=user_id,

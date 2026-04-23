@@ -30,6 +30,7 @@ class CorrectionRule:
     src_ai_response_id: Optional[UUID] = None             # FK messages
     user_correction_text: Optional[str] = None
     extracted_lesson: Optional[str] = None
+    is_active: bool = True
 
     def to_dict(self) -> dict:
         return {
@@ -42,6 +43,7 @@ class CorrectionRule:
             "src_ai_response_id": str(self.src_ai_response_id) if self.src_ai_response_id else None,
             "user_correction_text": self.user_correction_text,
             "extracted_lesson": self.extracted_lesson,
+            "is_active": self.is_active,
         }
 
     @classmethod
@@ -62,4 +64,5 @@ class CorrectionRule:
             src_ai_response_id=_uuid("src_ai_response_id"),
             user_correction_text=data.get("user_correction_text"),
             extracted_lesson=data.get("extracted_lesson"),
+            is_active=data.get("is_active", True),
         )

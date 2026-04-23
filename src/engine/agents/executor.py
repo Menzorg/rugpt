@@ -22,6 +22,7 @@ from .graphs.multi_agent import run_multi_agent
 
 if TYPE_CHECKING:
     from ..services.memory_service import MemoryService
+    from ..services.correction_rule_service import CorrectionRuleService
 
 logger = logging.getLogger("rugpt.agents.executor")
 
@@ -44,7 +45,7 @@ class AgentExecutor:
         tool_registry: Optional[ToolRegistry] = None,
         timeout: float = 300.0,
         api_key: Optional[str] = None,
-        memory_service: Optional["MemoryService"] = None,
+        memory_service: Optional[MemoryService] = None,
     ):
         self.base_url = base_url
         self.default_model = default_model
@@ -53,6 +54,7 @@ class AgentExecutor:
         self.timeout = timeout
         self.api_key = api_key or Config.LLM_API_KEY
         self.memory_service = memory_service
+        self.correction_rule_service: Optional["CorrectionRuleService"] = None
 
     def _create_llm(self, model: str, temperature: float = 0.7) -> ChatOpenAI:
         """Create a ChatOpenAI instance pointed at the LiteLLM proxy."""
@@ -115,41 +117,56 @@ class AgentExecutor:
             "user_id": str(user_id) if user_id else "",
         })
 
+        # --- Retrieval phase ---
+
         summary = ""
-        # Memory: inject summary into the last user message and schedule re-summarisation.
         if chat_id is not None and self.memory_service is not None and messages:
             summary = await self.memory_service.get_summary_for_chat(chat_id)
             if summary:
                 logger.info("memory: summary found for chat=%s (%d chars)", chat_id, len(summary))
-                last = messages[-1]
-                messages = messages[:-1] + [{
-                    "role": last["role"],
-                    "content": f"Сводка диалога: {summary}\n\nСообщение пользователя:\n{last['content']}",
-                }]
-                logger.info("memory: summary injected into last message for chat=%s", chat_id)
             else:
                 logger.info("memory: no summary for chat=%s", chat_id)
 
             resummary_needed = await self.memory_service.check_resummary_needed(chat_id)
             if resummary_needed:
                 logger.info("memory: starting background update_summary for chat=%s", chat_id)
-                asyncio.create_task(
-                    self.memory_service.update_summary(chat_id, messages)
-                )
+                asyncio.create_task(self.memory_service.update_summary(chat_id, messages))
             else:
                 logger.info("memory: re-summarisation not needed for chat=%s", chat_id)
 
-        # Inject rule to not tell user that memory is injected into his prompt
-        if summary != "":
-            system_prompt += "\n\n В запросе пользователя тебе будет дана сводка диалога. пользователь о ней не знает и говорить о ней пользователю не надо"
-        # TODO: Load correction rules via RAG and append to system_prompt
-        # When RAG is implemented, this will search for relevant rules
-        # based on the user's question and inject them into the prompt:
-        #
-        # rules = await self.correction_rule_service.search_relevant(role.id, messages)
-        # if rules:
-        #     rules_block = "\n".join(f"- {r.rule_text}" for r in rules if r.rule_text)
-        #     system_prompt += f"\n\n## Correction Rules\n{rules_block}"
+        lessons: list[str] = []
+        if self.correction_rule_service is not None and messages:
+            last_content = messages[-1].get("content", "")
+            try:
+                rules = await self.correction_rule_service.search_corrections(
+                    user_prompt=last_content,
+                    memory_text=summary or last_content,
+                )
+                lessons = [r.extracted_lesson for r in rules if r.extracted_lesson]
+                if lessons:
+                    logger.info("corrections: found %d lessons for chat=%s", len(lessons), chat_id)
+                else:
+                    logger.info("corrections: no lessons found for chat=%s", chat_id)
+            except Exception:
+                logger.exception("corrections: search failed for chat=%s", chat_id)
+
+        # --- Injection phase ---
+
+        if summary:
+            last = messages[-1]
+            # Inject summary into last message whoever sent it
+            messages = messages[:-1] + [{
+                "role": last["role"],
+                "content": f"Сводка диалога: {summary}\n\nСообщение пользователя:\n{last['content']}",
+            }]
+            logger.info("memory: summary injected into last message for chat=%s", chat_id)
+            system_prompt += "\n\nВ запросе пользователя тебе будет дана сводка диалога. Пользователь о ней не знает и говорить о ней пользователю не надо."
+
+        if lessons:
+            # Inject corrections 
+            rules_block = "\n".join(f"- {lesson}" for lesson in lessons)
+            system_prompt += f"\n\n## Инструкции в частных случаях:\n{rules_block}"
+            logger.info("corrections: injected %d lessons for chat=%s", len(lessons), chat_id)
 
         logger.info(
             f"Executing agent: role={role.code}, type={role.agent_type}, "
