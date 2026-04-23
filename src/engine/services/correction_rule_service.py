@@ -232,7 +232,7 @@ class CorrectionRuleService:
         self,
         user_prompt: str,
         memory_text: str,
-        top_k: int = 5,
+        top_k: int = 3,
     ) -> List[CorrectionRule]:
         """Search correction rules by semantic similarity to a user prompt and memory string."""
         user_embedding = await self._embeddings.aembed_query(user_prompt)

@@ -5,7 +5,7 @@
 CREATE OR REPLACE FUNCTION search_correction_rules(
     p_mem_embedding         vector(1024),
     p_user_msg_embedding    vector(1024),
-    p_top_k                 integer DEFAULT 5
+    p_top_k                 integer DEFAULT 3
 )
 RETURNS TABLE (
     id                      uuid,
@@ -29,7 +29,7 @@ AS $$
 DECLARE
     v_pool integer;
 BEGIN
-    v_pool := GREATEST(p_top_k * 10, 50);
+    v_pool := GREATEST(p_top_k * 5, 25);
 
     RETURN QUERY
     WITH candidates AS (
