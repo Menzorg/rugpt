@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import quote
 from uuid import UUID
 
@@ -423,7 +423,7 @@ class RAGService:
         file_id: str,
         query: str,
         top_k: int,
-        tsv_weight: float,
+        tsv_weight: Optional[float] = 1,
     ) -> list[ChunkSearchResult]:
         """Return top-k concrete matches inside one file."""
         query_embedding = self._embed_query(query)
