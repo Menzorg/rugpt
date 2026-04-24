@@ -92,7 +92,13 @@ class RAGService:
         parsed = parser.from_buffer(
             file_bytes,
             serverEndpoint=self._tika_server_endpoint,
-            headers={"X-File-Name": _safe_tika_file_name(file_name)},
+            headers = {
+                "X-Tika-PDFextractInlineImages": "true", # Извлекать изображения из PDF и прогонять через OCR
+                "X-Tika-OCRstrategy": "ocr_and_text_extraction", # Сначала брать текст, если нет — включать OCR
+                "X-Tika-OCRLanguage": "rus+eng", # Укажите языки (нужны установленные пакеты в контейнере)
+                "X-Tika-ExtractInlineImages": "true", # Настройка для обработки вложенных файлов (важно для Office)
+                "X-File-Name": _safe_tika_file_name(file_name)
+            }
         )
         content = _extract_tika_content(parsed)
         if not content:
