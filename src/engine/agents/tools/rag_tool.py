@@ -58,7 +58,7 @@ async def _search_rag_async(
     org_id: str,
     user_id: str,
     top_k_docs: int = 3,
-    chunks_per_doc: int = 3,
+    chunks_per_doc: int = 5,
     file_id: Optional[str] = None,
     doc_query: Optional[str] = None,
 ) -> str:
