@@ -93,11 +93,18 @@ class RAGService:
             file_bytes,
             serverEndpoint=self._tika_server_endpoint,
             headers = {
-                "X-Tika-OCR-strategy": "ocr_and_text_extraction", # Режим работы OCR: извлекать текст + OCR там, где его нет
-                "X-Tika-OCR-language": "rus+eng", # Языки (пакет tesseract-ocr-rus должен быть установлен в контейнере)
-                "X-Tika-PDFextractInlineImages": "true", # Извлечение картинок из PDF для их последующего распознавания
-                "X-Tika-OCR-extractInlineImages": "true", # Для форматов Office (docx, pptx) — извлекать вложенные изображения
-                "X-Tika-OCR-timeout": "300", # Дополнительно: таймаут на OCR (в секундах), если документы тяжелые
+                # OCR движок (Tesseract)
+                "X-Tika-OCR-ocrStrategy": "ocr_and_text_extraction",
+                "X-Tika-OCR-language": "rus+eng",
+                "X-Tika-OCR-timeoutSeconds": "300",
+
+                # PDF специфичные
+                "X-Tika-PDFextractInlineImages": "true",
+                "X-Tika-PDFocrStrategy": "ocr_and_text_extraction",
+
+                # Office / Архивы (.docx, .zip)
+                "X-Tika-ExtractInlineImages": "true",
+
                 "X-File-Name": _safe_tika_file_name(file_name)
             }
         )
