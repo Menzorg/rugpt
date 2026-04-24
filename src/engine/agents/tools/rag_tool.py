@@ -10,23 +10,47 @@ Service lifecycle: call init_rag_service(service) once during engine startup.
 """
 import logging
 from typing import Annotated, Optional
+from uuid import UUID
 
 from langchain_core.tools import tool, InjectedToolArg
 from langchain_core.runnables import RunnableConfig
 
 from ...services.rag_service import RAGService
+from ...storage.user_file_storage import UserFileStorage
 
 logger = logging.getLogger("rugpt.agents.tools.rag")
 
 # Shared service set once during engine startup via init_rag_service()
 _rag_service: Optional[RAGService] = None
+_user_file_storage: Optional[UserFileStorage] = None
 
 
-def init_rag_service(service: RAGService) -> None:
+def init_rag_service(service: RAGService, file_storage: Optional[UserFileStorage] = None) -> None:
     """Set the shared RAGService instance for all RAG tool calls."""
-    global _rag_service
+    global _rag_service, _user_file_storage
     _rag_service = service
+    _user_file_storage = file_storage
     logger.info("RAG tool service initialized")
+
+
+async def _can_access_file(file_id: str, org_id: str, user_id: str) -> bool:
+    """Return True when the caller can see file_id in their org."""
+    if _user_file_storage is None:
+        logger.error("rag_search: file storage not initialized for access check")
+        return False
+
+    try:
+        org_uuid = UUID(org_id)
+        user_uuid = UUID(user_id)
+        file_uuid = UUID(file_id)
+    except ValueError:
+        return False
+
+    all_files = await _user_file_storage.list_by_org(org_uuid)
+    return any(
+        f.id == file_uuid and (f.uploaded_by_user_id == user_uuid or f.is_public) # if file is owned by user or public, they can access it
+        for f in all_files
+    )
 
 
 async def _search_rag_async(
@@ -51,6 +75,9 @@ async def _search_rag_async(
         return "RAG search unavailable: service not initialized."
 
     if file_id is not None:
+        if not await _can_access_file(file_id, org_id, user_id):
+            return "You don't have access to that document"
+
         doc = await _rag_service.get_doc_by_id(file_id)
         if doc is None:
             logger.info(f"rag_search: document not found for file_id='{file_id}'")
