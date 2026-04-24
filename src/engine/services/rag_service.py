@@ -93,19 +93,11 @@ class RAGService:
             file_bytes,
             serverEndpoint=self._tika_server_endpoint,
             headers = {
-                # OCR движок (Tesseract)
-                "X-Tika-OCR-ocrStrategy": "ocr_and_text_extraction",
-                "X-Tika-OCR-language": "rus+eng",
-                "X-Tika-OCR-timeoutSeconds": "300",
-
-                # PDF специфичные
-                "X-Tika-PDFextractInlineImages": "true",
-                "X-Tika-PDFocrStrategy": "ocr_and_text_extraction",
-
-                # Office / Архивы (.docx, .zip)
-                "X-Tika-ExtractInlineImages": "true",
-
-                "X-File-Name": _safe_tika_file_name(file_name)
+                "X-Tika-PDFOcrStrategy": "OCR_AND_TEXT_EXTRACTION",
+                "X-Tika-OCRLanguage": "rus+eng",
+                "X-Tika-OCRTimeoutSeconds": "300",
+                "X-Tika-PDFExtractInlineImages": "true",
+                "X-File-Name": _safe_tika_file_name(file_name),
             }
         )
         content = _extract_tika_content(parsed)
