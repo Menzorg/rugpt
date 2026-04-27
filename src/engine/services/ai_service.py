@@ -13,8 +13,14 @@ from uuid import UUID, uuid4
 
 from ..config import Config
 from ..models.agent_run import AgentRun
+from ..models.chat import ChatType
 from ..models.message import Message, Mention, MentionType, SenderType
 from ..models.role import Role
+from ..models.support_ticket_event import (
+    SupportTicketActorRole,
+    SupportTicketEvent,
+    SupportTicketEventType,
+)
 from ..storage.role_storage import RoleStorage
 from ..storage.user_storage import UserStorage
 from ..storage.message_storage import MessageStorage
@@ -26,6 +32,8 @@ from .prompt_cache import PromptCache
 if TYPE_CHECKING:
     from ..agents.executor import AgentExecutor
     from ..kafka.producer import KafkaProducerService
+    from ..storage.support_ticket_storage import SupportTicketStorage
+    from ..storage.support_ticket_event_storage import SupportTicketEventStorage
 
 logger = logging.getLogger("rugpt.services.ai")
 
@@ -43,6 +51,8 @@ class AIService:
         agent_executor: Optional[AgentExecutor] = None,
         agent_run_storage: Optional[AgentRunStorage] = None,
         kafka_producer: Optional["KafkaProducerService"] = None,
+        support_ticket_storage: Optional["SupportTicketStorage"] = None,
+        support_ticket_event_storage: Optional["SupportTicketEventStorage"] = None,
     ):
         self.role_storage = role_storage
         self.user_storage = user_storage
@@ -52,6 +62,20 @@ class AIService:
         self.agent_executor = agent_executor
         self.agent_run_storage = agent_run_storage
         self.kafka_producer = kafka_producer
+        # Optional support-ticket deps — wired by EngineService when support
+        # subsystem is active. Setter-style assignment also supported (legacy
+        # callers / tests construct AIService without these and inject later).
+        self.support_ticket_storage = support_ticket_storage
+        self.support_ticket_event_storage = support_ticket_event_storage
+
+    def _is_support_aware(self) -> bool:
+        """True iff both support storages are wired. Gates the support hook so
+        existing callers / tests that don't construct support deps degrade
+        silently to legacy behavior."""
+        return (
+            getattr(self, "support_ticket_storage", None) is not None
+            and getattr(self, "support_ticket_event_storage", None) is not None
+        )
 
     def _is_async_mode(self) -> bool:
         """Async path enabled iff both Kafka producer and agent_run storage are wired AND Kafka is enabled."""
@@ -125,6 +149,24 @@ class AIService:
         if not chat:
             return None
 
+        # Pre-check: SUPPORT chat with handoff already done — silent skip.
+        # After AI hands off to a human operator, the AI must not auto-respond
+        # to subsequent requester messages. The operator owns the conversation.
+        if (
+            chat.type == ChatType.SUPPORT
+            and self._is_support_aware()
+            and chat.support_ticket_id is not None
+        ):
+            ticket = await self.support_ticket_storage.get_by_id(
+                chat.support_ticket_id
+            )
+            if ticket is not None and ticket.ai_handoff_at is not None:
+                logger.info(
+                    f"try_auto_respond: chat={chat_id} skipped "
+                    f"(ticket {ticket.id} already handed off to operator)"
+                )
+                return None
+
         for pid in chat.participants:
             if pid == sender_id:
                 continue
@@ -139,13 +181,62 @@ class AIService:
                         message=message,
                         responder_id=participant.id,
                     )
+                    # NOTE: async-path support stamping (ai_first_response_at +
+                    # AI_RESPONDED audit) is handled by AgentRequestHandler
+                    # after it generates the response. See Task 18 follow-up.
                     return None
-                return await self.generate_response(
+                ai_response = await self.generate_response(
                     message=message,
                     responder_id=participant.id,
                 )
+                # Post-hook: stamp first AI response + audit event for
+                # SUPPORT chats. Only fires in sync path; async path stamps
+                # via AgentRequestHandler. Idempotent on the storage side
+                # (set_ai_first_response is a guarded UPDATE).
+                if (
+                    ai_response is not None
+                    and chat.type == ChatType.SUPPORT
+                    and self._is_support_aware()
+                    and chat.support_ticket_id is not None
+                ):
+                    await self._record_support_ai_response(
+                        ticket_id=chat.support_ticket_id,
+                        ai_user_id=participant.id,
+                        response_message_id=ai_response.id,
+                    )
+                return ai_response
 
         return None
+
+    async def _record_support_ai_response(
+        self,
+        ticket_id: UUID,
+        ai_user_id: UUID,
+        response_message_id: UUID,
+    ) -> None:
+        """Stamp ai_first_response_at (idempotent) + insert AI_RESPONDED audit
+        event after a successful AI reply on a SUPPORT chat. Best-effort —
+        failures are logged but do not break the AI response flow."""
+        try:
+            await self.support_ticket_storage.set_ai_first_response(ticket_id)
+            await self.support_ticket_event_storage.insert(
+                SupportTicketEvent(
+                    ticket_id=ticket_id,
+                    actor_user_id=ai_user_id,
+                    actor_role=SupportTicketActorRole.AI,
+                    event_type=SupportTicketEventType.AI_RESPONDED,
+                    payload={"message_id": str(response_message_id)},
+                )
+            )
+        except Exception:
+            # Best-effort: AI message is already persisted and returned to user.
+            # Audit-write failure leaves a traceback for triage but doesn't break
+            # the reply path. Watch for these in logs — silent drift means the
+            # ticket gets an AI reply without ai_first_response_at stamp + AI_RESPONDED
+            # event, which corrupts SLA reporting and the soft-handoff UI hint.
+            logger.exception(
+                "Failed to record support AI response for ticket=%s", ticket_id,
+            )
 
     async def process_ai_mentions(
         self,

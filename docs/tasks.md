@@ -2,13 +2,16 @@
 
 ## Обзор
 
-Система управления задачами в RuGPT — killer-фича альфа-версии. Включает три связанных модуля:
+Система управления задачами в RuGPT — killer-фича альфа-версии. Включает модули:
 
-- **Tasks** — создание и отслеживание задач
+- **Tasks** — создание, статусные переходы, deadline-negotiation (item 9), группировка в **Projects** (item 11)
 - **TaskPolls** — утренние опросы сотрудников по статусам задач
 - **TaskReports** — вечерние отчёты для руководителей
+- **Task/Project chats** — автоматически создающиеся чаты задачи и проекта (item 11)
+- **PM-агент** (`pm` system user) — автоматически уведомляет stakeholder'ов о переходах через Kafka + WS (item 10)
+- **References** — ссылки `!<task-uuid>` / `!!<project-uuid>` в сообщениях, рендерятся как clickable pills (item 11)
 
-Два типа пользователей: **руководитель** (is_admin=true) и **сотрудник** (обычный пользователь).
+Два типа пользователей: **руководитель** (is_admin=true) и **сотрудник** (обычный пользователь). Creator задачи может отличаться от admin (item 9: `created_by_user_id`).
 
 ---
 
@@ -33,19 +36,23 @@
 - Результат отображается в чате
 
 **Что происходит после создания:**
-1. Задача сохраняется в БД (таблица `tasks`)
-2. Исполнитель получает in-app уведомление:
+1. Задача сохраняется в БД (таблица `tasks`, статус `created`, `created_by_user_id` = админ или AI от его имени)
+2. Автоматически создаётся **TASK chat** с участниками {creator, assignee} (item 11)
+3. Если задача в проекте — чат привязывается к **PROJECT chat** (item 11)
+4. В `task_events` пишется запись `created` (audit trail, item 11)
+5. Исполнитель получает in-app уведомление:
    - Тип: `new_task`
    - Заголовок: `"Новая задача: {название}"`
    - Содержание: описание задачи
    - Появляется в колокольчике (bell icon)
+6. PM-агент постит уведомление в личный direct-chat PM↔assignee через Kafka `chat.events` (item 10)
 
 ### 2. Просмотр задач
 
 - Руководитель (is_admin) видит **все задачи организации**
-- Фильтры: по статусу (`created`, `in_progress`, `done`, `overdue`), по исполнителю
-- Может редактировать любую задачу: изменить название, описание, статус, исполнителя, дедлайн
-- Может деактивировать задачу (soft delete)
+- Фильтры: по статусу (`created`, `in_progress`, `awaiting_review`, `done`, `cancelled`, `overdue`), по исполнителю, по проекту (item 11)
+- Может редактировать любую задачу: изменить название, описание, статус, исполнителя, дедлайн, project_id
+- Может деактивировать задачу (soft delete) — архивирует task chat + если задача была последней активной в проекте, архивирует project chat (item 11)
 
 ### 3. Вечерний отчёт
 
@@ -145,11 +152,35 @@
 - Каждый опрос: дата, бейдж статуса (`Выполнен` / `Просрочен`), список ответов
 - Раскрытие карточки показывает: задача → статус → комментарий
 
-### 4. Ручное обновление задач
+### 4. Статусный флоу (item 9)
 
-Сотрудник может обновить статус задачи напрямую (не только через опрос):
-- Вкладка "Задачи" → выбрать задачу → изменить статус
-- Доступные статусы: `created`, `in_progress`, `done`
+Полный жизненный цикл задачи с explicit assignee/creator ролями:
+
+```
+created  ──(take, assignee)──▶  in_progress
+                                      │
+                      ┌───(mark_done, assignee)──▶  awaiting_review
+                      │                                   │
+                      │                     ┌─(accept, creator)──▶  done
+                      │                     │
+                      └─(reject+comment, creator)─┘    → in_progress
+```
+
+**Deadline negotiation (item 9):**
+- Creator может напрямую изменить deadline (PATCH).
+- Assignee может предложить новый (`proposed_deadline`), creator принимает или отклоняет.
+
+**Routes:** см. `api.md` раздел Tasks (`POST /tasks/{id}/take`, `mark-done`, `accept`, `reject`, `deadline-proposal`, ...).
+
+Каждый переход:
+1. Пишется в `task_events` (audit trail).
+2. PM-агент через Kafka `chat.events` уведомляет **другую сторону** (если assignee действовал — уведомляется creator, и наоборот).
+
+### 5. Ручное обновление задач
+
+Сотрудник может обновить статус задачи через опрос или напрямую:
+- Вкладка "Задачи" → выбрать задачу → действие по статусу (take / mark done)
+- Также можно через task-chat написав в него (AI-роль с tools)
 
 ---
 
@@ -231,9 +262,14 @@ if local_hour in (18, 19, 20):  # вечер
 | org_id | UUID FK → organizations | Организация |
 | title | VARCHAR(500) | Название задачи |
 | description | TEXT | Описание |
-| status | VARCHAR(20) | `created` / `in_progress` / `done` / `overdue` |
+| status | VARCHAR(20) | `created` / `in_progress` / `awaiting_review` / `done` / `cancelled` / `overdue` |
 | assignee_user_id | UUID FK → users | Исполнитель |
+| created_by_user_id | UUID FK → users | Автор задачи (item 9) |
+| project_id | UUID FK → projects NULL | Группировка (item 11) |
 | deadline | TIMESTAMP WITH TZ | Дедлайн (опционально) |
+| awaiting_review_at | TIMESTAMP WITH TZ | Когда assignee пометил mark-done (item 9) |
+| proposed_deadline | TIMESTAMP WITH TZ | Предложенный дедлайн (item 9) |
+| proposed_deadline_by | UUID FK → users | Кто предложил (item 9) |
 | is_active | BOOLEAN | Soft delete |
 | created_at, updated_at | TIMESTAMP WITH TZ | |
 

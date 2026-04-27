@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
 
+from ..config import Config
 from ..models.chat import Chat, ChatType
 from ..models.message import Message, Mention, SenderType, MentionType
 from ..storage.chat_storage import ChatStorage
@@ -112,6 +113,51 @@ class ChatService:
     async def get_chat(self, chat_id: UUID) -> Optional[Chat]:
         """Get chat by ID"""
         return await self.chat_storage.get_by_id(chat_id)
+
+    async def can_user_access_chat(self, user: "User", chat: Chat) -> bool:
+        """Single-point access check for any chat in the system.
+
+        Strict orgship by default. The ONLY cross-org exemption is for
+        ChatType.SUPPORT — never broadened to other chat types.
+
+        SUPPORT exemption rules:
+        - A user listed in chat.participants always has access (e.g. requester
+          from the customer org, or an operator who already took the ticket).
+        - An operator from the RuGPT Support org may preview a SUPPORT chat
+          before joining as participant (queue/take flow), but ONLY if the
+          chat carries a non-null support_ticket_id. The double condition
+          guards against pathological/legacy SUPPORT rows lacking a ticket.
+
+        For all non-SUPPORT chats: orgship is the gate. A user must belong
+        to the same org as the chat AND appear in chat.participants. The
+        SUPPORT exemption MUST NOT bleed into DIRECT/TASK/PROJECT.
+
+        Args:
+            user: User attempting access.
+            chat: Chat to access.
+
+        Returns:
+            True if access permitted, False otherwise.
+        """
+        # SUPPORT exemption — bounded strictly by chat.type
+        if chat.type == ChatType.SUPPORT:
+            if user.id in chat.participants:
+                return True
+            # RuGPT Support operator can preview tickets in queue (before take)
+            if (
+                user.org_id == Config.RUGPT_SUPPORT_ORG_ID
+                and chat.support_ticket_id is not None
+            ):
+                return True
+            return False
+
+        # Non-SUPPORT chats: strict orgship + participant
+        # Default branch: any future ChatType (other than SUPPORT) falls through
+        # to strict orgship + participant. Fail-closed by design — do not add
+        # per-type carve-outs here without re-running the security regression suite.
+        if chat.org_id != user.org_id:
+            return False
+        return user.id in chat.participants
 
     async def list_user_chats(
         self,

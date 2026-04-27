@@ -1,7 +1,7 @@
 # Отчёт по альфа-фичам RuGPT
 
 Дата: 2026-03-09
-Обновлено: 2026-04-09
+Обновлено: 2026-04-22
 
 ---
 
@@ -13,7 +13,7 @@
 
 3 таблицы (миграции 005, 006, 007):
 
-- **tasks** — id, title, description, status (`created | in_progress | done | overdue`), assignee_user_id, deadline, org_id
+- **tasks** — id, title, description, status (`created | in_progress | awaiting_review | done | cancelled | overdue`), assignee_user_id, **created_by_user_id** (item 9), **project_id** (item 11), deadline, proposed_deadline + proposed_deadline_by (item 9), awaiting_review_at (item 9), org_id
 - **task_polls** — утренний опрос: assignee_user_id, poll_date, status (`pending | completed | expired`), responses (JSONB: `[{task_id, new_status, comment}]`), expires_at
 - **task_reports** — вечерний отчёт: generated_for_user_id (менеджер), report_date, content (текст), task_summaries (JSONB: `[{task_id, assignee_name, old_status, new_status, comment, poll_completed}]`)
 
@@ -215,6 +215,105 @@ ai_is_valid = NULL (pending)
 
 ---
 
+## 5. Отделы и права видимости (item 8)
+
+**Статус: 100% engine, 100% webclient (2026-04-13)**
+
+Миграция 015. Модели `Department`, `DepartmentVisibility`. Плоский список отделов, симметричные правила видимости между отделами. `DepartmentService.get_visible_user_ids(viewer)` — единая точка фильтрации. Видимость встроена в users/chats/tasks/roles/mentions/task_tool. Поле `org_context` на организации + загрузка файла через Tika для инъекции описания структуры в system prompt всех ролей.
+
+API: 10 эндпоинтов `/api/v1/departments/*` (admin-only). Frontend: страница `/departments` с 3 табами, колонка "Отдел" в `/users`, группировка по отделам в sidebar.
+
+## 6. Приоритизация и владение задачами (item 9)
+
+**Статус: 100% engine, 100% webclient**
+
+Миграция 016. Поля на `tasks`: `created_by_user_id`, `awaiting_review_at`, `proposed_deadline`, `proposed_deadline_by`.
+
+Новый статусный флоу:
+```
+created  ─take→  in_progress  ─mark_done→  awaiting_review  ─accept→  done
+                                                  │
+                                                  └─reject+comment→  in_progress
+```
+
+Deadline-negotiation: assignee может предложить (`proposed_deadline`), creator принимает/отклоняет. Только creator может напрямую изменить дедлайн или переназначить.
+
+Приоритет вычисляется по роли создателя (`is_admin > is_head > обычный`) — сортировка в списке `/tasks/my`.
+
+API: `POST /tasks/{id}/take`, `mark-done`, `accept`, `reject`, `deadline-proposal`, `deadline-proposal/accept|reject`, `PATCH /tasks/{id}/deadline`. Новые GET: `/tasks/my`, `/tasks/created-by-me`.
+
+## 7. PM-агент + Kafka event bus (item 10)
+
+**Статус: 100% engine, 100% webclient (2026-04-14, требует manual verification в браузере)**
+
+Миграция 018 (роль `pm` + system user `pm` + таблица `agent_runs`).
+
+**Kafka инфраструктура:**
+- Apache Kafka 3.7 (KRaft) на docker-vm (B.II.2, `192.168.1.84:9092`)
+- Два топика: `agent.requests` (3p, 24h, idempotent, acks=all, partition_key=request_id) и `chat.events` (3p, 1h, partition_key=chat_id)
+- Auth **отсутствует** (trust by VPN; план SASL_PLAINTEXT после Alpha)
+- `aiokafka` в engine, `kafkajs` в NestJS
+- `Config.KAFKA_ENABLED=false` → весь Kafka-код no-op, sync fallback
+
+**PM-агент (`TaskNotificationService`):**
+- Автоматически постит от имени system user `pm` в личный direct-chat PM↔recipient
+- 9 методов уведомления (take, mark_done, accept, reject, deadline-related, overdue)
+- Правило: уведомляется сторона, которая **не инициировала** изменение
+- Hook в `TaskService` через `_notify(method, ...)` после каждого перехода
+
+**Async агентный инференс:**
+- Таблица `agent_runs(request_id PK, status, ...)` — идемпотентность Kafka redelivery через атомарный CAS `pending → running`
+- `AgentRequestHandler` — Kafka consumer:
+  1. CAS pending → running (skip если уже running/done)
+  2. Load user message
+  3. `AIService.generate_response()` (LangChain ReAct + tools + LiteLLM)
+  4. `mark_done` + publish `chat.events`
+  5. При exception: `mark_failed` + re-raise (offset не коммитится → redeliver)
+- `POST /chats/{id}/messages` возвращает `agent_pending=true` в async-режиме — HTTP возвращается мгновенно, ответ приходит через WS
+
+**WebClient сторона:**
+- NestJS `KafkaConsumerService` подписан на `chat.events` с per-instance consumer group (broadcast pattern)
+- `SocketGateway.broadcastToChat(chatId, msg)` → `io.to('chat:<id>').emit(...)`
+
+**Тесты:** 131 passed engine, 22 новых (async idempotency, kafka e2e).
+
+## 8. Проекты и чаты задач (item 11)
+
+**Статус: 100% engine, 100% webclient (2026-04-13, требует manual verification)**
+
+Миграция 017. Модели `Project`, `TaskEvent`. Колонки `chats.task_id`, `chats.project_id`, `tasks.project_id`.
+
+**Проекты:**
+- Отдельная таблица `projects` (не text-поле на tasks — можно soft-delete + created_by + description + переименовать без апдейта всех задач)
+- CRUD только head/admin. Multi-tenancy по `org_id`.
+
+**Auto-создание чатов:**
+- При `TaskService.create()` → создаётся `TASK` чат с {creator, assignee}
+- Если `project_id` передан → `ensure_project_chat_membership()` лениво создаёт `PROJECT` чат или мерджит участников в существующий
+- При смене assignee/project_id — добавляются участники в новые чаты. Старый project-chat остаётся как наблюдатель
+- При `deactivate` → archive task chat + архивация project chat если это была последняя активная задача
+
+**Audit trail (`task_events`):**
+- Отдельная таблица, каждый статусный переход пишется отдельным событием
+- Event types: `created, took, marked_done, accepted, rejected, deadline_set, deadline_proposed, deadline_proposal_accepted|rejected, assignee_changed, project_changed, cancelled, overdue`
+- В чатах задач/проектов **системные сообщения не пишутся** — всё в `task_events`, UI рендерит timeline отдельно
+
+**Ссылки `!<task-uuid>` / `!!<project-uuid>`:**
+- Параллельная подсистема к `@`/`@@` (не переиспользует MentionService чтобы избежать type confusion в `Mention.user_id`)
+- `ReferenceService.resolve_batch()` делает per-viewer visibility-check: task — creator/assignee/same-org-admin; project — same org + is_active
+- Недоступные — `accessible=false, title=null`, cross-org не утекает
+- UI вставляет UUID через autocomplete (юзер печатает `!`/`!!`, выбирает из списка)
+
+API: `/projects` CRUD + `/projects/{id}/chat`, `/tasks/{id}/chat`, `/tasks/{id}/events`, `?project_id` фильтр в `/tasks/my`, `/chats/my?type=direct|task|project`.
+
+Frontend: `/chat/task/[id]`, `/chat/project/[id]` страницы с pinned card + polling chat, секции "Задачи"/"Проекты" в sidebar, `ChatInput` autocomplete для `!`/`!!`, `MessageBubble` рендерит pills.
+
+Тесты: 68 новых, всего 97 passed engine.
+
+**Follow-up:** WebSocket-интеграция вместо polling на task/project chat pages, колонка "Проект" в tasks-table.
+
+---
+
 ## Сводная таблица готовности
 
 | Фича | Engine | WebClient Backend | WebClient Frontend | Блокеры |
@@ -223,9 +322,14 @@ ai_is_valid = NULL (pending)
 | Колокольчик | 100% | 100% | 100% | Нет WebSocket push, нет навигации по клику |
 | Файлы + RAG | 100% | 100% | 100% | S3 не реализован (local storage) |
 | Упоминания/Коррекция | 100% | 100% | 100% | RAG для правил не подключён |
+| Отделы + видимость (item 8) | 100% | 100% | 100% | — |
+| Ownership + deadline negotiation (item 9) | 100% | 100% | 100% | — |
+| PM-агент + Kafka (item 10) | 100% | 100% | 100% | manual verification в браузере |
+| Проекты + task/project chats (item 11) | 100% | 100% | 100% | WS вместо polling, колонка "Проект" в таблице |
 
 ### Реализовано вне отчёта
 
 - **Zero Trust / устройства** -- миграция 011, CryptoService (ECDSA P-256), DeviceStorage
 - **Organization timezone** -- миграция 014, per-org timezone в SchedulerService
 - **RAG pipeline** -- миграции 012-013, RAGService, IngestQueue, rag_search tool, 7 SQL-функций
+- **Переход LLM на LiteLLM + vLLM** — см. `docs/llm.md`, инфра C.Zver (`192.168.1.80:4000`), модели `gemma-4-31B-it` + `Qwen3-Embedding-0.6B` (1024 dim)

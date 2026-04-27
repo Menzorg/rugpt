@@ -29,6 +29,10 @@ class EngineService:
     correction_rule_storage: CorrectionRuleStorage
     device_storage: DeviceStorage
     rag_store: RAG_store
+    department_storage: DepartmentStorage          # item 8
+    project_storage: ProjectStorage                # item 11
+    task_event_storage: TaskEventStorage           # item 11
+    agent_run_storage: AgentRunStorage             # item 10
 
     # Services (core)
     chat_service: ChatService
@@ -47,6 +51,16 @@ class EngineService:
     rag_service: RAGService
     correction_rule_service: CorrectionRuleService
     crypto_service: CryptoService
+    department_service: DepartmentService              # item 8
+    project_service: ProjectService                    # item 11
+    task_event_service: TaskEventService               # item 11
+    reference_service: ReferenceService                # item 11 (!/!! ссылки)
+    task_notification_service: TaskNotificationService # item 10 PM-агент
+
+    # Kafka (item 10)
+    kafka_producer: KafkaProducerService
+    agent_request_consumer: KafkaConsumerLoop
+    _agent_request_handler: AgentRequestHandler
 
     # Agents
     prompt_cache: PromptCache
@@ -56,7 +70,7 @@ class EngineService:
     # File storage
     storage_adapter: LocalStorageAdapter
 
-    # LLM (legacy)
+    # LLM (legacy — оставлен для health checks / model listing; prod-инференс через LiteLLM)
     llm_provider: OllamaProvider
 
 # Использование
@@ -131,10 +145,12 @@ class AgentExecutor:
 `user_id` передается в `RunnableConfig(configurable={"org_id": ..., "user_id": ...})` для scope-aware инструментов (rag_search, task tools).
 
 **Маршрутизация по agent_type:**
-- `simple` без tools -> прямой вызов ChatOllama
+- `simple` без tools -> прямой вызов ChatOpenAI (LiteLLM → vLLM)
 - `simple` с tools -> LangGraph ReAct agent
 - `chain` -> последовательные шаги из `agent_config["steps"]`
 - `multi_agent` -> LangGraph StateGraph из `agent_config["graph"]`
+
+Подробнее про LLM-стек — `docs/llm.md`.
 
 **AgentResult:**
 ```python
@@ -634,13 +650,23 @@ class CorrectionRuleService:
 
 **Файл:** `src/engine/services/crypto_service.py`
 
-Верификация устройств (Zero Trust).
+Верификация устройств (Zero Trust). Используется в `POST /auth/verify-signature` — точке, куда ходит NestJS `SignatureGuard` за верификацией каждого mutation-запроса от webclient.
 
 ```python
 class CryptoService:
     def verify_device_signature(public_key_pem, payload, signature) -> bool
-    # ECDSA P-256 signature verification
+    # ECDSA P-256 signature verification (cryptography lib)
 ```
+
+**Полный флоу `verify_signature` в `AuthRouter`:**
+1. Парсит payload (canonical JSON от клиента: `path`, `body`, `nonce`, `sig_timestamp`, `user_id`).
+2. Проверка `|now − sig_timestamp| < 5 min`.
+3. Проверка nonce не в TTL-cache (in-memory, **не persistent** — security-пункт 12).
+4. `device_storage.list_by_user(user_id)` → итерируем публичные ключи.
+5. Для каждого — `verify_device_signature(pem, payload, signature)`; если хоть один OK → 200.
+6. Иначе 401.
+
+Подробный Zero-Trust флоу и threat matrix — `docs/networking.md`.
 
 ---
 

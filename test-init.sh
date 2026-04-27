@@ -72,6 +72,16 @@ U_SERGEY_NAME="Сергей Счётов"
 U_SERGEY_USERNAME="sergey_accountant"
 U_SERGEY_EMAIL="sergey@testcompany.ru"
 
+# Саппорт-операторы (RuGPT Support org, создана миграцией 023)
+RUGPT_SUPPORT_ORG_ID="00000001-0000-0000-0000-000000000000"
+OP_MARIA_NAME="Мария Помощникова"
+OP_MARIA_USERNAME="support_maria"
+OP_MARIA_EMAIL="maria@rugpt.support"
+
+OP_ALEXEY_NAME="Алексей Помощников"
+OP_ALEXEY_USERNAME="support_alexey"
+OP_ALEXEY_EMAIL="alexey@rugpt.support"
+
 # UUIDs
 ORG_ID=$(cat /proc/sys/kernel/random/uuid)
 ADMIN_ID=$(cat /proc/sys/kernel/random/uuid)
@@ -86,6 +96,8 @@ U_OLEG_ID=$(cat /proc/sys/kernel/random/uuid)
 U_ELENA_ID=$(cat /proc/sys/kernel/random/uuid)
 U_OLGA_ID=$(cat /proc/sys/kernel/random/uuid)
 U_SERGEY_ID=$(cat /proc/sys/kernel/random/uuid)
+OP_MARIA_ID=$(cat /proc/sys/kernel/random/uuid)
+OP_ALEXEY_ID=$(cat /proc/sys/kernel/random/uuid)
 
 echo -e "${YELLOW}=== RuGPT Test Data Initialization ===${NC}"
 echo ""
@@ -249,6 +261,23 @@ insert_user "$U_OLGA_ID"   "$U_OLGA_NAME"   "$U_OLGA_USERNAME"   "$U_OLGA_EMAIL"
 insert_user "$U_SERGEY_ID" "$U_SERGEY_NAME" "$U_SERGEY_USERNAME" "$U_SERGEY_EMAIL" "$DEPT_ACCOUNTING_ID" false "$ROLE_ACCOUNTANT_ID"
 
 # ============================================
+# Саппорт-операторы (RuGPT Support org)
+# Орг 00000001-... уже создана миграцией 023.
+# Создаём двух обычных юзеров (is_system=false) для E2E тестирования саппорта.
+# ============================================
+echo -e "${YELLOW}Создание саппорт-операторов в орг RuGPT Support...${NC}"
+run_sql "
+INSERT INTO users (id, org_id, name, username, email, password_hash,
+                   is_admin, is_system, is_active, created_at, updated_at)
+VALUES
+    ('$OP_MARIA_ID', '$RUGPT_SUPPORT_ORG_ID', '$OP_MARIA_NAME', '$OP_MARIA_USERNAME',
+     '$OP_MARIA_EMAIL', '$PASSWORD_HASH', false, false, true, NOW(), NOW()),
+    ('$OP_ALEXEY_ID', '$RUGPT_SUPPORT_ORG_ID', '$OP_ALEXEY_NAME', '$OP_ALEXEY_USERNAME',
+     '$OP_ALEXEY_EMAIL', '$PASSWORD_HASH', false, false, true, NOW(), NOW());
+" > /dev/null
+echo -e "${GREEN}OK: $OP_MARIA_NAME, $OP_ALEXEY_NAME${NC}"
+
+# ============================================
 # Сводка
 # ============================================
 echo ""
@@ -279,6 +308,14 @@ echo "  $U_ELENA_EMAIL  — $U_ELENA_NAME  Маркетинг"
 echo "  $U_OLGA_EMAIL  — $U_OLGA_NAME  [head] Бухгалтеры, accountant"
 echo "  $U_SERGEY_EMAIL  — $U_SERGEY_NAME  Бухгалтеры, accountant"
 echo ""
+echo "Саппорт-операторы (орг RuGPT Support, для E2E):"
+echo "  $OP_MARIA_EMAIL  — $OP_MARIA_NAME"
+echo "  $OP_ALEXEY_EMAIL  — $OP_ALEXEY_NAME"
+echo ""
 echo -e "${YELLOW}Вход для admin:${NC}"
 echo "  Email:    $ADMIN_EMAIL"
+echo "  Password: $DEFAULT_PASSWORD"
+echo ""
+echo -e "${YELLOW}Вход для саппорт-оператора:${NC}"
+echo "  Email:    $OP_MARIA_EMAIL"
 echo "  Password: $DEFAULT_PASSWORD"

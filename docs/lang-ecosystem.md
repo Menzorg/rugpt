@@ -2,7 +2,9 @@
 
 ## Контекст
 
-Текущая интеграция с LLM -- прямой HTTP к Ollama (`OllamaProvider`). Это работает для простого "промпт -> ответ", но не масштабируется на:
+Engine ходит к LLM через LiteLLM proxy (OpenAI-compatible) → vLLM на Zver. В коде используется `langchain-openai.ChatOpenAI` / `OpenAIEmbeddings`, направленные на `http://192.168.1.80:4000/v1` с `Bearer sk-dummy`. Детали — `docs/llm.md`.
+
+LangChain/LangGraph нужны потому что прямой HTTP к LLM не масштабируется на:
 - Агенты с инструментами (календарь, задачи, поиск по документам)
 - RAG (retrieval-augmented generation)
 - Цепочки обработки (chain of thought, sequential processing)
@@ -20,13 +22,13 @@ langchain-core              <- базовые абстракции (LLM, про�
     |
     +-- langchain-community <- интеграции сообщества (vector stores, tools)
     |
-    +-- langchain-ollama    <- ChatOllama, OllamaEmbeddings
+    +-- langchain-openai    <- ChatOpenAI, OpenAIEmbeddings (работают с LiteLLM)
 ```
 
 Пакеты **не взаимоисключающие** -- используем вместе:
 
 ```bash
-pip install langgraph langchain langchain-ollama langchain-community
+pip install langgraph langchain langchain-openai langchain-community
 ```
 
 ## Что даёт каждый пакет
@@ -70,15 +72,16 @@ pip install langgraph langchain langchain-ollama langchain-community
 
 | Граф | Описание |
 |------|----------|
-| `simple.py` | Прямой вызов ChatOllama или ReAct agent (через `create_react_agent`) |
+| `simple.py` | Прямой вызов ChatOpenAI или ReAct agent (через `create_react_agent`) |
 | `chain.py` | Последовательные шаги из `agent_config["steps"]` |
 | `multi_agent.py` | LangGraph StateGraph с узлами и рёбрами |
 | `rule_generator.py` | Генерация правил коррекции AI из обратной связи |
 
-### LLM-провайдер (langchain-ollama)
+### LLM-провайдер (langchain-openai через LiteLLM)
 
-- `ChatOllama` -- основной LLM-вызов во всех графах и executor
-- `OllamaEmbeddings` -- эмбеддинги для RAG (модель `qwen3-embedding:0.6b`)
+- `ChatOpenAI(base_url="http://192.168.1.80:4000/v1", api_key="sk-dummy")` — основной LLM-вызов во всех графах и `AgentExecutor`. Модель: `hosted_vllm/google/gemma-4-31B-it`.
+- `OpenAIEmbeddings(...)` — эмбеддинги для RAG. Модель: `hosted_vllm/Qwen/Qwen3-Embedding-0.6B` (1024 dim).
+- LiteLLM маршрутизирует на vLLM на Zver. OllamaProvider оставлен как legacy для health/listing.
 
 ### RAG-утилиты (langchain)
 
@@ -119,6 +122,13 @@ pip install langgraph langchain langchain-ollama langchain-community
 - **LangChain** = конвейер на заводе. Деталь идёт по ленте: станок 1 -> станок 2 -> станок 3 -> готово.
 - **LangGraph** = команда работников с общей доской. Каждый смотрит на доску, решает что делать, пишет результат, передаёт другому. Могут вернуть задачу назад, вызвать коллегу, работать в цикле.
 
-## Миграция с текущего HTTP
+## Миграция с Ollama на LiteLLM
 
-`OllamaProvider` (прямой HTTP) оставлен как legacy для health checks и model listing. Вся агентная работа идёт через LangChain/LangGraph (`AgentExecutor` -> графы -> `ChatOllama`).
+Исторически агенты ходили на локальную Ollama через `ChatOllama` / `OllamaEmbeddings`. После миграции на GPU-хост Zver (C) стек заменён:
+
+- HTTP-клиент: `langchain-openai` вместо `langchain-ollama`
+- Gateway: LiteLLM proxy `:4000` (OpenAI-compatible) вместо Ollama `:11434`
+- Inference engine: vLLM + CUDA вместо Ollama CPU
+- Модели: `google/gemma-4-31B-it` + `Qwen/Qwen3-Embedding-0.6B` вместо `qwen2.5:7b` + `qwen3-embedding:0.6b`
+
+`OllamaProvider` (прямой HTTP) оставлен как legacy для health checks и model listing в коде engine. Агентная работа — через LangChain/LangGraph (`AgentExecutor` → графы → `ChatOpenAI` → LiteLLM → vLLM).

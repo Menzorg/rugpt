@@ -1,5 +1,7 @@
 # RuGPT Engine Architecture
 
+> Актуальный источник истины по физической инфраструктуре — `architecture-full-2026-04-22.md` + визуальная диаграмма `architecture-2026-04-22.drawio` (multi-page). Этот файл — логический обзор Engine.
+
 ## Обзор
 
 **RuGPT** — корпоративный AI-ассистент с агентной системой, календарём, уведомлениями и multi-tenancy.
@@ -28,6 +30,54 @@
 **WebClient** отвечает за:
 - Real-time (WebSocket)
 - UI
+- Redis (сессии, Socket.IO adapter, rate-limit, message outbox)
+
+## Инфраструктура
+
+RuGPT размещён на 7 узлах. Подробности по железу, CPU pinning, RAM/дискам, Kafka-конфигу, Zero-Trust и 25 security-пунктам — в `architecture-full-2026-04-22.md` и `docs/networking.md`.
+
+### Узлы
+
+| # | Узел | IP | Роль |
+|---|---|---|---|
+| A | Prod-VPS (`rugpt.pro`) | public, WG **10.0.0.1** | Публичный хостинг: nginx (TLS Let's Encrypt) + Next.js + NestJS + Redis. Тонкий proxy к Engine |
+| B | RAG Proxmox | public `217.113.118.218`, WG **10.0.0.2** | 64c / 512 GB. LXC: rugpt-container (.81), gitlab-container (.118). KVM: postgres-vm (.82), docker-vm (.84), gitlab-runner-vm (.119), dev-vm (TBD) |
+| C | Zver — GPU-хост | LAN `192.168.1.80` | LiteLLM `:4000` + vLLM + CUDA. Модели `gemma-4-31B-it`, `Qwen3-Embedding-0.6B`. ~200 GB VRAM |
+| D | Omada ER605 | public `217.113.118.218` | Dual-WAN (ISP #1 + ISP #2), WireGuard-сервер 10.0.0.0/24, ACL VPN → только 10.0.0.2, NAT forwards на SSH GitLab/runner |
+| E | NAS Synology | LAN `192.168.1.38` | DSM 7.3.2, Btrfs RAID 5, WriteOnce. Бэкапы: Proxmox vzdump + pg_dump |
+| F | Dev-VPS | public (отдельный IP) | Копия кода (без `.git`, `.env`, `venv`). Minimize blast-radius |
+| G | Компьютер Александра | — | Рабочая станция второго разработчика (push в GitHub/GitLab) |
+
+### Размещение подсистем по узлам
+
+| Подсистема | Узел | Важное |
+|---|---|---|
+| FastAPI + LangChain/LangGraph + Kafka consumer + Scheduler + IngestQueue | **rugpt-container** (B.I.1) | Всё в одном uvicorn-процессе. 3 pinned cores (50-52), 10 GB RAM |
+| PostgreSQL 16 + pgvector + pgcrypto | **postgres-vm** (B.II.1) | Отдельная KVM-VM, **не** внутри rugpt-container. 368 GB RAM, 35 cores, 200+2000 GB диск. pgvector — одна общая схема, изоляция через `org_id AND (is_public OR user_id = viewer)` |
+| Apache Kafka 3.7 (KRaft) | **docker-vm** (B.II.2) | Multi-tenant с Tika/n8n/сторонними. Топики: `agent.requests` (3p, 24h, acks=all, idempotent, key=request_id), `chat.events` (3p, 1h, key=chat_id). Auth **отсутствует** (trust by VPN) |
+| Apache Tika | docker-vm (B.II.2) | `:9998`, без auth. CVE-prone (Java) |
+| LiteLLM `:4000` + vLLM + CUDA | **Zver** (C) | OpenAI-compatible API. Engine ходит на `192.168.1.80:4000`. Auth = `Bearer sk-dummy` (любой непустой) |
+| Webclient (Next.js + NestJS + Redis) | **Prod-VPS** (A) | Доступ к Engine только через WireGuard на `10.0.0.2`. Rate-limit в Redis (100/min default, 10/min strict, WS 100/min/event/user) |
+| GitLab CE Omnibus + Runner | B.I.2 + B.II.3 | Миграция из GitHub после запуска. SSH через NAT `:28351` и `:24952` |
+| Dev-vm all-in-one | B.II.4 | Отдельная KVM-VM для CI preview-среды, клон prod-данных после анонимизации |
+| Бэкапы (vzdump + pg_dump) | **NAS** (E) | NFS к Proxmox, Btrfs WriteOnce. SPOF |
+
+### Сеть и криптография
+
+- **Наружу** (internet → A): TLS 1.2/1.3 (nginx + Let's Encrypt)
+- **VPN** (A ↔ B): WireGuard ChaCha20-Poly1305, подсеть `10.0.0.0/24`
+- **LAN** (B внутри, B ↔ C): **plaintext** (TLS отсутствует) — trust by VPN/LAN isolation
+- **App-layer**: JWT HMAC-SHA256 + ECDSA P-256 device signature (non-extractable в IndexedDB браузера). Validation на engine `POST /auth/verify-signature`, nonce-cache ±5 min. См. `docs/networking.md` + архитектурный отчёт
+- **Публичные endpoints без JWT/signature** (`@SkipSignature`): `/auth/login`, `/auth/register`, `/auth/verify-signature`, `/config`, `/health*`, `/notifications/telegram/webhook`, `/files/upload` (legacy), `/files/:id/download` (legacy)
+- **Engine без rate-limit** (открыт в VPN) — rate-limit только в webclient
+
+### Хранилище состояния
+
+- **PostgreSQL** (postgres-vm) — persistent, единственный источник истины
+- **Kafka** (docker-vm) — транзиентная очередь (24h для `agent.requests`, 1h для `chat.events`)
+- **Redis** — **только на webclient** (Prod-VPS); в engine `config.py` объявлены переменные, но не используются
+- **Файлы** — `/root/rugpt/uploads/{org_id}/{user_id}/{file_id}.{ext}` на rugpt-container (80 GB диск). Метаданные в PG (`user_files`). SHA-256 дедуп per-user
+- **Бэкапы** — `pg_dump` + Proxmox `vzdump` → NAS (Synology, Btrfs RAID 5, WriteOnce)
 
 ## Архитектура
 
@@ -96,8 +146,10 @@
 |                                           |
 |  Agents (LangChain/LangGraph):            |
 |  +-- AgentExecutor (simple/chain/multi)   |
-|  +-- ToolRegistry (calendar, task, rag,   |
-|  |    web, role_call)                     |
+|  +-- ToolRegistry:                        |
+|  |    calendar_create/query, task_*,      |
+|  |    user_search, list_documents,        |
+|  |    rag_search, web_search, role_call   |
 |  +-- PromptCache (файлы, git-версии)      |
 |  +-- RuleGenerator (коррекция AI)         |
 |                                           |
@@ -132,9 +184,13 @@
 |  +-- CryptoService (ECDSA P-256)          |
 |  +-- Device verification                  |
 |                                           |
-|  LLM (Ollama):                            |
-|  +-- ChatOllama (LangChain)               |
-|  +-- OllamaEmbeddings (RAG)              |
+|  LLM (LiteLLM proxy → vLLM):              |
+|  +-- ChatOpenAI (LangChain + langchain-   |
+|  |   openai) → LiteLLM :4000              |
+|  +-- Модели (через LiteLLM):              |
+|  |   hosted_vllm/google/gemma-4-31B-it    |
+|  |   hosted_vllm/Qwen/Qwen3-Embedding-    |
+|  |   0.6B (1024-dim для pgvector)         |
 |                                           |
 +-------------------------------------------+
 ```
@@ -475,7 +531,7 @@
 4. Engine: Сохраняет сообщение в PostgreSQL
 5. Engine: Находит User с role_id -> Role(lawyer)
 6. Engine: AgentExecutor выбирает граф по agent_type:
-   - simple без tools -> прямой вызов ChatOllama
+   - simple без tools -> прямой вызов ChatOpenAI (LiteLLM)
    - simple с tools -> ReAct agent (LangGraph)
    - chain -> последовательные шаги
    - multi_agent -> StateGraph
@@ -635,10 +691,16 @@ KRaft mode (без ZooKeeper), single-node. `scripts/kafka_up.sh` стартуе
 
 ## Порты
 
-- **RuGPT Engine**: 8100
-- **PostgreSQL**: 5432 (база `rugpt`)
-- **LLM (Ollama)**: 11434
-- **Apache Tika**: 9998
+| Сервис | Порт | Хост | Auth |
+|---|---|---|---|
+| Engine FastAPI | 8100 | rugpt-container (B.I.1) `127.0.0.1` | JWT + ECDSA signature |
+| Engine nginx (reverse-proxy) | 80 | rugpt-container | фильтр `/api/v1/web/*` → FastAPI, всё прочее 403 |
+| PostgreSQL | 5432 | postgres-vm (B.II.1) `192.168.1.82` | scram-sha-256 |
+| LiteLLM proxy | 4000 | Zver (C) `192.168.1.80` | `Bearer sk-dummy` |
+| Apache Kafka | 9092 | docker-vm (B.II.2) `192.168.1.84` | **нет** (trust by VPN) |
+| Apache Tika | 9998 | docker-vm (B.II.2) `192.168.1.84` | **нет** |
+| WebClient nginx | 443 / 80 | Prod-VPS (A) | TLS Let's Encrypt |
+| Redis | 6379 | Prod-VPS (loopback) | password (prod) |
 
 ## Сетевая архитектура
 

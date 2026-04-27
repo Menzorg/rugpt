@@ -235,6 +235,14 @@ async def send_message(
     engine: EngineService = Depends(get_engine)
 ):
     """Send message to chat"""
+    # Pre-send hook: support-ticket reopen-on-message + archived-ticket guard.
+    # No-op for non-SUPPORT chats; raises HTTPException(403) for archived tickets.
+    chat = await engine.chat_service.get_chat(chat_id)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    if engine.support_ticket_service is not None:
+        await engine.support_ticket_service.handle_incoming_message(chat, user_id)
+
     # Parse mentions
     mentions = await engine.mention_service.resolve_mentions(request.content, org_id, sender_id=user_id)
 

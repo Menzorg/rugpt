@@ -22,17 +22,17 @@ class ChatStorage(BaseStorage):
         query = """
             INSERT INTO chats (
                 id, org_id, type, name, participants, created_by,
-                task_id, project_id,
+                task_id, project_id, support_ticket_id,
                 is_active, created_at, updated_at, last_message_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING *
         """
         row = await self.fetchrow(
             query,
             chat.id, chat.org_id, chat.type.value, chat.name,
             [str(p) for p in chat.participants], chat.created_by,
-            chat.task_id, chat.project_id,
+            chat.task_id, chat.project_id, chat.support_ticket_id,
             chat.is_active, chat.created_at, chat.updated_at, chat.last_message_at
         )
         return self._row_to_chat(row)
@@ -89,6 +89,14 @@ class ChatStorage(BaseStorage):
         """Get chat associated with a project (if any)."""
         row = await self.fetchrow(
             "SELECT * FROM chats WHERE project_id = $1 LIMIT 1", project_id,
+        )
+        return self._row_to_chat(row) if row else None
+
+    async def get_by_support_ticket(self, support_ticket_id: UUID) -> Optional[Chat]:
+        """Get chat associated with a support ticket (if any)."""
+        row = await self.fetchrow(
+            "SELECT * FROM chats WHERE support_ticket_id = $1 LIMIT 1",
+            support_ticket_id,
         )
         return self._row_to_chat(row) if row else None
 
@@ -169,6 +177,7 @@ class ChatStorage(BaseStorage):
         keys = set(row.keys())
         task_id = row["task_id"] if "task_id" in keys else None
         project_id = row["project_id"] if "project_id" in keys else None
+        support_ticket_id = row["support_ticket_id"] if "support_ticket_id" in keys else None
         mem_id = row["mem_id"] if "mem_id" in keys else None
 
         return Chat(
@@ -180,6 +189,7 @@ class ChatStorage(BaseStorage):
             created_by=row["created_by"],
             task_id=task_id,
             project_id=project_id,
+            support_ticket_id=support_ticket_id,
             mem_id=mem_id,
             is_active=row["is_active"],
             created_at=row["created_at"],
