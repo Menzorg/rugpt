@@ -187,6 +187,42 @@ class RAG_store(BaseStorage):
         except Exception:
             return False
 
+    async def get_doc_by_id(self, file_id: str) -> RelatedDoc | None:
+        """Fetch document metadata row by file_id. Returns None if not found."""
+        await self.init()
+        rows = await self.fetch(
+            """
+            SELECT
+                id::text AS file_id,
+                org_id::text,
+                user_id::text,
+                original_filename AS doc_title,
+                summary,
+                created_at AS uploaded_at,
+                created_at::date AS created_at
+            FROM user_files
+            WHERE id = $1::uuid
+              AND is_active = true
+            LIMIT 1
+            """,
+            file_id,
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return RelatedDoc(
+            file_id=row["file_id"],
+            org_id=row["org_id"],
+            user_id=row["user_id"],
+            doc_title=row["doc_title"],
+            summary=row["summary"],
+            uploaded_at=row["uploaded_at"],
+            created_at=row["created_at"],
+            vec_dist=None,
+            tsv_score=None,
+            mode_used=None,
+        )
+
     async def call_search_related_docs(
         self,
         org_id: str,
@@ -286,7 +322,7 @@ class RAG_store(BaseStorage):
         query: str,
         query_embedding: list[float],
         top_k: int,
-        tsv_weight: float,
+        tsv_weight: float = 1,
     ) -> list[ChunkSearchResult]:
         """Call SQL function search_rag in concrete mode for doc-scoped retrieval."""
         self._validate_embedding(query_embedding)

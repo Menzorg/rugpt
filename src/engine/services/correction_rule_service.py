@@ -1,18 +1,19 @@
 """
 Correction Rule Service
 
-Handles rejection of AI responses, creation of correction rules,
-and generation of rule_text via LLM.
+Creates correction rules when an admin rejects an AI response, and drives
+async extraction of the lesson from the correction text via LLM.
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
 
+from langchain_openai import OpenAIEmbeddings
+
 from ..models.correction_rule import CorrectionRule
-from ..models.message import Message, SenderType
+from ..models.message import SenderType
 from ..storage.correction_rule_storage import CorrectionRuleStorage
 from ..storage.message_storage import MessageStorage
 from ..storage.role_storage import RoleStorage
@@ -24,6 +25,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("rugpt.services.correction_rule")
 
+LESSON_EXTRACTION_SYSTEM_PROMPT = (
+                "Ты — ассистент, извлекающий полезные уроки из исправлений AI-ответов.\n"
+                "На основе вопроса пользователя, ответа AI и исправления — сформулируй "
+                "краткий урок для улучшения будущих ответов.\n"
+                "Структурируй урок в следующем формате: \n\n"
+                "Ситуация: ...,\n"
+                "Плохой пример: ...,\n"
+                "Правильный пример: ...,\n"
+                "Краткое объяснение: ...,"
+            )
 
 class CorrectionRuleService:
     """Service for correction rules lifecycle"""
@@ -36,6 +47,9 @@ class CorrectionRuleService:
         user_storage: UserStorage,
         chat_service: ChatService,
         agent_executor: Optional[AgentExecutor] = None,
+        embedding_model: str = "",
+        llm_base_url: str = "",
+        llm_api_key: str = "",
     ):
         self.correction_rule_storage = correction_rule_storage
         self.message_storage = message_storage
@@ -43,6 +57,11 @@ class CorrectionRuleService:
         self.user_storage = user_storage
         self.chat_service = chat_service
         self.agent_executor = agent_executor
+        self._embeddings = OpenAIEmbeddings(
+            model=embedding_model,
+            base_url=llm_base_url,
+            api_key=llm_api_key,
+        )
 
     async def reject_and_create_rule(
         self,
@@ -51,34 +70,26 @@ class CorrectionRuleService:
         correction_text: str,
     ) -> CorrectionRule:
         """
-        Reject AI message, send correction comment to chat, create rule.
+        Reject an AI message and create a correction rule.
+
+        Resolves the role from the AI sender, links the source user message
+        and AI response, then fires async lesson extraction.
 
         Args:
-            ai_message_id: The AI message being rejected
-            user_id: The user rejecting (role owner)
-            correction_text: What was wrong / correction
-
-        Returns:
-            Created CorrectionRule
+            ai_message_id: The AI message being rejected (src_ai_response_id).
+            user_id:       The admin or role-owner performing the rejection.
+            correction_text: What was wrong / what the correct answer should be.
         """
-        # 1. Get AI message
         ai_message = await self.message_storage.get_by_id(ai_message_id)
         if not ai_message:
             raise ValueError(f"AI message {ai_message_id} not found")
-
         if ai_message.sender_type != SenderType.AI_ROLE:
             raise ValueError(f"Message {ai_message_id} is not an AI message")
 
-        # 2. Get the original user question (reply_to_id)
         original_message = None
         if ai_message.reply_to_id:
             original_message = await self.message_storage.get_by_id(ai_message.reply_to_id)
 
-        user_question = original_message.content if original_message else ""
-
-        # Authorization: admin bypass, or rejecter must be the role-owner,
-        # or — for mirror responses (is_system + no role_id) — the user who
-        # triggered the reply.
         rejecter = await self.user_storage.get_by_id(user_id)
         if not rejecter:
             raise ValueError(f"User {user_id} not found")
@@ -90,27 +101,9 @@ class CorrectionRuleService:
             and ai_sender.role_id is None
         )
 
-        if not rejecter.is_admin:
-            if ai_message.sender_id != user_id:
-                if not is_mirror_response:
-                    raise ValueError(
-                        f"User {user_id} is not the owner of this AI role response"
-                    )
-                if not original_message or original_message.sender_id != user_id:
-                    raise ValueError(
-                        f"User {user_id} did not trigger this mirror response"
-                    )
-
-        # 3. Determine effective role_id / org_id for the CorrectionRule.
-        # Priority:
-        #   a) AI sender has its own role (domain or system AI) — the rule
-        #      belongs to that role
-        #   b) Mirror response — the rule belongs to the triggering user's role
-        #   c) Fallback — rejecter's own role (legacy path, same as role-owner
-        #      rejecting their own response)
+        # Resolve role_id: AI sender's role → mirror trigger's role → rejecter's role
         if ai_sender is not None and ai_sender.role_id is not None:
             role_id = ai_sender.role_id
-            org_id = ai_sender.org_id
         elif is_mirror_response and original_message is not None:
             triggering_user = await self.user_storage.get_by_id(original_message.sender_id)
             if triggering_user is None or triggering_user.role_id is None:
@@ -118,90 +111,146 @@ class CorrectionRuleService:
                     f"Cannot determine role: mirror trigger {original_message.sender_id} has no role"
                 )
             role_id = triggering_user.role_id
-            org_id = triggering_user.org_id
         elif rejecter.role_id is not None:
             role_id = rejecter.role_id
-            org_id = rejecter.org_id
         else:
             raise ValueError(
                 f"Cannot determine role for correction (rejecter {user_id} has no role)"
             )
 
-        # 4. Reject the AI message (set ai_is_valid = false)
         await self.message_storage.reject(ai_message_id)
 
-        # 5. Send correction comment to the same chat from the user
+
+        lesson = await self._extract_lesson(
+            src_ai_response_id=ai_message_id,
+            src_user_message_id=original_message.id if original_message else None,
+            user_correction_text=correction_text,
+        )
+        
+        rule = CorrectionRule(
+            id=uuid4(),
+            role_id=role_id,
+            src_user_message_id=original_message.id if original_message else None,
+            src_ai_response_id=ai_message_id,
+            user_correction_text=correction_text,
+            extracted_lesson=lesson,
+        )
+        
         await self.chat_service.send_message(
             chat_id=ai_message.chat_id,
             sender_id=user_id,
             content=correction_text,
-            sender_type=SenderType.USER,
+            sender_type=SenderType.AI_ROLE,
             reply_to_id=ai_message_id,
         )
-
-        # 6. Create correction rule
-        rule = CorrectionRule(
-            id=uuid4(),
-            role_id=role_id,
-            org_id=org_id,
-            original_message_id=original_message.id if original_message else ai_message_id,
-            ai_message_id=ai_message_id,
-            chat_id=ai_message.chat_id,
-            user_question=user_question,
-            ai_answer=ai_message.content,
-            correction_text=correction_text,
-            rule_text=None,  # Generated async by LLM
-            created_by_user_id=user_id,
-            is_active=True,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
-        )
+        
         created_rule = await self.correction_rule_storage.create(rule)
-        logger.info(f"Correction rule {created_rule.id} created for role {role_id}")
-
-        # 7. Generate rule_text via LLM (fire-and-forget style, but awaited)
-        await self._generate_rule_text(created_rule)
-
+        logger.info("correction rule %s created for role %s", created_rule.id, role_id)
         return created_rule
 
-    async def _generate_rule_text(self, rule: CorrectionRule) -> None:
-        """Generate rule_text using LLM via AgentExecutor"""
+    async def update_rule(
+        self,
+        rule_id: UUID,
+        src_ai_response_id: Optional[UUID] = None,
+        user_correction_text: Optional[str] = None,
+    ) -> Optional[CorrectionRule]:
+        """
+        Update admin-editable fields and re-extract the lesson if anything changed.
+        """
+        rule = await self.correction_rule_storage.get_by_id(rule_id)
+        if not rule:
+            return None
+
+        changed = False
+        if src_ai_response_id is not None and src_ai_response_id != rule.src_ai_response_id:
+            rule.src_ai_response_id = src_ai_response_id
+            changed = True
+        if user_correction_text is not None and user_correction_text != rule.user_correction_text:
+            rule.user_correction_text = user_correction_text
+            changed = True
+
+        if not changed:
+            return rule
+
+        lesson = await self._extract_lesson(
+            src_ai_response_id=rule.src_ai_response_id,
+            src_user_message_id=rule.src_user_message_id,
+            user_correction_text=rule.user_correction_text,
+        )
+        rule.extracted_lesson = lesson
+        return await self.correction_rule_storage.update(rule)
+
+    async def _extract_lesson(
+        self,
+        src_ai_response_id: UUID,
+        src_user_message_id: UUID,
+        user_correction_text: str,
+    ) -> Optional[str]:
+        """Call LLM to extract a lesson string from the correction context. Returns None on failure."""
         if not self.agent_executor:
-            logger.warning("No agent_executor, skipping rule_text generation")
-            return
+            logger.warning("no agent_executor — skipping lesson extraction")
+            return None
 
         try:
-            from ..agents.graphs.rule_generator import generate_rule_text
-            from ..config import Config
+            ai_message = None
+            if src_ai_response_id:
+                ai_message = await self.message_storage.get_by_id(src_ai_response_id)
+            else:
+                logger.error("_extract_lesson: src_ai_response_id is None")
 
-            rule_text = await generate_rule_text(
-                base_url=self.agent_executor.base_url,
-                model=self.agent_executor.default_model,
-                user_question=rule.user_question,
-                ai_answer=rule.ai_answer,
-                correction_text=rule.correction_text,
+            user_message = None
+            if src_user_message_id:
+                user_message = await self.message_storage.get_by_id(src_user_message_id)
+            else:
+                logger.error("_extract_lesson: src_user_message_id is None")
+
+            llm = self.agent_executor._create_llm(
+                model=self.agent_executor.default_model, temperature=0.7
             )
 
-            if rule_text:
-                await self.correction_rule_storage.update_rule_text(rule.id, rule_text)
-                logger.info(f"Rule text generated for rule {rule.id}")
+            # Formation of user prompt from user message, AI response and correction
+            user_parts = []
+            if user_message:
+                user_parts.append(f"Вопрос пользователя:\n{user_message.content}")
+            if ai_message:
+                user_parts.append(f"Ответ AI:\n{ai_message.content}")
+            user_parts.append(f"Исправление:\n{user_correction_text}")
+            user_prompt = "\n\n".join(user_parts)
 
-        except Exception as e:
-            logger.error(f"Failed to generate rule_text for rule {rule.id}: {e}")
+            result = await llm.ainvoke([
+                {"role": "system", "content": LESSON_EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ])
+            lesson = result.content.strip()
+            return lesson if lesson else None
 
-    async def get_rules_for_role(self, role_id: UUID) -> List[CorrectionRule]:
-        """
-        Get relevant correction rules for a role.
+        except Exception:
+            logger.exception("lesson extraction failed")
+            return None
 
-        TODO: Replace with RAG-based semantic search.
-        Currently returns all active rules for the role.
-        """
-        return await self.correction_rule_storage.list_by_role(role_id, active_only=True)
+    async def search_corrections(
+        self,
+        user_prompt: str,
+        memory_text: str,
+        top_k: int = 3,
+    ) -> List[CorrectionRule]:
+        """Search correction rules by semantic similarity to a user prompt and memory string."""
+        user_embedding = await self._embeddings.aembed_query(user_prompt)
+        mem_embedding = await self._embeddings.aembed_query(memory_text)
+        return await self.correction_rule_storage.search_by_embeddings(
+            mem_embedding=mem_embedding,
+            user_message_embedding=user_embedding,
+            top_k=top_k,
+        )
+
+    async def get_rules_for_role(self, role_id: UUID, active_only: bool = True) -> List[CorrectionRule]:
+        """Get correction rules for a role."""
+        return await self.correction_rule_storage.list_by_role(role_id, active_only=active_only)
 
     async def get_rule(self, rule_id: UUID) -> Optional[CorrectionRule]:
-        """Get a correction rule by ID"""
+        """Get a correction rule by ID."""
         return await self.correction_rule_storage.get_by_id(rule_id)
 
     async def deactivate_rule(self, rule_id: UUID) -> bool:
-        """Deactivate a correction rule"""
+        """Soft-delete a correction rule."""
         return await self.correction_rule_storage.deactivate(rule_id)

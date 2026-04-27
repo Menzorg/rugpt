@@ -30,6 +30,7 @@ from ..storage.task_event_storage import TaskEventStorage
 from ..storage.agent_run_storage import AgentRunStorage
 from ..storage.support_ticket_storage import SupportTicketStorage
 from ..storage.support_ticket_event_storage import SupportTicketEventStorage
+from ..storage.memory_snapshot_storage import MemorySnapshotStorage
 from ..storage.storage_adapter import LocalStorageAdapter
 from .chat_service import ChatService
 from .project_service import ProjectService
@@ -51,6 +52,7 @@ from .task_poll_service import TaskPollService
 from .task_report_service import TaskReportService
 from .file_service import FileService
 from .correction_rule_service import CorrectionRuleService
+from .memory_service import MemoryService
 from .department_service import DepartmentService
 from .rag_service import RAGService
 from .support_notification_service import SupportNotificationService
@@ -101,6 +103,7 @@ class EngineService:
         self.agent_run_storage = AgentRunStorage(self.postgres_dsn)
         self.support_ticket_storage = SupportTicketStorage(self.postgres_dsn)
         self.support_ticket_event_storage = SupportTicketEventStorage(self.postgres_dsn)
+        self.memory_snapshot_storage = MemorySnapshotStorage(self.postgres_dsn)
 
         # Initialize prompt cache (prompts dir relative to project root)
         prompts_dir = str(Config.BASE_DIR / "src" / "engine" / "prompts")
@@ -239,12 +242,11 @@ class EngineService:
         from ..agents.tools.registry import ToolRegistry
         from ..agents.tools.calendar_tool import create_calendar_tools
         from ..agents.tools.task_tool import create_task_tools
-        from ..agents.tools.rag_tool import rag_search, init_rag_pool
+        from ..agents.tools.rag_tool import rag_search
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
-        from src.engine.agents.tools.list_documents import list_documents
+        from ..agents.tools.document_tool import list_documents
         from ..agents.tools.user_tool import create_user_tools
-        from ..agents.tools.document_tool import create_document_tools
 
         # Create calendar tools wired to CalendarService
         cal_create_tool, cal_query_tool = create_calendar_tools(self.calendar_service)
@@ -271,12 +273,8 @@ class EngineService:
         )
         self.tool_registry.register("user_search", user_search_tool)
 
-        (list_documents_tool,) = create_document_tools(
-            user_file_storage=self.user_file_storage,
-        )
-        self.tool_registry.register("list_documents", list_documents_tool)
-
-        # Initialize agent executor (LiteLLM-backed generation)
+        # MemoryService needs AgentExecutor, so it is created after it.
+        # AgentExecutor receives memory_service via setter below to break the chicken-egg.
         self.agent_executor = AgentExecutor(
             base_url=Config.LLM_BASE_URL,
             api_key=Config.LLM_API_KEY,
@@ -284,6 +282,14 @@ class EngineService:
             prompt_cache=self.prompt_cache,
             tool_registry=self.tool_registry,
         )
+
+        self.memory_service = MemoryService(
+            agent_executor=self.agent_executor,
+            chat_storage=self.chat_storage,
+            message_storage=self.message_storage,
+            memory_snapshot_storage=self.memory_snapshot_storage,
+        )
+        self.agent_executor.memory_service = self.memory_service
 
         # Initialize scheduler (started in initialize(), stopped in close())
         self.scheduler_service = SchedulerService(
@@ -337,7 +343,11 @@ class EngineService:
             user_storage=self.user_storage,
             chat_service=self.chat_service,
             agent_executor=self.agent_executor,
+            embedding_model=Config.EMBEDDING_MODEL,
+            llm_base_url=Config.LLM_BASE_URL,
+            llm_api_key=Config.LLM_API_KEY,
         )
+        self.agent_executor.correction_rule_service = self.correction_rule_service
 
         self._initialized = False
         logger.info("EngineService created")
@@ -372,12 +382,17 @@ class EngineService:
         await self.agent_run_storage.init()
         await self.support_ticket_storage.init()
         await self.support_ticket_event_storage.init()
+        await self.memory_snapshot_storage.init()
 
         await self.rag_store.init()
 
-        # Wire the shared pool into the RAG tool (avoids per-call pool creation)
-        from ..agents.tools.rag_tool import init_rag_pool
-        init_rag_pool(self.user_file_storage.pg_pool)
+        # Wire the shared RAGService into the RAG tool
+        from ..agents.tools.rag_tool import init_rag_service
+        init_rag_service(self.rag_service, self.user_file_storage)
+
+        # Wire the shared UserFileStorage into the document tool
+        from ..agents.tools.document_tool import init_document_service
+        init_document_service(self.user_file_storage)
 
         # Start Kafka producer (no-op when KAFKA_ENABLED=false)
         try:
@@ -422,6 +437,7 @@ class EngineService:
         await self.agent_run_storage.close()
         await self.support_ticket_storage.close()
         await self.support_ticket_event_storage.close()
+        await self.memory_snapshot_storage.close()
         await self.rag_store.close()
         await self.scheduler_service.stop()
         await self.notification_service.close()

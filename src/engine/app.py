@@ -39,6 +39,7 @@ from .routes import (
     departments_router,
     projects_router,
     support_router,
+    corrections_router,
 )
 
 # Configure logging with correlation_id in every record
@@ -128,6 +129,7 @@ app.include_router(rag_router, prefix="/api/v1", tags=["rag"])
 app.include_router(departments_router, prefix="/api/v1", tags=["departments"])
 app.include_router(projects_router, prefix="/api/v1", tags=["projects"])
 app.include_router(support_router, prefix="/api/v1", tags=["support"])
+app.include_router(corrections_router, prefix="/api/v1", tags=["corrections"])
 
 
 @app.get("/")
