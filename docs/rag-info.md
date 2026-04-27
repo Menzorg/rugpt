@@ -2,6 +2,22 @@
 
 Retrieval-Augmented Generation: загрузка документов, индексация, гибридный поиск (vector + full-text).
 
+## Инфраструктурное размещение
+
+| Компонент | Узел | Адрес |
+|---|---|---|
+| RAGService / IngestQueue / rag_tool | rugpt-container (B.I.1) | в uvicorn-процессе Engine |
+| Apache Tika | docker-vm (B.II.2) | `http://192.168.1.84:9998` (no auth, CVE-prone — security-пункт 20) |
+| LiteLLM (embeddings + summary) | Zver (C) | `http://192.168.1.80:4000/v1` (Bearer sk-dummy) |
+| pgvector + chunks + tables_rows_chunks | postgres-vm (B.II.1) | `192.168.1.82:5432` |
+| Binary uploads | rugpt-container | `/root/rugpt/uploads/{org_id}/{user_id}/{file_id}.{ext}` (80 GB диск) |
+
+**Multi-tenancy & isolation:**
+- pgvector — **одна общая схема**, не per-role.
+- Scope в SQL-функциях: `org_id = ... AND (is_public OR user_id = viewer) AND is_active`.
+- Vector dim: **1024**, индекс HNSW.
+- Embeddings-модель: `hosted_vllm/Qwen/Qwen3-Embedding-0.6B` через LiteLLM.
+
 ## Архитектура
 
 ```
@@ -16,7 +32,7 @@ WebClient                    Engine (FastAPI)
    |   (RAG indexing)             IngestQueue (ThreadPoolExecutor, 3 воркера)
    |                              |-- Tika: извлечение текста
    |                              |-- TextSplitter: нарезка на чанки (или парсинг таблицы)
-   |                              |-- OllamaEmbeddings: векторизация
+   |                              |-- OpenAIEmbeddings (LiteLLM): векторизация
    |                              |-- LLM: генерация summary
    |                              |-- PostgreSQL + pgvector: сохранение
    |                              |
@@ -71,7 +87,7 @@ STORAGE_LOCAL_DIR=<project_root>/uploads  # директория хранени�
 **Текстовые документы** (PDF, DOCX, TXT и др.):
 1. Apache Tika извлекает текст
 2. `RecursiveCharacterTextSplitter` нарезает на чанки (1000 символов, overlap 200)
-3. `OllamaEmbeddings` генерирует вектор для каждого чанка (1024 dim)
+3. `OpenAIEmbeddings (LiteLLM)` генерирует вектор для каждого чанка (1024 dim)
 4. LLM генерирует summary документа
 5. Summary тоже векторизуется
 6. Атомарная запись: `user_files` (summary + summary_embedding) + `chunks`
@@ -80,7 +96,7 @@ STORAGE_LOCAL_DIR=<project_root>/uploads  # директория хранени�
 1. Apache Tika парсит в XHTML
 2. BeautifulSoup извлекает строки таблиц
 3. Каждая строка форматируется как `"Header1: value1, Header2: value2, ..."`
-4. `OllamaEmbeddings` генерирует вектор для каждой строки
+4. `OpenAIEmbeddings (LiteLLM)` генерирует вектор для каждой строки
 5. LLM генерирует summary (первые 50 строк + заголовки)
 6. Атомарная запись: `user_files` (summary + summary_embedding) + `tables_rows_chunks`
 
@@ -274,9 +290,9 @@ class ChunkSearchResult:
 
 | Переменная | Значение по умолчанию | Описание |
 |---|---|---|
-| EMBEDDING_MODEL | qwen3-embedding:0.6b | Модель эмбеддингов (Ollama) |
+| EMBEDDING_MODEL | hosted_vllm/Qwen/Qwen3-Embedding-0.6B | Модель эмбеддингов (LiteLLM alias) |
 | RAG_SUMMARY_MODEL | (DEFAULT_MODEL) | Модель для генерации summary |
-| RAG_TIKA_SERVER_ENDPOINT | http://localhost:9998 | Apache Tika сервер |
+| RAG_TIKA_SERVER_ENDPOINT | http://192.168.1.84:9998 | Apache Tika сервер (docker-vm B.II.2) |
 | RAG_STORE_DSN | (POSTGRES_DSN) | DSN для RAG-хранилища |
 | RAG_VECTOR_DIM | 1024 | Размерность векторов |
 | RAG_CHUNK_SIZE | 1000 | Размер чанка (символы) |
@@ -286,7 +302,7 @@ class ChunkSearchResult:
 ## Зависимости
 
 ```
-langchain-ollama     # OllamaEmbeddings, ChatOllama
+langchain-openai     # OpenAIEmbeddings, ChatOpenAI (работают с LiteLLM)
 langchain            # RecursiveCharacterTextSplitter
 tika                 # Apache Tika клиент (парсинг документов)
 beautifulsoup4       # Парсинг таблиц из XHTML

@@ -36,6 +36,10 @@ DB_PASSWORD=${DB_PASSWORD:-}
 TEST_ORG_SLUG="test-company"
 TEST_ADMIN_EMAIL="admin@testcompany.ru"
 
+# Тестовые саппорт-операторы (живут в орг RuGPT Support, которую НЕ удаляем).
+# Сама орг — инфраструктурная (миграция 023), system user support_ai тоже не трогаем.
+SUPPORT_OP_EMAILS=("maria@rugpt.support" "alexey@rugpt.support")
+
 # Режим удаления
 DELETE_ALL=false
 if [ "$1" == "--all" ]; then
@@ -180,6 +184,9 @@ if [ "$DELETE_ALL" == "true" ]; then
     echo "  Удаление календарных событий..."
     run_sql "DELETE FROM calendar_events;" > /dev/null
 
+    echo "  Удаление support_ticket_events (CASCADE с support_tickets)..."
+    run_sql "DELETE FROM support_tickets;" > /dev/null
+
     echo "  Удаление сообщений..."
     run_sql "DELETE FROM messages;" > /dev/null
 
@@ -244,6 +251,19 @@ else
     echo "  Удаление календарных событий..."
     run_sql "DELETE FROM calendar_events WHERE org_id = '$TEST_ORG_ID';" > /dev/null
 
+    echo "  Удаление support_ticket_events + support_tickets (тестовый клиент + операторы)..."
+    # Тикеты привязаны к requester_org_id (клиентская орг) и assignee_user_id (оператор RuGPT Support).
+    # Удаляем все тикеты, где либо requester из тестовой орг, либо assignee — наш тестовый оператор.
+    # support_ticket_events каскадно удалятся через FK ON DELETE CASCADE.
+    run_sql "
+    DELETE FROM support_tickets
+    WHERE requester_org_id = '$TEST_ORG_ID'
+       OR assignee_user_id IN (
+           SELECT id FROM users
+           WHERE email IN ('maria@rugpt.support', 'alexey@rugpt.support')
+       );
+    " > /dev/null
+
     echo "  Удаление сообщений..."
     run_sql "DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE org_id = '$TEST_ORG_ID');" > /dev/null
 
@@ -252,6 +272,12 @@ else
 
     echo "  Удаление пользователей..."
     run_sql "DELETE FROM users WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
+    echo "  Удаление тестовых саппорт-операторов из орг RuGPT Support..."
+    run_sql "
+    DELETE FROM users
+    WHERE email IN ('maria@rugpt.support', 'alexey@rugpt.support');
+    " > /dev/null
 
     echo "  Удаление ролей..."
     run_sql "DELETE FROM roles WHERE org_id = '$TEST_ORG_ID';" > /dev/null

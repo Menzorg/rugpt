@@ -2,14 +2,20 @@
 
 ## Обзор
 
-На dev-сервере работают двое разработчиков под отдельными Linux-пользователями, но с единым Claude-аккаунтом (шаринг токена авторизации).
+RuGPT разрабатывается в нескольких сценариях, описанных в `architecture-full-2026-04-22.md`:
 
-## Пользователи
+- **F. Dev-VPS** — основной dev-сервер. На нём двое разработчиков работают под отдельными Linux-пользователями (`root` и `wolflord`), но с **единым Claude-аккаунтом** (шаринг OAuth-токена). Изолированные home-dir, раздельные venv/node_modules и истории Claude. **Этот документ описывает именно этот сценарий.**
+- **Macbook (Пётр)** — lead dev, разрабатывает локально, `deploy.sh` → Prod-VPS + RAG-container. На Dev-VPS синхронизируется через `sync.sh` (Dev-VPS → Macbook rsync).
+- **G. Рабочий компьютер Александра** — второй dev (инфраструктура, GPU), свой компьютер, push в GitHub/GitLab feature-ветки. **Не является пользователем на F.Dev-VPS.**
+
+`wolflord` — новый сотрудник с изолированной Claude-средой и полной копией кода на F.Dev-VPS. Это отдельный сценарий от G.Alexander (который работает со своей машины).
+
+## Пользователи на F. Dev-VPS
 
 | Пользователь | UID | Home | Роль |
 |---|---|---|---|
-| `root` | 0 | `/root` | Основной разработчик |
-| `wolflord` | 1000 | `/home/wolflord` | Второй разработчик |
+| `root` | 0 | `/root` | Основной разработчик (lead dev Пётр) |
+| `wolflord` | 1000 | `/home/wolflord` | Второй разработчик (новый сотрудник) |
 
 ## SSH-доступ
 
@@ -160,8 +166,74 @@ rsync -an --delete --exclude='venv' ... /root/rugpt/ /home/wolflord/rugpt/
 - `.env` не синхронизируются — секреты у каждого свои.
 - Запущенные процессы (uvicorn, vite, nest) во время rsync не перезапускаются автоматически — нужно рестартовать руками.
 
-## Ограничения
+## Ограничения (текущий workflow)
 
 - Оба пользователя логинят одну и ту же БД `rugpt` с общими данными (`psql -U postgres -h localhost`).
 - Запуск dev-сервера одновременно на одних и тех же портах (`8100` для Engine) невозможен — либо договариваться, либо поднимать второй инстанс на другом порту и с отдельной БД.
 - Rate limits Claude-аккаунта общие на обоих — при одновременной интенсивной работе быстрее упираются в лимиты.
+
+---
+
+## Планируемый workflow после миграции на GitLab
+
+Сейчас цепочка деплоя идёт через macbook: `F.Dev-VPS → sync.sh → Macbook → deploy.sh → Prod(A) + rugpt-container(B.I.1)`. После миграции на self-hosted GitLab она заменится на CI-пайплайн.
+
+### Инфраструктура миграции
+
+- **GitLab CE Omnibus** — LXC `gitlab-container` (B.I.2, `192.168.1.118`), SSH через NAT `217.113.118.218:28351`
+- **GitLab Runner** — KVM `gitlab-runner-vm` (B.II.3, `192.168.1.119`), Docker executor (`docker.sock` смонтирован; план — kaniko/buildkit)
+- **dev-vm** — KVM `dev-vm` (B.II.4), all-in-one preview-среда: PG + Redis + Kafka + FastAPI + NestJS + Next.js. Клон prod-данных после анонимизации. Snapshot Proxmox → rollback
+
+### Поток
+
+```
+разработчики (F root/wolflord, macbook, G Alex PC)
+   │
+   │ git push origin dev (или feature/*)
+   ▼
+GitLab CE (B.I.2)
+   │
+   │ trigger pipeline
+   ▼
+GitLab Runner (B.II.3, Docker executor)
+   │
+   │ build + test + artifacts
+   ▼
+Auto-deploy → dev-vm (B.II.4)
+   │
+   │ ручное тестирование, QA
+   ▼
+MR dev → main, approval
+   │
+   ▼
+CI deploy → Prod-VPS (A) + rugpt-container (B.I.1)
+```
+
+### Отличия от текущего
+
+| Аспект | Сейчас | После GitLab |
+|---|---|---|
+| Git хостинг | GitHub | GitLab CE (внутренний) |
+| Deploy | `deploy.sh` с macbook | GitLab CI runner |
+| Единая точка SSH к prod | Macbook (SPOF) | CI variables (scoped по env) |
+| Code review / approval | неявный | MR с approval gate |
+| Audit trail deploy | нет | pipeline logs + artifacts |
+| Preview перед prod | нет | dev-vm (B.II.4) |
+
+### Что делать с wolflord в новом workflow
+
+Кейс "изолированный Claude + копия кода на одном сервере" **сохраняется** — это про локальную разработку, не про деплой. После миграции на GitLab:
+
+- wolflord пушит в feature-ветки на GitLab (SSH через VPN или NAT `:28351`)
+- локальная среда (venv, node_modules, `.env`) — как и раньше под изолированным юзером
+- Claude credentials sync (раздел «Синхронизация Claude credentials» выше) — тот же inotify-сервис
+
+### План миграции GitHub → GitLab
+
+1. Импорт истории репозиториев GitHub → GitLab CE
+2. Настройка GitLab CI (`.gitlab-ci.yml`) с этапами build/test/deploy
+3. CI variables: SSH-ключи deploy (scoped по environment)
+4. Раскатка dev-vm как preview-среды
+5. Миграция webhooks / integrations
+6. **Отозвать GitHub PAT/SSH-ключи** (security-пункт 23 из `tech-debt.md`)
+7. Оставить GitHub как read-only mirror либо удалить

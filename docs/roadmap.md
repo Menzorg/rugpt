@@ -45,7 +45,7 @@ AI-роли получают доступ к загруженным докуме
 
 **Реализовано в Engine:**
 - FileService: загрузка, хранение (LocalStorageAdapter), дедупликация по SHA-256
-- RAGService: индексация через Apache Tika + OllamaEmbeddings + pgvector
+- RAGService: индексация через Apache Tika (docker-vm) + OpenAIEmbeddings через LiteLLM (`Qwen3-Embedding-0.6B`, 1024 dim) + pgvector
 - Два типа: текстовые документы (чанки) и табличные (построчные эмбеддинги)
 - Гибридный поиск: vector + full-text (TSV rank fusion), 7 SQL-функций
 - IngestQueue: фоновая индексация (ThreadPoolExecutor, 3 воркера)
@@ -91,12 +91,25 @@ AI-роли получают доступ к загруженным докуме
 
 > Отдельных "агентов на главной" нет. rag_search работает как инструмент ролей.
 
-### 7. Подбор LLM-модели -- В ПРОЦЕССЕ
+### 7. Подбор LLM-модели + инфраструктура LLM -- В ПРОЦЕССЕ
 
-Тестирование и выбор одной оптимальной модели для продукта:
-- Текущая основная: `qwen2.5:7b` (Ollama)
-- Эмбеддинги: `qwen3-embedding:0.6b`
-- Выполняет: Александр
+Тестирование и выбор одной оптимальной модели для продукта + раскатка
+production-стека LLM (Zver, vLLM, LiteLLM).
+
+**Текущий стек (на конец апреля 2026):**
+- Хост: C. Zver (`192.168.1.80`), ~200 GB VRAM, Ubuntu + CUDA
+- Inference: vLLM (Python + CUDA)
+- Gateway: LiteLLM proxy `:4000`, OpenAI-compatible, Bearer `sk-dummy` (временно)
+- Генерация: `hosted_vllm/google/gemma-4-31B-it`
+- Эмбеддинги: `hosted_vllm/Qwen/Qwen3-Embedding-0.6B` (1024 dim)
+- Engine подключается через `langchain-openai.ChatOpenAI` / `OpenAIEmbeddings`
+- Детали: `docs/llm.md`
+
+**Выполняет:** Александр (инфра LLM), Пётр (интеграция в engine). Ollama
+оставлена legacy только для health/listing, инференс полностью переехал.
+
+**Follow-up:** ужесточить auth на LiteLLM (сейчас sk-dummy — security-пункт 5),
+бенчмарки других моделей на тех же весах.
 
 ### 8. Отделы и права видимости -- РЕАЛИЗОВАНО
 
@@ -461,14 +474,43 @@ PM-агент как личный уведомитель по задачам + *
 - п.10 (PM-агент)
 - п.11 (проекты + чаты задач) — нужны для `task_chat_post`/`project_chat_post`
 
+### 13. Инфраструктура (Proxmox + GitLab + WireGuard) -- ЧАСТИЧНО РЕАЛИЗОВАНО
+
+Физическая инфраструктура на 7 узлов, подробно описанная в
+`architecture-full-2026-04-22.md` и `architecture-2026-04-22.drawio`.
+
+**Раскатано:**
+- **RAG Proxmox** (B, `217.113.118.218`, 64c/512GB): LXC rugpt-container (.81) с
+  Engine, LXC gitlab-container (.118) с GitLab CE Omnibus, KVM postgres-vm (.82)
+  с PostgreSQL 16 + pgvector, KVM docker-vm (.84) с Kafka + Tika + n8n,
+  KVM gitlab-runner-vm (.119)
+- **Zver GPU** (C, `192.168.1.80`): LiteLLM + vLLM (см. п.7)
+- **Prod-VPS** (A, `rugpt.pro`): nginx + Next.js + NestJS + Redis, WG peer
+  `10.0.0.1`
+- **Omada ER605** (D): dual-WAN ISP1+ISP2, WireGuard сервер 10.0.0.0/24, NAT
+  forwards для SSH GitLab/runner
+- **NAS Synology** (E, `192.168.1.38`): DSM 7.3.2, Btrfs RAID 5, WriteOnce,
+  бэкапы pg_dump + Proxmox vzdump
+- **Dev-VPS** (F): Ubuntu с копией кода (без `.git`, `.env`, `venv`) для minimize
+  blast-radius; sync.sh → macbook → deploy.sh → Prod + RAG
+
+**В работе:**
+- **GitLab CE миграция** (из GitHub) — после завершения: отозвать GitHub PAT/SSH,
+  оставить GitLab как source of truth
+- **dev-vm** (B.II.4) — all-in-one KVM-VM для CI preview с клонированным prod-PG
+  (нужна анонимизация перед импортом)
+- **GitLab CI** через runner-vm — build/test/deploy → dev-vm → MR dev→main → prod
+
+**Security-аудит (25 пунктов) -- см. `tech-debt.md` раздел Infrastructure & Security.**
+
 ### Реализовано вне роадмапа
 
 Следующие фичи были реализованы, но не описаны в исходном роадмапе:
 
-- **Zero Trust / устройства** -- миграция 011, ECDSA P-256 верификация устройств, CryptoService
+- **Zero Trust / устройства** -- миграция 011, ECDSA P-256 верификация устройств, CryptoService, `/auth/verify-signature`
 - **Correction Rules** -- миграция 010, система обучения AI на обратной связи (отклонённые ответы -> правила)
 - **Organization timezone** -- миграция 014, per-org timezone для scheduler jobs
-- **6 системных промптов** -- lawyer, accountant, hr, chu, admin_assistant, humorist
+- **7 системных промптов** -- lawyer, accountant, hr, chu, admin_assistant, humorist, pm
 
 ---
 

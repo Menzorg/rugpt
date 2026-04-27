@@ -2,17 +2,46 @@
 
 ## Base URL
 
-```
-http://localhost:8100/api/v1
-```
+| Env | URL |
+|---|---|
+| Local dev | `http://127.0.0.1:8100/api/v1` |
+| Prod (from webclient через WG) | `http://10.0.0.2/api/v1/web/*` — nginx срезает `/web` и проксирует на FastAPI `:8100` |
+
+Engine слушает только на loopback (`127.0.0.1:8100`). Внешний доступ — только через nginx на rugpt-container (B.I.1) по WireGuard. Подробности — `docs/networking.md`.
 
 ## Аутентификация
 
-Все endpoints (кроме `/auth/login`, `/auth/register`, `/health`, `/notifications/telegram/webhook`) требуют JWT токен в заголовке:
+Двухслойная:
 
-```
-Authorization: Bearer <token>
-```
+1. **JWT HMAC-SHA256** (`Authorization: Bearer <token>`) — обязательна для всех endpoints кроме публичных.
+2. **ECDSA P-256 device signature** — обязательна для всех mutation-endpoints через webclient; проверяется в NestJS `SignatureGuard` → engine `POST /auth/verify-signature`. Детали ECDSA-флоу — `docs/networking.md` раздел «App-layer auth».
+
+Query-параметры (или body) для подписанных запросов:
+
+| Параметр | Описание |
+|---|---|
+| `signature` | ECDSA-подпись payload (base64) |
+| `nonce` | 16-байтный random, защита от replay |
+| `sig_timestamp` | Unix timestamp (валидное окно ±5 min) |
+| `user_id` | UUID пользователя (для резолва `user_devices.public_key`) |
+
+### Публичные endpoints (без JWT и без signature — декоратор `@SkipSignature`)
+
+- `POST /auth/login`, `POST /auth/register`, `POST /auth/verify-signature`
+- `GET /config` (maintenance status)
+- `GET /health*`
+- `POST /notifications/telegram/webhook`
+- `POST /files/upload`, `GET /files/:id/download` — **legacy** (план перевести на signed; security-пункт 9 из `tech-debt.md`)
+
+### Rate-limit
+
+**Engine rate-limit не имеет** — открыт в WireGuard без throttling (security-пункт 14 из `tech-debt.md`). Rate-limit — только на webclient (Redis-backed): HTTP default 100/min, strict 10/min; WS 100/min/event/user.
+
+### Известные замечания
+
+- **Telegram webhook** (`POST /notifications/telegram/webhook`) — engine за VPN, с публичного интернета **недоступен**. Исходящие вызовы `Engine → api.telegram.org` работают.
+- **WebSocket** — на уровне engine отсутствует (WS живёт на webclient). Engine шлёт события в webclient через Kafka `chat.events`.
+- **CORS** Engine = `allow_origins=["*"]` — dev-настройка, ослабляет Zero-Trust.
 
 ---
 
@@ -210,7 +239,7 @@ Authorization: Bearer <token>
     "agent_config": {},
     "tools": ["calendar_create", "calendar_query"],
     "prompt_file": "lawyer.md",
-    "model_name": "qwen2.5:7b",
+    "model_name": "hosted_vllm/google/gemma-4-31B-it",
     "rag_collection": null,
     "is_active": true
   }

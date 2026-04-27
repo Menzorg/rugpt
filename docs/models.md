@@ -79,7 +79,7 @@ class Role:
     description: Optional[str]
     system_prompt: str              # Fallback промпт (в БД)
     rag_collection: Optional[str]
-    model_name: str                 # "qwen2.5:7b"
+    model_name: str                 # "hosted_vllm/google/gemma-4-31B-it" (LiteLLM alias)
     agent_type: str                 # "simple" | "chain" | "multi_agent"
     agent_config: dict              # Конфигурация графа (JSONB)
     tools: List[str]                # ["calendar_create", "rag_search", ...]
@@ -109,8 +109,9 @@ class Role:
 
 ```python
 class ChatType(str, Enum):
-    DIRECT = "direct"     # Прямые сообщения (включая user <-> system user)
-    GROUP = "group"       # Групповой чат
+    DIRECT = "direct"      # Прямые сообщения (включая user <-> system user)
+    TASK = "task"          # Чат задачи (auto-create, item 11). participants = {creator, assignee}
+    PROJECT = "project"    # Чат проекта (auto-create при первой задаче, item 11)
 
 @dataclass
 class Chat:
@@ -120,11 +121,15 @@ class Chat:
     name: Optional[str]
     participants: List[UUID]
     created_by: Optional[UUID]
+    task_id: Optional[UUID]        # если type=TASK (item 11)
+    project_id: Optional[UUID]     # если type=PROJECT (item 11)
     is_active: bool
     created_at: datetime
     updated_at: datetime
     last_message_at: Optional[datetime]
 ```
+
+**Legacy типы** `main` / `group` — удалены миграцией 017, смигрированы в DIRECT.
 
 ---
 
@@ -260,13 +265,29 @@ class Task:
     org_id: UUID
     title: str
     description: Optional[str]
-    status: str                     # "created" | "in_progress" | "done" | "overdue"
+    status: str                     # "created" | "in_progress" | "awaiting_review" | "done" | "cancelled" | "overdue"
     assignee_user_id: UUID
     deadline: Optional[datetime]
+    created_by_user_id: UUID        # item 9: кто автор задачи (для флоу take/mark-done/accept/reject)
+    project_id: Optional[UUID]      # item 11: группировка в проект
+    awaiting_review_at: Optional[datetime]       # item 9: когда assignee нажал mark-done
+    proposed_deadline: Optional[datetime]        # item 9: предложенный assignee новый дедлайн
+    proposed_deadline_by: Optional[UUID]         # item 9: кто предложил
     is_active: bool
     created_at: datetime
     updated_at: datetime
 ```
+
+**Статусный флоу (item 9):**
+
+```
+created  ──▶  in_progress  ──▶  awaiting_review  ──▶  done
+   │             ▲                      │
+   │             └──────── reject ──────┘   (возврат с комментарием creator'а)
+   └──▶ cancelled
+```
+
+`overdue` — вычисляемый статус (scheduler `check_overdue()` помечает задачи с просроченным `deadline`).
 
 ---
 
@@ -387,6 +408,124 @@ class CorrectionRule:
 
 ---
 
+## Project (item 11)
+
+**Файл:** `src/engine/models/project.py`
+
+Группировка задач. Создаётся head/admin. При первой задаче автоматически создаётся `PROJECT`-чат с участниками всех задач проекта.
+
+```python
+@dataclass
+class Project:
+    id: UUID
+    org_id: UUID
+    name: str
+    description: Optional[str]
+    created_by_user_id: UUID
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+```
+
+---
+
+## TaskEvent (item 11 audit trail)
+
+**Файл:** `src/engine/models/task_event.py`
+
+Лог изменений задачи (создание, статусные переходы, deadline-negotiation). Отделён от `messages`, чтобы UI мог рендерить timeline независимо от чата.
+
+```python
+@dataclass
+class TaskEvent:
+    id: UUID
+    task_id: UUID
+    actor_user_id: Optional[UUID]   # кто инициировал (None для системных)
+    event_type: str                 # "created" | "took" | "marked_done" | "accepted" |
+                                    # "rejected" | "deadline_changed" | "deadline_proposed" |
+                                    # "deadline_proposal_accepted" | "deadline_proposal_rejected"
+    payload: dict                   # JSONB с деталями (comment, old/new value, ...)
+    created_at: datetime
+```
+
+---
+
+## AgentRun (item 10 async idempotency)
+
+**Файл:** `src/engine/models/agent_run.py`
+
+Запись о запуске агента через Kafka `agent.requests`. Атомарный CAS `pending → running` защищает от дублирования при Kafka redelivery (at-least-once).
+
+```python
+@dataclass
+class AgentRun:
+    request_id: UUID                # PK, = Kafka message key
+    chat_id: UUID
+    org_id: UUID
+    trigger_user_id: UUID
+    role_id: UUID
+    mention_message_id: UUID
+    status: str                     # "pending" | "running" | "done" | "failed"
+    result_message_id: Optional[UUID]
+    error: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+```
+
+Атомарная защита в `AgentRunStorage.mark_running`: `UPDATE WHERE status='pending' RETURNING` — выигрывает ровно один вызов.
+
+---
+
+## Department (item 8)
+
+**Файл:** `src/engine/models/department.py`
+
+Плоский список отделов организации + симметричные правила видимости (кто из какого отдела может видеть/упоминать юзеров из какого).
+
+```python
+@dataclass
+class Department:
+    id: UUID
+    org_id: UUID
+    name: str
+    head_user_id: Optional[UUID]
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+@dataclass
+class DepartmentVisibility:
+    id: UUID
+    org_id: UUID
+    department_a_id: UUID
+    department_b_id: UUID           # симметричное правило: A видит B = B видит A
+    created_at: datetime
+```
+
+`DepartmentService.get_visible_user_ids(viewer_user_id)` — резолвит множество видимых юзеров по правилам.
+
+---
+
+## UserDevice (Zero Trust)
+
+**Файл:** `src/engine/models/user_device.py` (или прямо в `device_storage.py`)
+
+Публичные ключи устройств (ECDSA P-256). Приватный ключ — только в IndexedDB браузера, non-extractable.
+
+```python
+@dataclass
+class UserDevice:
+    id: UUID
+    user_id: UUID
+    device_name: Optional[str]      # произвольное, для UX
+    public_key_pem: str             # PEM-сериализованный ECDSA P-256 pubkey
+    created_at: datetime
+```
+
+Используется `CryptoService.verify_signature`: итерируем по всем активным устройствам юзера, проверяем ECDSA — любой валидный public key из списка подтверждает запрос.
+
+---
+
 ## RAG Models
 
 **Файл:** `src/engine/models/rag.py`
@@ -432,20 +571,36 @@ Organization (1)
     |       +-- CalendarEvent (*)   # События привязаны к роли
     |       +-- CorrectionRule (*)  # Правила коррекции роли
     |
+    +-- Department (*)              # item 8: плоский список отделов
+    |       |
+    |       +-- DepartmentVisibility (*)  # симметричные правила видимости
+    |
     +-- User (*)                    # Пользователи организации
     |       |
     |       +-- Role (0..1)                 # Назначенная роль
+    |       +-- Department (0..1)           # item 8
     |       +-- NotificationChannel (*)     # Каналы уведомлений
-    |       +-- Task (*)                    # Задачи (как исполнитель)
+    |       +-- UserDevice (*)              # ECDSA P-256 pubkeys (Zero Trust)
+    |       +-- Task (*)                    # Задачи (как assignee и creator, item 9)
     |       +-- TaskPoll (*)                # Утренние опросы
     |       +-- TaskReport (*)              # Вечерние отчёты (как руководитель)
     |       +-- UserFile (*)                # Файлы пользователя
     |       +-- InAppNotification (*)       # In-app уведомления
     |
-    +-- Chat (*)                    # Чаты организации
+    +-- Project (*)                 # item 11: группировка задач
+    |       |
+    |       +-- Task (*)                    # tasks.project_id
+    |       +-- Chat (type=PROJECT)         # auto-created
+    |
+    +-- Chat (*)                    # Чаты организации (DIRECT / TASK / PROJECT)
             |
             +-- Message (*)         # Сообщения в чате
 
-NotificationLog -- лог доставки (user_id, event_id, role_id)
-UserFile -> chunks (text) / tables_rows_chunks (table) -- RAG-индекс (pgvector)
+Task
+  +-- TaskEvent (*)                 # item 11: audit trail
+  +-- Chat (type=TASK)              # item 11: auto-created
+
+AgentRun (*)                        # item 10: async idempotency для Kafka agent.requests
+NotificationLog                     # лог доставки (user_id, event_id, role_id)
+UserFile -> chunks / tables_rows_chunks  # RAG-индекс (pgvector 1024-dim, HNSW)
 ```

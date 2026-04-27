@@ -28,6 +28,8 @@ from ..storage.department_storage import DepartmentStorage
 from ..storage.project_storage import ProjectStorage
 from ..storage.task_event_storage import TaskEventStorage
 from ..storage.agent_run_storage import AgentRunStorage
+from ..storage.support_ticket_storage import SupportTicketStorage
+from ..storage.support_ticket_event_storage import SupportTicketEventStorage
 from ..storage.storage_adapter import LocalStorageAdapter
 from .chat_service import ChatService
 from .project_service import ProjectService
@@ -51,6 +53,8 @@ from .file_service import FileService
 from .correction_rule_service import CorrectionRuleService
 from .department_service import DepartmentService
 from .rag_service import RAGService
+from .support_notification_service import SupportNotificationService
+from .support_ticket_service import SupportTicketService
 from ..storage.rag_store import RAG_store
 from ..notifications.telegram_sender import TelegramSender
 from ..notifications.email_sender import EmailSender
@@ -95,6 +99,8 @@ class EngineService:
         self.project_storage = ProjectStorage(self.postgres_dsn)
         self.task_event_storage = TaskEventStorage(self.postgres_dsn)
         self.agent_run_storage = AgentRunStorage(self.postgres_dsn)
+        self.support_ticket_storage = SupportTicketStorage(self.postgres_dsn)
+        self.support_ticket_event_storage = SupportTicketEventStorage(self.postgres_dsn)
 
         # Initialize prompt cache (prompts dir relative to project root)
         prompts_dir = str(Config.BASE_DIR / "src" / "engine" / "prompts")
@@ -109,9 +115,28 @@ class EngineService:
         # Initialize in-app notification service
         self.in_app_notification_service = InAppNotificationService(self.in_app_notification_storage)
 
+        # Support ticket notification service — fan-out to RuGPT Support operators
+        # via in-app notifications (type='system', reference_type='support_ticket').
+        self.support_notification_service = SupportNotificationService(
+            in_app_notification_service=self.in_app_notification_service,
+            user_storage=self.user_storage,
+        )
+
         # Initialize chat/task_event/project services (order matters):
         # ChatService -> TaskEventService -> ProjectService -> TaskService
         self.chat_service = ChatService(self.chat_storage, self.message_storage)
+
+        # Support ticket service — business logic for tech-support tickets.
+        # Depends on chat_storage/message_storage/user_storage directly (not chat_service).
+        self.support_ticket_service = SupportTicketService(
+            ticket_storage=self.support_ticket_storage,
+            event_storage=self.support_ticket_event_storage,
+            chat_storage=self.chat_storage,
+            message_storage=self.message_storage,
+            user_storage=self.user_storage,
+            notification_service=self.support_notification_service,
+        )
+
         self.task_event_service = TaskEventService(self.task_event_storage)
         self.project_service = ProjectService(self.project_storage, self.chat_service)
 
@@ -286,6 +311,8 @@ class EngineService:
             agent_executor=self.agent_executor,
             agent_run_storage=self.agent_run_storage,
             kafka_producer=self.kafka_producer,
+            support_ticket_storage=self.support_ticket_storage,
+            support_ticket_event_storage=self.support_ticket_event_storage,
         )
 
         # Kafka consumer for agent.requests topic (async inference).
@@ -343,6 +370,8 @@ class EngineService:
         await self.project_storage.init()
         await self.task_event_storage.init()
         await self.agent_run_storage.init()
+        await self.support_ticket_storage.init()
+        await self.support_ticket_event_storage.init()
 
         await self.rag_store.init()
 
@@ -391,6 +420,8 @@ class EngineService:
         await self.project_storage.close()
         await self.task_event_storage.close()
         await self.agent_run_storage.close()
+        await self.support_ticket_storage.close()
+        await self.support_ticket_event_storage.close()
         await self.rag_store.close()
         await self.scheduler_service.stop()
         await self.notification_service.close()

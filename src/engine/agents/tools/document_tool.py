@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger("rugpt.agents.tools.document")
 
 _MAX_RESULTS = 30
-_SUMMARY_CHARS_BUDGET = 3000 # in case of 30 documents, all have at least 100 chars of summary
+_SUMMARY_MAX_CHARS = 400
 
 
 class ListDocumentsInput(BaseModel):
@@ -76,13 +76,12 @@ def create_document_tools(user_file_storage):
 
             total = len(visible)
             visible = visible[:_MAX_RESULTS]
-            summary_max_chars = max(1, _SUMMARY_CHARS_BUDGET // len(visible))
 
             lines = []
             for f in visible:
                 if f.rag_status == "indexed" and f.summary:
-                    summary = f.summary[:summary_max_chars]
-                    if len(f.summary) > summary_max_chars:
+                    summary = f.summary[:_SUMMARY_MAX_CHARS]
+                    if len(f.summary) > _SUMMARY_MAX_CHARS:
                         summary += "..."
                     summary_part = f'summary: "{summary}"'
                 else:

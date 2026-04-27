@@ -15,6 +15,7 @@ class ChatType(str, Enum):
     DIRECT = "direct"     # Direct message between two users (including user <-> system user)
     TASK = "task"         # Chat attached to a task
     PROJECT = "project"   # Chat attached to a project
+    SUPPORT = "support"   # Tech support ticket chat (cross-org, see ChatType.SUPPORT exemption)
 
 
 def _coerce_chat_type(raw) -> ChatType:
@@ -44,6 +45,7 @@ class Chat:
     1. DIRECT - Chat between users (or user <-> system user). 1..N participants.
     2. TASK - Chat attached to a task (task_id set). Participants = creator + assignee.
     3. PROJECT - Chat attached to a project (project_id set). Participants = union of task creators/assignees in the project.
+    4. SUPPORT - Chat attached to a support ticket (support_ticket_id set). Cross-org: chat.org_id = requester_org_id, but operator from RuGPT Support org joins as participant. Visibility uses ChatService.can_user_access_chat exemption.
 
     Participants: List of user IDs in this chat. Monotonic-grow (audit trail).
     Visibility in sidebar/UI is separately enforced via can_see_task etc.
@@ -56,6 +58,7 @@ class Chat:
     created_by: Optional[UUID] = None                # User who created the chat
     task_id: Optional[UUID] = None                   # Set iff type == TASK
     project_id: Optional[UUID] = None                # Set iff type == PROJECT
+    support_ticket_id: Optional[UUID] = None         # Set iff type == SUPPORT
     is_active: bool = True                           # Active/archived status
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
@@ -72,6 +75,7 @@ class Chat:
             "created_by": str(self.created_by) if self.created_by else None,
             "task_id": str(self.task_id) if self.task_id else None,
             "project_id": str(self.project_id) if self.project_id else None,
+            "support_ticket_id": str(self.support_ticket_id) if self.support_ticket_id else None,
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
@@ -99,6 +103,7 @@ class Chat:
             created_by=_uuid_or_none(data.get("created_by")),
             task_id=_uuid_or_none(data.get("task_id")),
             project_id=_uuid_or_none(data.get("project_id")),
+            support_ticket_id=_uuid_or_none(data.get("support_ticket_id")),
             is_active=data.get("is_active", True),
             created_at=datetime.fromisoformat(data["created_at"]) if isinstance(data.get("created_at"), str) else data.get("created_at", datetime.utcnow()),
             updated_at=datetime.fromisoformat(data["updated_at"]) if isinstance(data.get("updated_at"), str) else data.get("updated_at", datetime.utcnow()),

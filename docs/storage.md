@@ -1,6 +1,24 @@
 # RuGPT Storage Layer
 
-PostgreSQL хранилище данных.
+PostgreSQL 16 + pgvector + pgcrypto. Физически — отдельная KVM-VM `postgres-vm` (B.II.1, `192.168.1.82`), 368 GB RAM, 35 pinned cores, 200+2000 GB диск. **Не** внутри rugpt-container. Auth: scram-sha-256 / md5. Backup: `pg_dump` → NAS + Proxmox snapshot.
+
+### Multi-tenancy
+
+- Все таблицы имеют `org_id` — row-level изоляция по организации.
+- **pgvector — одна общая схема** (не per-role). Изоляция: `org_id AND (is_public OR user_id = viewer)`.
+- **Bin-файлы** не в PG — в rugpt-container `/root/rugpt/uploads/{org_id}/{user_id}/{file_id}.{ext}`. В PG только метаданные (`user_files`). SHA-256 per-user дедуп.
+
+### Vector-конфигурация (RAG)
+
+- Dim: **1024** (Qwen3-Embedding-0.6B через LiteLLM).
+- Индекс: **HNSW**.
+- Embeddings-модель: `hosted_vllm/Qwen/Qwen3-Embedding-0.6B`.
+
+Подробнее RAG-pipeline — `docs/rag-info.md`.
+
+## Сетевой доступ
+
+Engine (rugpt-container, `192.168.1.81`) → PostgreSQL (`192.168.1.82:5432`) — plaintext TCP по LAN, без TLS (security-пункт 1 из `tech-debt.md`). DSN — `POSTGRES_DSN` в `.env`.
 
 ## BaseStorage
 
@@ -337,6 +355,13 @@ class CorrectionRuleStorage(BaseStorage):
 
 **Файл:** `src/engine/storage/device_storage.py`
 
+Хранит публичные ECDSA P-256 ключи устройств пользователей для Zero-Trust подписей.
+
+- **Приватный ключ** живёт только в браузере клиента (IndexedDB, `extractable=false`), engine его никогда не видит.
+- При регистрации устройства (`POST /auth/login` с `device_public_key`) publicKey-PEM сохраняется в `user_devices`.
+- `CryptoService.verify_signature` (см. `services.md`) итерирует по `list_by_user(user_id)` и верифицирует ECDSA.
+- Отсутствует admin revoke endpoint (security-пункт 11 из `tech-debt.md`) — компрометация устройства требует прямого SQL.
+
 ```python
 class DeviceStorage(BaseStorage):
     async def create(user_id, device_name, public_key_pem) -> dict
@@ -415,7 +440,7 @@ CREATE TABLE roles (
     description TEXT,
     system_prompt TEXT NOT NULL,
     rag_collection VARCHAR(255),
-    model_name VARCHAR(100) DEFAULT 'qwen2.5:7b',
+    model_name VARCHAR(100) DEFAULT 'hosted_vllm/google/gemma-4-31B-it',
     agent_type VARCHAR(20) NOT NULL DEFAULT 'simple',
     agent_config JSONB DEFAULT '{}',
     tools JSONB DEFAULT '[]',

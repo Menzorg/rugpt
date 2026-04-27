@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote_plus
+from uuid import UUID
 from dotenv import load_dotenv
 
 # Load .env file from project root
@@ -55,6 +56,17 @@ class Config:
 
     # Session TTL (seconds)
     SESSION_TTL = int(os.getenv("SESSION_TTL", "3600"))
+
+    # ---- Support chat (Tech Support feature) ----
+    # RuGPT Support organization UUID — hard-coded in migration 023.
+    RUGPT_SUPPORT_ORG_ID = UUID("00000001-0000-0000-0000-000000000000")
+    # System organization (RuGPT) — holds AI system users (support_ai, pm, etc.)
+    # Hard-coded in migrations 003 and 023.
+    SYSTEM_ORG_ID = UUID("00000000-0000-0000-0000-000000000000")
+    # Reopen window for closed support tickets via message in chat.
+    SUPPORT_REOPEN_WINDOW_DAYS = int(os.getenv("SUPPORT_REOPEN_WINDOW_DAYS", "7"))
+    # Username of the AI first-line support system user (created by migration 023).
+    SUPPORT_AI_USERNAME = "support_ai"
 
     # API settings
     API_HOST = os.getenv("API_HOST", "127.0.0.1")

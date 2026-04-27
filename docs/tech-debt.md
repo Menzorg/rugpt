@@ -27,3 +27,57 @@
 | 1 | `/health/ready` не проверяет БД | Средний | TODO в коде: `# TODO: Check database connectivity`. Всегда возвращает `ready: True`. Deploy health checks могут пройти при недоступной БД. |
 | 2 | `web_search` и `role_call` -- stubs | Средний | Возвращают placeholder строки. Агент может пытаться вызвать несуществующий функционал. |
 | 3 | Bare `except Exception` в scheduler | Низкий | ~13 блоков в `scheduler_service.py` которые только логируют ошибку. Нет alerting или circuit-breaking при массовых сбоях. |
+
+## Infrastructure & Security
+
+> Источник — security-аудит из `architecture-full-2026-04-22.md` (раздел «Security-аудит — точки внимания»), 25 пунктов. Сгруппировано по темам.
+
+### Крипто и секреты
+
+| # | Проблема | Приоритет | Описание |
+|---|----------|-----------|----------|
+| 1 | TLS отсутствует в LAN | Высокий | PG, Kafka, Tika, LiteLLM, Redis — plaintext между узлами. Сниффер в `192.168.1.0/24` видит SQL-query, embeddings, промпты, пароли в bcrypt-hash. |
+| 2 | Один JWT_SECRET на webclient + engine | Высокий | Compromise одного = compromise обоих. Нужно разделить: webclient только валидирует локально, engine подписывает. |
+| 3 | Plaintext .env | Высокий | Секреты в `.env` plaintext на engine, webclient, GitLab-runner, LiteLLM. Нет vault (HashiCorp/SOPS/age), нет rotation. |
+| 4 | CORS Engine = `*` | Высокий | `allow_origins=["*"]` в `app.py` — dev-настройка в prod. Engine за VPN, но всё равно ослабляет Zero-Trust (CSRF через скомпрометированный webclient). |
+| 5 | LiteLLM auth = `sk-dummy` | Средний | Любой непустой Bearer-токен принимается. В LAN = открытый LLM для любого процесса на B/C. |
+| 6 | Kafka без SASL/TLS | Средний | `docker-vm :9092` доверяет по VPN. Любой процесс в VPN/LAN может читать `chat.events` (приватные сообщения) и публиковать в `agent.requests`. План SASL_PLAINTEXT после Alpha. |
+| 7 | Redis без password в dev | Низкий | `REDIS_PASSWORD` не задан в dev — проверить что в prod задан. AOF в `redis:7-alpine` хранит историю в файле. |
+| 8 | MAINTENANCE_USERS в `.docker.env` | Средний | Список email:password bcrypt-проверяется на webclient локально, минуя engine. Утечка `.docker.env` → байпас всей auth во время maintenance. |
+
+### App-layer / Zero-Trust
+
+| # | Проблема | Приоритет | Описание |
+|---|----------|-----------|----------|
+| 9 | File upload/download без signature | Высокий | `/files/upload` и `/files/:id/download` помечены `@SkipSignature` (legacy). Украденный JWT = полный доступ к файлам org. |
+| 10 | WebSocket без подписи | Высокий | После JWT-handshake события доверяются. Украденный JWT → можно открыть WS и слушать/отправлять в комнатах `chat:<id>`. |
+| 11 | Нет admin revoke device endpoint | Средний | При компрометации устройства нет API убрать его `public_key` из `user_devices`. Только прямой SQL. |
+| 12 | Nonce-cache не persistent | Средний | In-memory TTL-cache в engine-процессе. Рестарт → replay-window ±5 min. Нужен Redis-backed или БД-backed cache. |
+| 13 | Engine compromise = TOTAL LOSS | Высокий | Engine видит `user_devices.public_key` + `JWT_SECRET` → может генерить токены и валидировать любые подписи. Нет HSM / split-trust. |
+| 14 | Engine без rate-limit | Средний | Открыт в VPN без throttling. Скомпрометированный webclient может DoS'ить engine или brute-force логины. |
+
+### Инфраструктура
+
+| # | Проблема | Приоритет | Описание |
+|---|----------|-----------|----------|
+| 15 | docker-vm multi-tenant | Высокий | Prod Kafka + Tika + n8n + сторонние проекты владельца на одной Docker-VM. CVE/misconfig в side-контейнере → pivot к prod-данным. Решение: rootless Docker / gVisor / отдельная VM. |
+| 16 | docker.sock в gitlab-runner | Высокий | `/var/run/docker.sock` смонтирован в runner-vm (Docker executor). Злонамеренный CI-job = побег на хост. Рекомендация — kaniko/buildkit. |
+| 17 | Kernel sharing на Proxmox LXC | Средний | rugpt-container + gitlab-container делят ядро Proxmox-хоста. Kernel-CVE → эскалация на все LXC + host. Smягчить: KVM вместо LXC для критичных сервисов. |
+| 18 | Публичные SSH через NAT | Средний | `:28351` → GitLab SSH, `:24952` → runner SSH. Brute-force target. Нужен fail2ban + key-only auth + port knocking. |
+| 19 | Dual-WAN failover ACL | Средний | При переключении на ISP #2 ACL могут не подняться. Нужен тест failover-сценария. |
+| 20 | Apache Tika CVE-prone | Средний | Java + парсеры PDF/DOCX — регулярные CVE. Запускать в отдельном контейнере, без сети наружу, periodically update. |
+| 21 | NAS single point of failure | Средний | Synology NAS + RAID 5 + WriteOnce спасает от bit-rot и delete, но не от пожара/кражи здания. Нужен offsite (S3/backblaze/второй NAS в другой локации). |
+| 22 | Dev-среда с клоном prod-данных | Высокий | `dev-vm` (B.II.4) планирует клонировать prod-PG. Нужна scripted анонимизация (PII-hash, email rewrite, strip tokens) перед импортом. |
+
+### CI/CD + Observability + DR
+
+| # | Проблема | Приоритет | Описание |
+|---|----------|-----------|----------|
+| 23 | GitHub → GitLab миграция | Высокий | План: отозвать GitHub PAT/SSH-ключи сразу после миграции. Оставить read-only mirror или удалить полностью. |
+| 24 | Нет signed commits/artifacts | Средний | GitLab CI должен подписывать теги + deploy-артефакты (sigstore/cosign). Сейчас любой с CI-vars может подменить binary. |
+| 25 | SSH-keys на Macbook — SPOF | Высокий | Компрометация macbook = root SSH на Prod-VPS + rugpt-container + Dev-VPS. HW-key (YubiKey) рекомендуется. |
+| 26 | Нет Sentry / Prometheus / Loki / ELK | Средний | Engine — только файловые логи в `/root/rugpt/logs/`. Webclient — `docker logs` (план nestjs-pino daily-dir). PG/Kafka — `docker logs`. Алертов нет. |
+| 27 | Нет метрик по Kafka | Средний | Consumer lag, producer errors, partition skew не мониторятся. При padding `agent.requests` никто не узнает. |
+| 28 | Telegram webhook недоступен | Низкий | Engine за VPN, `POST /notifications/telegram/webhook` из интернета не проходит. Исходящие вызовы engine → Telegram работают. Для входящего нужен отдельный public proxy. |
+| 29 | Apache Kafka KRaft single-node | Средний | Одна нода без репликации — при падении `docker-vm` всё встаёт. После Alpha — 3-нодовый кластер либо managed. |
+| 30 | Миграции без rollback-стратегии | Низкий | 18 SQL миграций forward-only. При ошибке в prod-деплое нет автоматического rollback (только ручной restore из pg_dump). |
