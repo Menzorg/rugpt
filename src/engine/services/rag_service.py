@@ -71,7 +71,7 @@ class RAGService:
             model=embedding_model,
             base_url=llm_base_url,
             api_key=llm_api_key,
-            timeout=300
+            timeout=180
         )
         self._summary_llm = ChatOpenAI(
             model=Config.RAG_SUMMARY_MODEL,
@@ -99,7 +99,8 @@ class RAGService:
                 "X-Tika-OCRTimeoutSeconds": "300",
                 "X-Tika-PDFExtractInlineImages": "true",
                 "X-File-Name": _safe_tika_file_name(file_name),
-            }
+            },
+            requestOptions={'timeout': 300}
         )
         content = _extract_tika_content(parsed)
         if not content:
