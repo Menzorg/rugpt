@@ -71,6 +71,7 @@ class RAGService:
             model=embedding_model,
             base_url=llm_base_url,
             api_key=llm_api_key,
+            timeout=300
         )
         self._summary_llm = ChatOpenAI(
             model=Config.RAG_SUMMARY_MODEL,
