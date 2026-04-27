@@ -34,8 +34,8 @@ def init_document_service(storage: UserFileStorage) -> None:
 
 @tool(response_format="content")
 async def list_documents(
-    name_query: str,
     config: Annotated[RunnableConfig, InjectedToolArg],
+    name_query: Optional[str] = None,
 ) -> str:
     """List documents visible to the caller in their organization.
     Use when the user asks what files are available, to browse the catalog,

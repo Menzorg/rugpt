@@ -193,15 +193,16 @@ class RAG_store(BaseStorage):
         rows = await self.fetch(
             """
             SELECT
-                doc_id::text  AS file_id,
+                id::text AS file_id,
                 org_id::text,
                 user_id::text,
-                doc_title,
+                original_filename AS doc_title,
                 summary,
-                uploaded_at,
-                created_at
-            FROM documents
-            WHERE doc_id = $1::uuid
+                created_at AS uploaded_at,
+                created_at::date AS created_at
+            FROM user_files
+            WHERE id = $1::uuid
+              AND is_active = true
             LIMIT 1
             """,
             file_id,

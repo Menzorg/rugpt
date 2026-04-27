@@ -359,7 +359,7 @@ class EngineService:
 
         # Wire the shared RAGService into the RAG tool
         from ..agents.tools.rag_tool import init_rag_service
-        init_rag_service(self.rag_service)
+        init_rag_service(self.rag_service, self.user_file_storage)
 
         # Wire the shared UserFileStorage into the document tool
         from ..agents.tools.document_tool import init_document_service

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import quote
 from uuid import UUID
 
@@ -92,7 +92,13 @@ class RAGService:
         parsed = parser.from_buffer(
             file_bytes,
             serverEndpoint=self._tika_server_endpoint,
-            headers={"X-File-Name": _safe_tika_file_name(file_name)},
+            headers = {
+                "X-Tika-PDFOcrStrategy": "OCR_AND_TEXT_EXTRACTION",
+                "X-Tika-OCRLanguage": "rus+eng",
+                "X-Tika-OCRTimeoutSeconds": "300",
+                "X-Tika-PDFExtractInlineImages": "true",
+                "X-File-Name": _safe_tika_file_name(file_name),
+            }
         )
         content = _extract_tika_content(parsed)
         if not content:
@@ -417,7 +423,7 @@ class RAGService:
         file_id: str,
         query: str,
         top_k: int,
-        tsv_weight: float,
+        tsv_weight: Optional[float] = 1,
     ) -> list[ChunkSearchResult]:
         """Return top-k concrete matches inside one file."""
         query_embedding = self._embed_query(query)
