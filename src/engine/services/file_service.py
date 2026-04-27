@@ -29,7 +29,7 @@ class FileService:
         self.file_storage = file_storage
         self.adapter = storage_adapter
         self.max_file_size = max_file_size
-        self.allowed_types = allowed_types or ALLOWED_FILE_TYPES
+        self.allowed_types = ALLOWED_FILE_TYPES or allowed_types
 
     def _hash_bytes(self, payload: bytes) -> str:
         """

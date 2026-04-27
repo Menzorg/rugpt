@@ -5,7 +5,10 @@ Non-env constants used across multiple modules.
 """
 
 # File types
-ALLOWED_FILE_TYPES = {"pdf", "docx", "csv", "xlsx", "xls", "ods", "tsv", "txt", "doc", "wps", "json", "html", "log", "rtf"}
+ALLOWED_FILE_TYPES = {"pdf", "docx", "doc", "wps", "odt", # documents
+"xlsx", "xls", "ods", "tsv", "csv", # tables
+"txt", "json", "html", "log", "rtf", "xml" #other
+}
 
 # Extensions that represent tabular data — is_table flag set at upload time
 TABLE_EXTENSIONS: frozenset[str] = frozenset({"csv", "tsv", "xlsx", "xls", "ods"})

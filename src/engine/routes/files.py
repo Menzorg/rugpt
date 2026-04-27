@@ -65,6 +65,7 @@ async def upload_file(
         raise HTTPException(status_code=403, detail="You can only upload files for yourself")
 
     data = await file.read()
+    logger.info("Can read file. Trying to ingest")
 
     try:
         created = await engine.file_service.upload(
@@ -84,6 +85,7 @@ async def upload_file(
         )
         return FileResponse(**created.to_dict())
     except ValueError as e:
+        logger.error("Can't ingest file", exc_info=e)
         raise HTTPException(status_code=400, detail=str(e))
 
 
