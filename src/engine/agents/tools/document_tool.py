@@ -86,7 +86,7 @@ async def list_documents(
             else:
                 summary_part = "summary: —"
             lines.append(
-                f"- {f.original_filename} (id={f.id}, rag={f.rag_status}, {summary_part})"
+                f"- {f.original_filename} (id={f.id}, rag={f.rag_status}, is_table={f.is_table}, summary={summary_part})"
             )
 
         more = f" (showing first {_MAX_RESULTS})" if total > _MAX_RESULTS else ""
