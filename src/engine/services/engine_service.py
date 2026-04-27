@@ -398,7 +398,7 @@ class EngineService:
 
         # Wire the shared UserFileStorage into the document tool
         from ..agents.tools.document_tool import init_document_service
-        init_document_service(self.user_file_storage)
+        init_document_service(self.user_file_storage, self.rag_service)
 
         # Start Kafka producer (no-op when KAFKA_ENABLED=false)
         try:
