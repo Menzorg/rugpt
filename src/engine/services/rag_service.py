@@ -434,3 +434,16 @@ class RAGService:
             top_k=top_k,
             tsv_weight=tsv_weight,
         )
+
+    async def get_table_rows_by_range(
+        self,
+        file_id: str,
+        row_start: int,
+        row_end: int,
+    ) -> list[ChunkSearchResult]:
+        """Return table rows from a specific row_index range within a file."""
+        return await self._store.get_table_rows_by_range(
+            file_id=file_id,
+            row_start=row_start,
+            row_end=row_end,
+        )

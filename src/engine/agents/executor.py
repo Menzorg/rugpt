@@ -155,12 +155,28 @@ class AgentExecutor:
 
         # --- Injection phase ---
 
+        if user_id is not None and initiator:
+            user_lines = [
+                f"ID: {initiator.id}",
+                f"Имя: {initiator.name}",
+                f"Логин: @{initiator.username}",
+                f"Email: {initiator.email}" if initiator.email else None,
+                f"Администратор: да" if initiator.is_admin else "Администратор: нет",
+            ]
+            if initiator.department_id:
+                dept = await engine.department_storage.get_by_id(initiator.department_id)
+                if dept:
+                    user_lines.append(f"Отдел: {dept.name}")
+                    user_lines.append(f"Руководитель отдела: {'да' if initiator.is_head else 'нет'}")
+            user_block = "Информация о пользователе:\n" + "\n".join(l for l in user_lines if l)
+            user_block += "\nНе раскрывать пользователю его ID."
+            system_prompt += f"\n\n{user_block}"
+
         if summary:
             last = messages[-1]
-            # Inject summary into last message whoever sent it
             messages = messages[:-1] + [{
                 "role": last["role"],
-                "content": f"Сводка диалога: {summary}\n\nСообщение пользователя:\n{last['content']}",
+                "content": f"Сводка диалога:\n{summary}\n\nСообщение пользователя:\n{last['content']}",
             }]
             logger.info("memory: summary injected into last message for chat=%s", chat_id)
             system_prompt += _MEMORY_PROMPT_BLOCK

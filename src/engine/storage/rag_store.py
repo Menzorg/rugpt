@@ -316,6 +316,45 @@ class RAG_store(BaseStorage):
             for row in rows
         ]
 
+    async def get_table_rows_by_range(
+        self,
+        file_id: str,
+        row_start: int,
+        row_end: int,
+    ) -> list[ChunkSearchResult]:
+        """Return table_rows_chunks rows where row_index BETWEEN row_start AND row_end."""
+        await self.init()
+        rows = await self.fetch(
+            """
+            SELECT
+                id::text   AS chunk_id,
+                file_id::text,
+                row_text   AS chunk_text,
+                row_index
+            FROM tables_rows_chunks
+            WHERE file_id  = $1::uuid
+              AND row_index BETWEEN $2 AND $3
+            ORDER BY row_index
+            """,
+            str(file_id),
+            row_start,
+            row_end,
+        )
+        return [
+            ChunkSearchResult(
+                chunk_id=row["chunk_id"],
+                file_id=row["file_id"],
+                chunk_text=row["chunk_text"],
+                vec_dist=None,
+                tsv_score=None,
+                r_vec=None,
+                r_tsv=None,
+                final_rank=None,
+                source_type="table_row",
+            )
+            for row in rows
+        ]
+
     async def call_search_concrete_chunks(
         self,
         file_id: str,
