@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("rugpt.agents.executor")
 
+_MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. 
+Пользователь о ней не знает и говорить о ней пользователю не надо. 
+История чата актуальнее сводки"""
 
 class AgentExecutor:
     """
@@ -160,7 +163,7 @@ class AgentExecutor:
                 "content": f"Сводка диалога: {summary}\n\nСообщение пользователя:\n{last['content']}",
             }]
             logger.info("memory: summary injected into last message for chat=%s", chat_id)
-            system_prompt += "\n\nВ запросе пользователя тебе будет дана сводка диалога. Пользователь о ней не знает и говорить о ней пользователю не надо."
+            system_prompt += _MEMORY_PROMPT_BLOCK
 
         if lessons:
             # Inject corrections 

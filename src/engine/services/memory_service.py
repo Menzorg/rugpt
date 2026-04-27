@@ -7,6 +7,7 @@ deciding when a re-summarisation is needed.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import List, Optional, TYPE_CHECKING
 from uuid import UUID
 
@@ -21,13 +22,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("rugpt.services.memory")
 
-_SUMMARY_SYSTEM_PROMPT = (
-    "Ты — ассистент, составляющий краткое резюме диалога. "
-    "Составь краткое, информативное резюме на русском языке: "
-    "о чём говорили кратко по хронологии, какие решения были приняты, какие задачи упомянуты и с какой целью, какие факты установлены.\n"
-    "Фиксируй только историю в прошедшем времени и факты. Не фиксируй текущее состояние"
-    "Отвечай только текстом резюме, без вводных фраз."
-)
+_PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+_SUMMARY_SYSTEM_PROMPT = (_PROMPTS_DIR / "memory_summary.md").read_text(encoding="utf-8").strip()
 
 _SUMMARY_REQUEST = "Составь краткое резюме приведённого выше диалога на русском языке."
 
