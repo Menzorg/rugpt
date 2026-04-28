@@ -96,15 +96,6 @@ class MemoryService:
         Returns:
             Generated summary text.
         """
-        n = len(messages)
-        system_text = _SUMMARY_SYSTEM_PROMPT
-        if previous_summary:
-            system_text += (
-                f"\n\nСохрани события и факты из предыдущего резюме диалога, которые не были опровергнуты новыми сообщениями."
-                "Если в предыдущем резюме слишком много информации (больше 10 предложений), выбери самые важные факты и события для сохранения. "
-                f"Предыдущее резюме диалога:\n{previous_summary}"
-            )
-
         # Keep only role/content to avoid passing unexpected keys to the LLM
         safe_history = [
             {"role": m["role"], "content": m["content"]}
@@ -112,9 +103,22 @@ class MemoryService:
             if "role" in m and "content" in m
         ]
 
+        # Inject the previous summary as a mock user message so the model treats
+        # it as established context rather than a system-level instruction.
+        history_with_context = safe_history
+        if previous_summary:
+            mock_summary_message = {
+                "role": "user",
+                "content": (
+                    "Предыдущее резюме диалога:\n"
+                    f"{previous_summary}"
+                ),
+            }
+            history_with_context = [mock_summary_message] + safe_history
+
         llm_messages = (
-            [{"role": "system", "content": system_text}]
-            + safe_history
+            [{"role": "system", "content": _SUMMARY_SYSTEM_PROMPT}]
+            + history_with_context
             + [{"role": "user", "content": _SUMMARY_REQUEST}]
         )
 
