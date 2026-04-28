@@ -80,7 +80,7 @@ BEGIN
         r.r_mem,
         r.r_user,
         -- Weighted rank fusion: mem rank penalised by 0.8, user rank at full weight
-        (0.8 * r.r_mem + 1.0 * r.r_user) AS final_rank
+        (0.8 * r.r_mem::double precision + 1.0 * r.r_user::double precision) AS final_rank
     FROM ranked r
     ORDER BY final_rank ASC
     LIMIT p_top_k;
