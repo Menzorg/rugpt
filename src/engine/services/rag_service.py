@@ -267,6 +267,7 @@ class RAGService:
                 logger.info(f"[{fid}] stage={stage}")
                 summary_source = self._build_table_summary_source(filename, headers, table_rows)
                 summary = self._generate_summary_with_llm(summary_source)
+                summary = f"Количество строк в таблице: {len(table_rows)}\n" + summary
                 logger.info(f"[{fid}] summary generated ({len(summary)} chars)")
 
                 stage = "summary_embedding"
