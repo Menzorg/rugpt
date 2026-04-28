@@ -5,7 +5,7 @@ Business logic for employee task management.
 Creates in-app notifications on task events.
 """
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID
 
@@ -197,6 +197,24 @@ class TaskService:
         if status and status not in VALID_STATUSES:
             raise ValueError(f"Invalid status: {status}. Must be one of {VALID_STATUSES}")
         return await self.storage.list_by_org(org_id, status)
+
+    async def text_search(
+        self,
+        org_id: UUID,
+        query: str,
+        limit: int = 80,
+    ) -> List[Task]:
+        """Full-text search over task title (A) and description (C) using ts_rank_cd."""
+        return await self.storage.text_search(org_id, query, limit)
+
+    async def list_by_date_range(
+        self,
+        org_id: UUID,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+    ) -> List[Task]:
+        """List active tasks created within an inclusive date interval."""
+        return await self.storage.list_by_date_range(org_id, date_from=date_from, date_to=date_to)
 
     async def list_my_tasks(
         self,

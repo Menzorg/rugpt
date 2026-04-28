@@ -4,7 +4,7 @@ Task Storage
 PostgreSQL CRUD for tasks table.
 """
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict, Optional, List
 from uuid import UUID
 
@@ -183,6 +183,31 @@ class TaskStorage(BaseStorage):
             rows = await self.fetch(query, org_id)
         return [self._row_to_task(r) for r in rows]
 
+    async def list_by_date_range(
+        self,
+        org_id: UUID,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+    ) -> List[Task]:
+        """List active tasks created within an inclusive date interval."""
+        conditions = ["org_id = $1", "is_active = true"]
+        params: list = [org_id]
+
+        if date_from:
+            params.append(date_from)
+            conditions.append(f"created_at >= ${len(params)}")
+        if date_to:
+            params.append(date_to)
+            # date_to is a date; adding 1 day gives an exclusive upper bound for the timestamp column.
+            conditions.append(f"created_at < ${len(params)} + INTERVAL '1 day'")
+
+        where = " AND ".join(conditions)
+        rows = await self.fetch(
+            f"SELECT * FROM tasks WHERE {where} ORDER BY created_at DESC",
+            *params,
+        )
+        return [self._row_to_task(r) for r in rows]
+
     async def list_active_with_deadline(self) -> List[Task]:
         """List active tasks with deadlines for overdue checking"""
         query = """
@@ -304,6 +329,32 @@ class TaskStorage(BaseStorage):
             project_id,
         )
         return int(value or 0)
+
+    async def text_search(
+        self,
+        org_id: UUID,
+        query: str,
+        limit: int = 20,
+    ) -> List[Task]:
+        """Full-text search over tasks in an org using the pre-built tsv column.
+
+        Ranks results with ts_rank_cd(normalization=32): rank is divided by the
+        mean harmonic distance between extents, which rewards compact matches and
+        penalises documents where query terms are far apart.
+        """
+        rows = await self.fetch(
+            """
+            SELECT *, ts_rank_cd(tsv, query, 32) AS rank
+            FROM tasks, plainto_tsquery('russian', $2) query
+            WHERE org_id = $1
+              AND is_active = true
+              AND tsv @@ query
+            ORDER BY rank DESC
+            LIMIT $3
+            """,
+            org_id, query, limit,
+        )
+        return [self._row_to_task(row) for row in rows]
 
     async def get_many_by_ids(self, ids: List[UUID]) -> Dict[UUID, Task]:
         """Batch-fetch tasks by id (includes inactive for audit/reference resolution)."""

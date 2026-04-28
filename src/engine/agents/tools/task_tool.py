@@ -10,13 +10,15 @@ no nested asyncio.run(). This avoids the `There is no current event loop`
 errors that the sync-wrapper approach produced under langchain-openai.
 """
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal, Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool, InjectedToolArg
 from pydantic import BaseModel, Field
+
+from ...config import Config
 
 logger = logging.getLogger("rugpt.agents.tools.task")
 
@@ -35,7 +37,10 @@ class TaskCreateInput(BaseModel):
 class TaskQueryInput(BaseModel):
     assignee_user_id: str = Field(default="", description="Filter by UUID of employee the task is assigned to (empty = any)")
     created_by_user_id: str = Field(default="", description="Filter by UUID of the user who CREATED the task (empty = any)")
-    status: str = Field(default="", description="Filter by status: created, in_progress, done, overdue (empty = all)")
+    status: Literal["done", "created", "in_progress"] | None = Field(default=None, description="Filter by status: created, in_progress, done, overdue (empty = all)")
+    text_search_query: str = Field(default="", description="Full-text search over task title and description (empty = skip)")
+    date_from: Optional[date] = Field(default=None, description="Filter tasks created on or after this date (empty = no lower bound)")
+    date_to: Optional[date] = Field(default=None, description="Filter tasks created on or before this date (empty = no upper bound)")
 
 
 class TaskUpdateInput(BaseModel):
@@ -61,8 +66,8 @@ def create_task_tools(
     async def _task_create_async(
         title: str,
         assignee_user_id: str,
-        description: str = "",
-        deadline: str = "",
+        deadline: Optional[str] = "",
+        description: Optional[str] = "",
         config: Annotated[RunnableConfig, InjectedToolArg] = None,
     ) -> str:
         """Create a task for an employee. Use when a manager assigns work via chat.
@@ -116,16 +121,24 @@ def create_task_tools(
         assignee_user_id: Optional[str] = "",
         created_by_user_id: Optional[str] = "",
         status: Optional[Literal["done", "created", "in_progress"]] = "",
+        text_search_query: Optional[str] = "",
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
         config: Annotated[RunnableConfig, InjectedToolArg] = None,
     ) -> str:
-        """Query tasks. Filter by assignee, creator, and/or status.
+        """Query tasks. Filter by assignee, creator, status, full-text search, and/or date range.
         Args:
             assignee_user_id: UUID of assignee (empty = any)
             created_by_user_id: UUID of creator (empty = any)
             status: Filter by status (empty = all)
+            text_search_query: Full-text search over title and description (empty = skip)
+            date_from: Include tasks created on or after this date (None = no lower bound)
+            date_to: Include tasks created on or before this date (None = no upper bound)
         """
         logger.info(
-            f"tool task_query: assignee={assignee_user_id!r} creator={created_by_user_id!r} status={status!r}"
+            f"tool task_query: assignee={assignee_user_id!r} creator={created_by_user_id!r}"
+            f" status={status!r} text_search={text_search_query!r}"
+            f" date_from={date_from} date_to={date_to}"
         )
         try:
             configurable = (config or {}).get("configurable", {})
@@ -136,31 +149,67 @@ def create_task_tools(
             if query_org_id is None:
                 return "System can't see user's organization id"
 
-            # Priority: created_by filter > assignee filter > whole-org listing.
-            if created_by_user_id:
-                include_done = status == "" or status == "done"
-                rows = await task_service.list_tasks_created_by(
-                    UUID(created_by_user_id), include_done=include_done,
-                )
-                tasks = [r["task"] for r in rows]
-                if status:
-                    tasks = [t for t in tasks if t.status == status]
-                if assignee_user_id:
-                    aid = UUID(assignee_user_id)
-                    tasks = [t for t in tasks if t.assignee_user_id == aid]
-            elif assignee_user_id:
-                tasks = await task_service.list_by_assignee(
+            from ...services.engine_service import get_engine_service
+            engine = get_engine_service()
+
+            # Each active filter independently fetches its candidate pool and
+            # records which task UUIDs it matched. The final set is the
+            # intersection of all non-empty filter sets, so only tasks that
+            # satisfy every supplied filter are shown.
+            filter_sets: list[set] = []
+            pool: list = []  # ordered union of all candidate tasks (first-seen wins)
+            seen: set = set()
+
+            def _add_to_pool(tasks):
+                for t in tasks:
+                    if t.id not in seen:
+                        seen.add(t.id)
+                        pool.append(t)
+
+            if assignee_user_id:
+                assignee_tasks = await task_service.list_by_assignee(
                     UUID(assignee_user_id), status or None,
                 )
-            else:
-                tasks = await task_service.list_by_org(
-                    query_org_id, status or None,
+                filter_sets.append({t.id for t in assignee_tasks})
+                _add_to_pool(assignee_tasks)
+
+            if created_by_user_id:
+                rows = await task_service.list_tasks_created_by(UUID(created_by_user_id))
+                creator_tasks = [r["task"] for r in rows]
+                filter_sets.append({t.id for t in creator_tasks})
+                _add_to_pool(creator_tasks)
+
+            if status and not assignee_user_id:
+                # status is already passed into list_by_assignee above; only
+                # fetch by status separately when no assignee filter was given.
+                status_tasks = await task_service.list_by_org(query_org_id, status)
+                filter_sets.append({t.id for t in status_tasks})
+                _add_to_pool(status_tasks)
+
+            if text_search_query:
+                search_tasks = await task_service.text_search(query_org_id, text_search_query)
+                filter_sets.append({t.id for t in search_tasks})
+                _add_to_pool(search_tasks)
+
+            if date_from or date_to:
+                date_tasks = await task_service.list_by_date_range(
+                    query_org_id, date_from=date_from, date_to=date_to,
                 )
+                filter_sets.append({t.id for t in date_tasks})
+                _add_to_pool(date_tasks)
+
+            # No filter at all → return all org tasks
+            if not filter_sets:
+                all_tasks = await task_service.list_by_org(query_org_id, status or None)
+                _add_to_pool(all_tasks)
+                final_ids = {t.id for t in pool}
+            else:
+                final_ids = set.intersection(*filter_sets)
+
+            tasks = [t for t in pool if t.id in final_ids]
 
             # Strip tasks whose assignees are outside the caller's department visibility.
             if user_id and org_id:
-                from ...services.engine_service import get_engine_service
-                engine = get_engine_service()
                 visible_ids = await engine.department_service.get_visible_user_ids(
                     UUID(user_id), UUID(org_id),
                 )
@@ -168,7 +217,18 @@ def create_task_tools(
 
             if not tasks:
                 return "No tasks found."
-            shown = tasks[:20]
+
+            # TODO: replace char budget with token budget via a token counting service
+            total = len(tasks)
+            limited = total > Config.TASKS_QUERY_LIMIT
+            shown = tasks[:Config.TASKS_QUERY_LIMIT]
+
+            # Distribute description budget evenly across tasks that have one.
+            tasks_with_desc = [t for t in shown if t.description]
+            chars_per_desc = (
+                Config.TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET // len(tasks_with_desc)
+                if tasks_with_desc else 0
+            )
 
             # Resolve all referenced user IDs to names in one batch query.
             from ...services.engine_service import get_engine_service
@@ -183,8 +243,18 @@ def create_task_tools(
                 dl = f", deadline: {t.deadline.isoformat()}" if t.deadline else ""
                 assignee = name_map.get(t.assignee_user_id, str(t.assignee_user_id))
                 creator = name_map.get(t.created_by_user_id, str(t.created_by_user_id)) if t.created_by_user_id else ""
-                lines.append(f"- [{t.status}] {t.title}{dl} (id={t.id}, assignee={assignee}{f', creator={creator}' if creator else ''})")
-            return f"Tasks ({len(tasks)} total):\n" + "\n".join(lines)
+                desc = ""
+                if t.description and chars_per_desc:
+                    truncated = t.description[:chars_per_desc]
+                    desc = f", {truncated!r}"
+                lines.append(
+                    f"- [{t.status}] {t.title}{dl}"
+                    f" (id={t.id}, assignee={assignee}{f', creator={creator}' if creator else ''} " 
+                    f" description={desc})"
+                )
+
+            header = f"Tasks ({total} total{f', LIMITED TO {Config.TASKS_QUERY_LIMIT}' if limited else ''}):"
+            return header + "\n" + "\n".join(lines)
         except Exception as e:
             logger.error(f"task_query failed: {e}")
             return f"Failed to query tasks: {e}"

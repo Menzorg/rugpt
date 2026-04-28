@@ -68,6 +68,12 @@ class Config:
     # Username of the AI first-line support system user (created by migration 023).
     SUPPORT_AI_USERNAME = "support_ai"
 
+    # Task query tool limits. Raise TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET when the
+    # model supports a larger context window; replace with a token budget once a
+    # token-counting service is available (see TODO in task_tool.py).
+    TASKS_QUERY_LIMIT = int(os.getenv("TASKS_QUERY_LIMIT", "80"))
+    TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET = int(os.getenv("TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET", "20000"))
+
     # API settings
     API_HOST = os.getenv("API_HOST", "127.0.0.1")
     API_PORT = int(os.getenv("API_PORT", "8100"))
