@@ -33,8 +33,8 @@ class TaskCreateInput(BaseModel):
 
 
 class TaskQueryInput(BaseModel):
-    assignee_user_id: str = Field(default="", description="UUID of employee the task is assigned to (empty = any)")
-    created_by_user_id: str = Field(default="", description="UUID of the user who CREATED the task (empty = any)")
+    assignee_user_id: str = Field(default="", description="Filter by UUID of employee the task is assigned to (empty = any)")
+    created_by_user_id: str = Field(default="", description="Filter by UUID of the user who CREATED the task (empty = any)")
     status: str = Field(default="", description="Filter by status: created, in_progress, done, overdue (empty = all)")
 
 
@@ -50,8 +50,7 @@ class TaskUpdateInput(BaseModel):
 # ============================================
 
 def create_task_tools(
-    task_service,
-    default_org_id: Optional[UUID] = None,
+    task_service
 ):
     """
     Create task tools wired to a real TaskService instance.
@@ -84,7 +83,13 @@ def create_task_tools(
             assignee_uuid = UUID(assignee_user_id)
             dl = datetime.fromisoformat(deadline) if deadline else None
 
-            # Visibility check: can the caller see the assignee?
+            # org_id is injected by the executor from the caller's context; absent means
+            # the tool was invoked outside a proper agent run — refuse rather than guess.
+            task_org_id = UUID(org_id) if org_id else None
+            if task_org_id is None:
+                return "System can't see user's organization id"
+
+            # Refuse if the caller's department visibility rules don't include the assignee.
             if user_id and org_id:
                 from ...services.engine_service import get_engine_service
                 engine = get_engine_service()
@@ -94,14 +99,6 @@ def create_task_tools(
                 if not visible:
                     return "Cannot assign task: user not visible to you."
 
-            # Prefer the caller's org from RunnableConfig (set by executor to
-            # the initiator's org, not the role's system org). Fallback to
-            # default_org_id for legacy callers.
-            task_org_id = (
-                UUID(org_id) if org_id
-                else default_org_id
-                or UUID('00000000-0000-0000-0000-000000000000')
-            )
             task = await task_service.create(
                 org_id=task_org_id,
                 title=title,
@@ -116,9 +113,9 @@ def create_task_tools(
             return f"Failed to create task: {e}"
 
     async def _task_query_async(
-        assignee_user_id: str = "",
-        created_by_user_id: str = "",
-        status: str = "",
+        assignee_user_id: Optional[str] = "",
+        created_by_user_id: Optional[str] = "",
+        status: Optional[str] = "",
         config: Annotated[RunnableConfig, InjectedToolArg] = None,
     ) -> str:
         """Query tasks. Filter by assignee, creator, and/or status.
@@ -135,12 +132,11 @@ def create_task_tools(
             user_id = configurable.get("user_id", "")
             org_id = configurable.get("org_id", "")
 
-            query_org_id = (
-                UUID(org_id) if org_id
-                else default_org_id
-                or UUID('00000000-0000-0000-0000-000000000000')
-            )
+            query_org_id = UUID(org_id) if org_id else None
+            if query_org_id is None:
+                return "System can't see user's organization id"
 
+            # Priority: created_by filter > assignee filter > whole-org listing.
             if created_by_user_id:
                 include_done = status == "" or status == "done"
                 rows = await task_service.list_tasks_created_by(
@@ -161,7 +157,7 @@ def create_task_tools(
                     query_org_id, status or None,
                 )
 
-            # Filter tasks by visibility
+            # Strip tasks whose assignees are outside the caller's department visibility.
             if user_id and org_id:
                 from ...services.engine_service import get_engine_service
                 engine = get_engine_service()
@@ -172,21 +168,39 @@ def create_task_tools(
 
             if not tasks:
                 return "No tasks found."
+            shown = tasks[:20]
             lines = []
-            for t in tasks[:20]:
+            for t in shown:
                 dl = f", deadline: {t.deadline.isoformat()}" if t.deadline else ""
                 short_id = str(t.id)[:8]
                 lines.append(f"- [{t.status}] {t.title}{dl} (id={t.id}, short={short_id})")
-            return f"Tasks ({len(tasks)} total):\n" + "\n".join(lines)
+
+            # Append a legend so the LLM can map short IDs back to human names.
+            legend = await _build_user_legend(shown)
+            result = f"Tasks ({len(tasks)} total):\n" + "\n".join(lines)
+            if legend:
+                result += "\n\nUsers:\n" + legend
+            return result
         except Exception as e:
             logger.error(f"task_query failed: {e}")
             return f"Failed to query tasks: {e}"
 
+    async def _build_user_legend(tasks) -> str:
+        """Return a short-id → name map for all assignees in the given tasks."""
+        from ...services.engine_service import get_engine_service
+        engine = get_engine_service()
+        assignee_ids = list({t.assignee_user_id for t in tasks if t.assignee_user_id})
+        if not assignee_ids:
+            return ""
+        users = await engine.user_storage.get_certain_users(assignee_ids)
+        lines = [f"  {str(u.id)[:8]}: {u.name}" for u in users]
+        return "\n".join(lines)
+
     async def _task_update_async(
         task_id: str,
         status: str = "",
-        title: str = "",
-        description: str = "",
+        title: Optional[str] = "",
+        description: Optional[str] = "",
     ) -> str:
         """Modify an existing task. Use this when changing an already-created task — do NOT call task_create for edits.
         Args:
@@ -201,6 +215,7 @@ def create_task_tools(
         try:
             task_uuid = UUID(task_id)
             updated = None
+            # Apply field updates before status so the final state reflects both changes.
             if title or description:
                 updated = await task_service.update(
                     task_id=task_uuid,

@@ -171,6 +171,14 @@ class UserStorage(BaseStorage):
         result = await self.execute(query, user_id, datetime.utcnow())
         return "UPDATE 1" in result
 
+    async def get_certain_users(self, user_ids: List[UUID]) -> List[User]:
+        """Fetch users by a list of IDs in a single query."""
+        if not user_ids:
+            return []
+        query = "SELECT * FROM users WHERE id = ANY($1::uuid[])"
+        rows = await self.fetch(query, user_ids)
+        return [self._row_to_user(row) for row in rows]
+
     async def exists_by_email(self, email: str, exclude_id: Optional[UUID] = None) -> bool:
         """Check if user with email exists"""
         if exclude_id:

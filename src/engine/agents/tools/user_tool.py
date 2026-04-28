@@ -11,7 +11,7 @@ Async `StructuredTool.from_function(coroutine=...)` — invoked directly in
 the running event loop alongside asyncpg pool.
 """
 import logging
-from typing import Annotated
+from typing import Annotated, Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
@@ -38,8 +38,8 @@ def create_user_tools(user_storage, role_storage, department_service):
     """Create user tools. Returns (user_search_tool,)."""
 
     async def _user_search_async(
-        name_query: str = "",
-        role_code: str = "",
+        name_query: Optional[str] = "",
+        role_code: Optional[str] = "",
         config: Annotated[RunnableConfig, InjectedToolArg] = None,
     ) -> str:
         """Search/list users visible to the caller.
