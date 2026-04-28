@@ -195,11 +195,11 @@ class TaskStorage(BaseStorage):
 
         if date_from:
             params.append(date_from)
-            conditions.append(f"created_at >= ${len(params)}")
+            conditions.append(f"created_at >= ${len(params)}::date")
         if date_to:
             params.append(date_to)
             # date_to is a date; adding 1 day gives an exclusive upper bound for the timestamp column.
-            conditions.append(f"created_at < ${len(params)} + INTERVAL '1 day'")
+            conditions.append(f"created_at < (${len(params)}::date + INTERVAL '1 day')")
 
         where = " AND ".join(conditions)
         rows = await self.fetch(
