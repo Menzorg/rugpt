@@ -94,10 +94,8 @@ class RAGService:
             file_bytes,
             serverEndpoint=self._tika_server_endpoint,
             headers = {
-                "X-Tika-PDFOcrStrategy": "OCR_AND_TEXT_EXTRACTION",
                 "X-Tika-OCRLanguage": "rus+eng",
-                "X-Tika-OCRTimeoutSeconds": "300",
-                "X-Tika-PDFExtractInlineImages": "true",
+                "X-Tika-OCRTimeoutSeconds": "350",
                 "X-File-Name": _safe_tika_file_name(file_name),
             },
             requestOptions={'timeout': 300}
