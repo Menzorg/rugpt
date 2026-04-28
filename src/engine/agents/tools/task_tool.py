@@ -11,7 +11,7 @@ errors that the sync-wrapper approach produced under langchain-openai.
 """
 import logging
 from datetime import datetime
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
@@ -115,7 +115,7 @@ def create_task_tools(
     async def _task_query_async(
         assignee_user_id: Optional[str] = "",
         created_by_user_id: Optional[str] = "",
-        status: Optional[str] = "",
+        status: Optional[Literal["done", "created", "in_progress"]] = "",
         config: Annotated[RunnableConfig, InjectedToolArg] = None,
     ) -> str:
         """Query tasks. Filter by assignee, creator, and/or status.
@@ -191,7 +191,7 @@ def create_task_tools(
 
     async def _task_update_async(
         task_id: str,
-        status: str = "",
+        status: Literal["done", "created", "in_progress"] = "",
         title: Optional[str] = "",
         description: Optional[str] = "",
     ) -> str:
