@@ -19,6 +19,7 @@ from langchain_core.tools import StructuredTool, InjectedToolArg
 from pydantic import BaseModel, Field
 
 from ...config import Config
+from ...services.task_service import TaskService
 
 logger = logging.getLogger("rugpt.agents.tools.task")
 
@@ -55,7 +56,7 @@ class TaskUpdateInput(BaseModel):
 # ============================================
 
 def create_task_tools(
-    task_service
+    task_service: TaskService,
 ):
     """
     Create task tools wired to a real TaskService instance.
@@ -293,7 +294,7 @@ def create_task_tools(
                     return f"Task {task_id} not found"
             if updated is None:
                 return "Nothing to update: no status, title, or description provided"
-            return f"Task '{updated.title}' updated (status={updated.status})"
+            return f"Task '{updated.title}' updated (status={updated.status}, description={updated.description})"
         except ValueError as e:
             logger.error(f"task_update validation failed: {e}")
             return f"Invalid input: {e}"
