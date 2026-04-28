@@ -169,32 +169,25 @@ def create_task_tools(
             if not tasks:
                 return "No tasks found."
             shown = tasks[:20]
+
+            # Resolve all referenced user IDs to names in one batch query.
+            from ...services.engine_service import get_engine_service
+            engine = get_engine_service()
+            user_ids = {t.assignee_user_id for t in shown if t.assignee_user_id}
+            user_ids |= {t.created_by_user_id for t in shown if t.created_by_user_id}
+            users = await engine.user_storage.get_certain_users(list(user_ids))
+            name_map = {u.id: u.name for u in users}
+
             lines = []
             for t in shown:
                 dl = f", deadline: {t.deadline.isoformat()}" if t.deadline else ""
-                short_id = str(t.id)[:8]
-                lines.append(f"- [{t.status}] {t.title}{dl} (id={t.id}, short={short_id})")
-
-            # Append a legend so the LLM can map short IDs back to human names.
-            legend = await _build_user_legend(shown)
-            result = f"Tasks ({len(tasks)} total):\n" + "\n".join(lines)
-            if legend:
-                result += "\n\nUsers:\n" + legend
-            return result
+                assignee = name_map.get(t.assignee_user_id, str(t.assignee_user_id))
+                creator = name_map.get(t.created_by_user_id, str(t.created_by_user_id)) if t.created_by_user_id else ""
+                lines.append(f"- [{t.status}] {t.title}{dl} (id={t.id}, assignee={assignee}{f', creator={creator}' if creator else ''})")
+            return f"Tasks ({len(tasks)} total):\n" + "\n".join(lines)
         except Exception as e:
             logger.error(f"task_query failed: {e}")
             return f"Failed to query tasks: {e}"
-
-    async def _build_user_legend(tasks) -> str:
-        """Return a short-id → name map for all assignees in the given tasks."""
-        from ...services.engine_service import get_engine_service
-        engine = get_engine_service()
-        assignee_ids = list({t.assignee_user_id for t in tasks if t.assignee_user_id})
-        if not assignee_ids:
-            return ""
-        users = await engine.user_storage.get_certain_users(assignee_ids)
-        lines = [f"  {str(u.id)[:8]}: {u.name}" for u in users]
-        return "\n".join(lines)
 
     async def _task_update_async(
         task_id: str,
