@@ -39,8 +39,8 @@ class TaskQueryInput(BaseModel):
     created_by_user_id: str = Field(default="", description="Filter by UUID of the user who CREATED the task (empty = any)")
     status: Literal["done", "created", "in_progress"] | None = Field(default=None, description="Filter by status: created, in_progress, done, overdue (empty = all)")
     text_search_query: str = Field(default="", description="Full-text search over task title and description (empty = skip)")
-    date_from: Optional[date] = Field(default=None, description="Filter tasks created on or after this date (empty = no lower bound)")
-    date_to: Optional[date] = Field(default=None, description="Filter tasks created on or before this date (empty = no upper bound)")
+    date_from: Optional[date] = Field(default=None, description="Filter tasks created on or after this date in YYYY-MM-DD format (empty = no lower bound)")
+    date_to: Optional[date] = Field(default=None, description="Filter tasks created on or before this date in YYYY-MM-DD format (empty = no upper bound)")
 
 
 class TaskUpdateInput(BaseModel):
