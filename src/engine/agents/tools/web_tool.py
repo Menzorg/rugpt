@@ -17,7 +17,7 @@ from ...config import Config
 logger = logging.getLogger("rugpt.agents.tools.web")
 
 _PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
-_MODEL = "sonar-pro"
+_MODEL = "sonar"
 _TIMEOUT_SECONDS = 60.0
 
 

@@ -113,7 +113,7 @@ async def _react_agent_call(
         # The last message should be the user input
         # ReAct agent expects {"messages": [...]}
         # config carries org_id/user_id for tools like rag_search
-        result = await agent.ainvoke({"messages": messages}, config={**config, "recursion_limit": 16})
+        result = await agent.ainvoke({"messages": messages}, config={**config, "recursion_limit": 20})
 
         # Extract final response from the result
         output_messages = result.get("messages", [])
