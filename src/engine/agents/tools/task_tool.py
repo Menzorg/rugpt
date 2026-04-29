@@ -40,8 +40,10 @@ class TaskQueryInput(BaseModel):
     created_by_user_id: str = Field(default="", description="Filter by UUID of the user who CREATED the task (empty = any)")
     status: Literal["done", "created", "in_progress"] | None = Field(default=None, description="Filter by status: created, in_progress, done, overdue (empty = all)")
     text_search_query: str = Field(default="", description="Full-text search over task title and description (empty = skip)")
-    date_from: Optional[date] = Field(default=None, description="Filter tasks created on or after this date in YYYY-MM-DD format (empty = no lower bound)")
-    date_to: Optional[date] = Field(default=None, description="Filter tasks created on or before this date in YYYY-MM-DD format (empty = no upper bound)")
+    deadline_from: Optional[date] = Field(default=None, description="Filter tasks with deadline on or after this date, YYYY-MM-DD (empty = no lower bound)")
+    deadline_to: Optional[date] = Field(default=None, description="Filter tasks with deadline on or before this date, YYYY-MM-DD (empty = no upper bound)")
+    created_from: Optional[date] = Field(default=None, description="Filter tasks created on or after this date, YYYY-MM-DD (empty = no lower bound)")
+    created_to: Optional[date] = Field(default=None, description="Filter tasks created on or before this date, YYYY-MM-DD (empty = no upper bound)")
 
 
 class TaskUpdateInput(BaseModel):
@@ -123,23 +125,27 @@ def create_task_tools(
         created_by_user_id: Optional[str] = "",
         status: Optional[Literal["done", "created", "in_progress"]] = "",
         text_search_query: Optional[str] = "",
-        date_from: Optional[date] = None,
-        date_to: Optional[date] = None,
+        deadline_from: Optional[date] = None,
+        deadline_to: Optional[date] = None,
+        created_from: Optional[date] = None,
+        created_to: Optional[date] = None,
         config: Annotated[RunnableConfig, InjectedToolArg] = None,
     ) -> str:
-        """Query tasks. Filter by assignee, creator, status, full-text search, and/or date range.
+        """Query tasks. Filter by assignee, creator, status, full-text search, and/or date ranges.
         Args:
             assignee_user_id: UUID of assignee (empty = any)
             created_by_user_id: UUID of creator (empty = any)
             status: Filter by status (empty = all)
             text_search_query: Full-text search over title and description (empty = skip)
-            date_from: Include tasks created on or after this date (None = no lower bound)
-            date_to: Include tasks created on or before this date (None = no upper bound)
+            deadline_from: Include tasks with deadline on or after this date (None = no lower bound)
+            deadline_to: Include tasks with deadline on or before this date (None = no upper bound)
+            created_from: Include tasks created on or after this date (None = no lower bound)
+            created_to: Include tasks created on or before this date (None = no upper bound)
         """
         logger.info(
             f"tool task_query: assignee={assignee_user_id!r} creator={created_by_user_id!r}"
             f" status={status!r} text_search={text_search_query!r}"
-            f" date_from={date_from} date_to={date_to}"
+            f" deadline={deadline_from}..{deadline_to} created={created_from}..{created_to}"
         )
         try:
             configurable = (config or {}).get("configurable", {})
@@ -192,12 +198,19 @@ def create_task_tools(
                 filter_sets.append({t.id for t in search_tasks})
                 _add_to_pool(search_tasks)
 
-            if date_from or date_to:
-                date_tasks = await task_service.list_by_date_range(
-                    query_org_id, date_from=date_from, date_to=date_to,
+            if deadline_from or deadline_to:
+                deadline_tasks = await task_service.list_by_deadline_range(
+                    query_org_id, deadline_from=deadline_from, deadline_to=deadline_to,
                 )
-                filter_sets.append({t.id for t in date_tasks})
-                _add_to_pool(date_tasks)
+                filter_sets.append({t.id for t in deadline_tasks})
+                _add_to_pool(deadline_tasks)
+
+            if created_from or created_to:
+                created_tasks = await task_service.list_by_created_range(
+                    query_org_id, created_from=created_from, created_to=created_to,
+                )
+                filter_sets.append({t.id for t in created_tasks})
+                _add_to_pool(created_tasks)
 
             # No filter at all → return all org tasks
             if not filter_sets:

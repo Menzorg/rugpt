@@ -183,23 +183,47 @@ class TaskStorage(BaseStorage):
             rows = await self.fetch(query, org_id)
         return [self._row_to_task(r) for r in rows]
 
-    async def list_by_date_range(
+    async def list_by_deadline_range(
         self,
         org_id: UUID,
-        date_from: Optional[date] = None,
-        date_to: Optional[date] = None,
+        deadline_from: Optional[date] = None,
+        deadline_to: Optional[date] = None,
     ) -> List[Task]:
-        """List active tasks created within an inclusive date interval."""
+        """List active tasks whose deadline falls within an inclusive date interval."""
+        conditions = ["org_id = $1", "is_active = true", "deadline IS NOT NULL"]
+        params: list = [org_id]
+
+        if deadline_from:
+            params.append(deadline_from)
+            conditions.append(f"deadline >= ${len(params)}::date")
+        if deadline_to:
+            params.append(deadline_to)
+            # Adding 1 day gives an exclusive upper bound for the timestamp column.
+            conditions.append(f"deadline < (${len(params)}::date + INTERVAL '1 day')")
+
+        where = " AND ".join(conditions)
+        rows = await self.fetch(
+            f"SELECT * FROM tasks WHERE {where} ORDER BY deadline ASC",
+            *params,
+        )
+        return [self._row_to_task(r) for r in rows]
+
+    async def list_by_created_range(
+        self,
+        org_id: UUID,
+        created_from: Optional[date] = None,
+        created_to: Optional[date] = None,
+    ) -> List[Task]:
+        """List active tasks whose creation timestamp falls within an inclusive date interval."""
         conditions = ["org_id = $1", "is_active = true"]
         params: list = [org_id]
 
-        if date_from:
-            params.append(date_from)
-            conditions.append(f"deadline >= ${len(params)}::date")
-        if date_to:
-            params.append(date_to)
-            # date_to is a date; adding 1 day gives an exclusive upper bound for the timestamp column.
-            conditions.append(f"deadline < (${len(params)}::date + INTERVAL '1 day')")
+        if created_from:
+            params.append(created_from)
+            conditions.append(f"created_at >= ${len(params)}::date")
+        if created_to:
+            params.append(created_to)
+            conditions.append(f"created_at < (${len(params)}::date + INTERVAL '1 day')")
 
         where = " AND ".join(conditions)
         rows = await self.fetch(

@@ -207,14 +207,27 @@ class TaskService:
         """Full-text search over task title (A) and description (C) using ts_rank_cd."""
         return await self.storage.text_search(org_id, query, limit)
 
-    async def list_by_date_range(
+    async def list_by_deadline_range(
         self,
         org_id: UUID,
-        date_from: Optional[date] = None,
-        date_to: Optional[date] = None,
+        deadline_from: Optional[date] = None,
+        deadline_to: Optional[date] = None,
     ) -> List[Task]:
-        """List active tasks created within an inclusive date interval."""
-        return await self.storage.list_by_date_range(org_id, date_from=date_from, date_to=date_to)
+        """List active tasks whose deadline falls within an inclusive date interval."""
+        return await self.storage.list_by_deadline_range(
+            org_id, deadline_from=deadline_from, deadline_to=deadline_to,
+        )
+
+    async def list_by_created_range(
+        self,
+        org_id: UUID,
+        created_from: Optional[date] = None,
+        created_to: Optional[date] = None,
+    ) -> List[Task]:
+        """List active tasks whose creation date falls within an inclusive date interval."""
+        return await self.storage.list_by_created_range(
+            org_id, created_from=created_from, created_to=created_to,
+        )
 
     async def list_my_tasks(
         self,
