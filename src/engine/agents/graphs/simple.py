@@ -63,14 +63,14 @@ async def run_simple_agent(
         # Direct LLM call — no tools, no agent overhead
         return await _direct_llm_call(llm, lc_messages)
     else:
-        llm.bind(
+        llm_nothink = llm.bind(
             extra_body={
                 "chat_template_kwargs": {
                     "enable_thinking": False,
                 }
             })
         # ReAct agent with tools
-        return await _react_agent_call(llm, lc_messages, system_prompt, tools, config)
+        return await _react_agent_call(llm_nothink, lc_messages, system_prompt, tools, config)
 
 
 async def _direct_llm_call(
@@ -113,7 +113,7 @@ async def _react_agent_call(
         # The last message should be the user input
         # ReAct agent expects {"messages": [...]}
         # config carries org_id/user_id for tools like rag_search
-        result = await agent.ainvoke({"messages": messages}, config=config)
+        result = await agent.ainvoke({"messages": messages}, config={**config, "recursion_limit": 16})
 
         # Extract final response from the result
         output_messages = result.get("messages", [])

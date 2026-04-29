@@ -219,17 +219,13 @@ def create_task_tools(
             if not tasks:
                 return "No tasks found."
 
-            # TODO: replace char budget with token budget via a token counting service
             total = len(tasks)
             limited = total > Config.TASKS_QUERY_LIMIT
             shown = tasks[:Config.TASKS_QUERY_LIMIT]
 
-            # Distribute description budget evenly across tasks that have one.
-            tasks_with_desc = [t for t in shown if t.description]
-            chars_per_desc = (
-                Config.TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET // len(tasks_with_desc)
-                if tasks_with_desc else 0
-            )
+            # TODO: replace char budget with token budget via a token counting service
+            total_desc_chars = sum(len(t.description) for t in shown if t.description)
+            include_descriptions = total_desc_chars <= Config.TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET
 
             # Resolve all referenced user IDs to names in one batch query.
             from ...services.engine_service import get_engine_service
@@ -244,18 +240,19 @@ def create_task_tools(
                 dl = f", deadline: {t.deadline.isoformat()}" if t.deadline else ""
                 assignee = name_map.get(t.assignee_user_id, str(t.assignee_user_id))
                 creator = name_map.get(t.created_by_user_id, str(t.created_by_user_id)) if t.created_by_user_id else ""
-                desc = ""
-                if t.description and chars_per_desc:
-                    truncated = t.description[:chars_per_desc]
-                    desc = f", {truncated!r}"
+                desc = f", description={t.description!r}" if (t.description and include_descriptions) else ""
                 lines.append(
                     f"- [{t.status}] {t.title}{dl}"
-                    f" (id={t.id}, assignee={assignee}{f', creator={creator}' if creator else ''} " 
-                    f" description={desc})"
+                    f" (id={t.id}, assignee={assignee}{f', creator={creator}' if creator else ''}{desc})"
                 )
 
             header = f"Tasks ({total} total{f', LIMITED TO {Config.TASKS_QUERY_LIMIT}' if limited else ''}):"
-            return header + "\n" + "\n".join(lines)
+            footer = (
+                "\nTASK DESCRIPTIONS HIDDEN TO PREVENT OUTPUT FLOOD."
+                " SHRINK OUTPUT USING FILTERS TO CHECK DESCRIPTIONS IF YOU NEED"
+                if not include_descriptions else ""
+            )
+            return header + "\n" + "\n".join(lines) + footer
         except Exception as e:
             logger.error(f"task_query failed: {e}")
             return f"Failed to query tasks: {e}"

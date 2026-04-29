@@ -71,7 +71,7 @@ class Config:
     # Task query tool limits. Raise TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET when the
     # model supports a larger context window; replace with a token budget once a
     # token-counting service is available (see TODO in task_tool.py).
-    TASKS_QUERY_LIMIT = int(os.getenv("TASKS_QUERY_LIMIT", "80"))
+    TASKS_QUERY_LIMIT = int(os.getenv("TASKS_QUERY_LIMIT", "200"))
     TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET = int(os.getenv("TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET", "20000"))
 
     # API settings
