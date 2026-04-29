@@ -63,6 +63,12 @@ async def run_simple_agent(
         # Direct LLM call — no tools, no agent overhead
         return await _direct_llm_call(llm, lc_messages)
     else:
+        llm.bind(
+            extra_body={
+                "chat_template_kwargs": {
+                    "enable_thinking": False,
+                }
+            })
         # ReAct agent with tools
         return await _react_agent_call(llm, lc_messages, system_prompt, tools, config)
 
