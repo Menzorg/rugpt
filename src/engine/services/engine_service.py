@@ -179,11 +179,15 @@ class EngineService:
             in_app_notification_service=self.in_app_notification_service,
         )
 
-        # Initialize task report service
+        # Initialize task report service.
+        # AgentExecutor is wired in below after it's constructed (chicken-and-egg).
         self.task_report_service = TaskReportService(
             storage=self.task_report_storage,
             task_poll_service=self.task_poll_service,
             in_app_notification_service=self.in_app_notification_service,
+            role_storage=self.role_storage,
+            task_storage=self.task_storage,
+            user_storage=self.user_storage,
         )
 
         # Initialize file service with StorageAdapter
@@ -292,6 +296,7 @@ class EngineService:
             memory_snapshot_storage=self.memory_snapshot_storage,
         )
         self.agent_executor.memory_service = self.memory_service
+        self.task_report_service.agent_executor = self.agent_executor
 
         # Initialize scheduler (started in initialize(), stopped in close())
         self.scheduler_service = SchedulerService(
