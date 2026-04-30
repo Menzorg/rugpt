@@ -60,7 +60,7 @@ class ToolRegistry:
             else:
                 logger.error(f"Tool doc not found: {doc_path}")
 
-        return tools, "\n\n---\n\n".join(doc_parts)
+        return tools, "\n---\n".join(doc_parts)
 
     @property
     def available_tools(self) -> List[str]:

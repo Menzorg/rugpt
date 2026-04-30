@@ -22,9 +22,9 @@ from ...storage.user_file_storage import UserFileStorage
 
 logger = logging.getLogger("rugpt.agents.tools.document")
 
-_TRUNCATED_LIMIT = 30
-_MAX_RESULTS = 30
-_SUMMARY_CHARS_BUDGET = 10000  # with 30 docs each gets at least 100 chars of summary
+_TRUNCATED_LIMIT = 500
+_MAX_RESULTS = 100
+_SUMMARY_CHARS_BUDGET = 40000  # with 30 docs each gets at least 100 chars of summary
 
 _user_file_storage: Optional[UserFileStorage] = None
 _rag_service: Optional[RAGService] = None
