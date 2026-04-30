@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger("rugpt.agents.tools.user")
 
-_MAX_RESULTS = 30
+_MAX_RESULTS = 60
 
 
 class UserSearchInput(BaseModel):

@@ -250,7 +250,7 @@ class EngineService:
         from ..agents.tools.table_rows_tool import table_rows_search
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
-        from ..agents.tools.document_tool import list_documents
+        from ..agents.tools.list_documents import list_documents
         from ..agents.tools.user_tool import create_user_tools
 
         # Create calendar tools wired to CalendarService
@@ -402,7 +402,7 @@ class EngineService:
         init_table_rows_service(self.rag_service, self.user_file_storage)
 
         # Wire the shared UserFileStorage into the document tool
-        from ..agents.tools.document_tool import init_document_service
+        from ..agents.tools.list_documents import init_document_service
         init_document_service(self.user_file_storage, self.rag_service)
 
         # Start Kafka producer (no-op when KAFKA_ENABLED=false)
