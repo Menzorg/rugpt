@@ -174,7 +174,7 @@ class AgentExecutor:
             system_prompt += f"\n\n{user_block}"
 
         if summary:
-            summary_message = {"role": "user", "content": f"Сводка истории диалога:\n{summary}"}
+            summary_message = {"role": "user", "content": f"Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n{summary}"}
             messages = [summary_message] + messages
             logger.info("memory: summary injected as first message for chat=%s", chat_id)
             system_prompt += _MEMORY_PROMPT_BLOCK
