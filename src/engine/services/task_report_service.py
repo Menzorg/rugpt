@@ -65,9 +65,24 @@ class TaskReportService:
         Generate an evening report for a manager.
         Aggregates today's poll responses, asks LLM to summarize.
         Called by scheduler (evening_report_job).
+
+        Idempotent: scheduler ticks every 30s during evening_hours [18,19,20]
+        — without this guard we'd produce ~360 duplicate reports per admin/day.
         """
         # Allow caller to override user_storage; fall back to one from constructor.
         ustore = user_storage or self.user_storage
+
+        # Idempotency guard — silently skip if report for (org, manager, date)
+        # already exists. Avoids LLM call, DB write, and duplicate notification.
+        exists = await self.storage.exists_for_user_on_date(
+            org_id, manager_user_id, report_date,
+        )
+        if exists:
+            logger.debug(
+                f"Report already exists for manager {manager_user_id} "
+                f"on {report_date}, skipping"
+            )
+            return None
 
         polls = await self.poll_service.list_by_org_and_date(org_id, report_date)
         if not polls:
