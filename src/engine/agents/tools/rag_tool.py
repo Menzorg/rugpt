@@ -99,7 +99,7 @@ async def rag_search(
 
         lines = [f"## {doc.doc_title or file_id}"]
         for chunk in chunks:
-            idx = f"id={chunk.chunk_index}" if chunk.chunk_index else ""
+            idx = f"chunk_index={chunk.chunk_index}" if chunk.chunk_index else ""
             lines.append(f"\n[{chunk.source_type}, {idx}] {chunk.chunk_text}")
 
         logger.info(f"rag_search: returned {len(chunks)} chunks for file_id={file_id}")
