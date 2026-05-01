@@ -393,7 +393,7 @@ class RAGService:
         logger.info(
             f"rag find_docs: query={query!r} top_k={top_k} org={org_id} user={user_id}"
         )
-        qwen_query = ("Instruct: Given a web search query, retrieve relevant passages that answer the query\n"
+        qwen_query = ("Given a search query, retrieve relevant document summaries that best match the user's intent\n"
                     f"Query: {query}")
         
         query_embedding = self._embed_query(qwen_query)

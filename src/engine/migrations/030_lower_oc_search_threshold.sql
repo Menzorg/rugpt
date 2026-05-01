@@ -117,7 +117,7 @@ BEGIN
       'abstract'::text        AS mode_used
     FROM ranked r
     JOIN user_files uf ON uf.id = r.doc_id
-    WHERE r.vec_dist < 0.8
+    WHERE r.vec_dist < 0.65
     ORDER BY (r.r_vec + 0.3 * r.r_tsv) ASC
     LIMIT p_top_k;
   END IF;
