@@ -76,6 +76,8 @@ chroma_data/
 
 # Uploaded files
 uploads/
+test-docs/*
+!test-docs/.gitkeep
 
 # Temporary files
 tmp/

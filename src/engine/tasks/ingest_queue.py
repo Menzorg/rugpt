@@ -102,7 +102,7 @@ class IngestQueue:
         user_id: str,
         filename: str,
         data: bytes,
-    ) -> None:
+    ) -> asyncio.Future:
         """Enqueue an ingest job. Returns immediately — caller must not await.
 
         The done-callback ensures exceptions are logged even though the
@@ -121,6 +121,7 @@ class IngestQueue:
             data,
         )
         future.add_done_callback(self._on_done)
+        return future
 
     @staticmethod
     def _on_done(future: asyncio.Future) -> None:
