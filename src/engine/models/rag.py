@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -26,9 +26,20 @@ class ChunkSearchResult:
     chunk_id: str
     file_id: str
     chunk_text: str
+    chunk_index: Optional[int]
     vec_dist: float
     tsv_score: float
     r_vec: Optional[int]
     r_tsv: Optional[int]
     final_rank: Optional[float]
     source_type: str  # 'chunk' | 'table_row'
+
+
+@dataclass
+class ChunkRow:
+    """Raw row from the chunks table."""
+    id: str
+    file_id: str
+    chunk_text: str
+    metadata: dict[str, Any]
+    chunk_index: Optional[int]
