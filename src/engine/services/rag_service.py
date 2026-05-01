@@ -393,7 +393,10 @@ class RAGService:
         logger.info(
             f"rag find_docs: query={query!r} top_k={top_k} org={org_id} user={user_id}"
         )
-        query_embedding = self._embed_query(query)
+        qwen_query = ("Given a search query, retrieve relevant document summaries that best match the user's intent\n"
+                    f"Query: {query}")
+        
+        query_embedding = self._embed_query(qwen_query)
         docs = await self._store.call_search_related_docs(
             org_id=org_id,
             user_id=user_id,
@@ -427,7 +430,9 @@ class RAGService:
         tsv_weight: Optional[float] = 1,
     ) -> list[ChunkSearchResult]:
         """Return top-k concrete matches inside one file."""
-        query_embedding = self._embed_query(query)
+        qwen_query = ("Instruct: Given a web search query, retrieve relevant passages that answer the query"
+                f"Query: {query}")
+        query_embedding = self._embed_query(qwen_query)
         return await self._store.call_search_concrete_chunks(
             file_id=file_id,
             query=query,
