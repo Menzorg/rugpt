@@ -1,6 +1,10 @@
 -- 031_chunk_context_by_index.sql
 -- Add helper to fetch neighboring chunks around a known file_id + chunk_index.
 
+DROP FUNCTION IF EXISTS search_rag(uuid, text, vector(1024), integer, text);
+DROP FUNCTION IF EXISTS search_abstract_chunks(uuid, text, vector(1024), integer);
+DROP FUNCTION IF EXISTS search_concrete_chunks(uuid, text, vector(1024), integer, double precision);
+
 CREATE OR REPLACE FUNCTION search_concrete_chunks(
   p_doc_id uuid,
   p_query text,
