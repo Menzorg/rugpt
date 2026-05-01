@@ -399,6 +399,18 @@ class SchedulerService:
             admins = await self.user_storage.list_admins_by_org(org_id)
             for admin in admins:
                 try:
+                    report_exists = await self.task_report_service.storage.exists_for_user_on_date(
+                        org_id=org_id,
+                        generated_for_user_id=admin.id,
+                        report_date=today,
+                    )
+                    if report_exists:
+                        logger.debug(
+                            f"Evening report already exists for admin {admin.id} "
+                            f"in org {org_id} on {today}"
+                        )
+                        continue
+
                     await self.task_report_service.generate_report(
                         org_id=org_id,
                         manager_user_id=admin.id,

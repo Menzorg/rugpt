@@ -111,7 +111,8 @@ class AgentExecutor:
         org = await engine.org_storage.get_by_id(scope_org_id)
         org_context = org.org_context if org else ""
         system_prompt = self.prompt_cache.get_prompt(role, org_context=org_context)
-        tools = self.tool_registry.resolve(role.tools) if role.tools else []
+        tools, tools_doc = self.tool_registry.resolve(role.tools) if role.tools else ([], "")
+        system_prompt = system_prompt.replace("{tools}", tools_doc)
         llm = self._create_llm(model, temperature)
 
         # RunnableConfig carries initiator's org_id/user_id for tools.
@@ -173,12 +174,9 @@ class AgentExecutor:
             system_prompt += f"\n\n{user_block}"
 
         if summary:
-            last = messages[-1]
-            messages = messages[:-1] + [{
-                "role": last["role"],
-                "content": f"Сводка диалога:\n{summary}\n\nСообщение пользователя:\n{last['content']}",
-            }]
-            logger.info("memory: summary injected into last message for chat=%s", chat_id)
+            summary_message = {"role": "user", "content": f"Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n{summary}"}
+            messages = [summary_message] + messages
+            logger.info("memory: summary injected as first message for chat=%s", chat_id)
             system_prompt += _MEMORY_PROMPT_BLOCK
 
         if lessons:
