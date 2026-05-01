@@ -31,6 +31,9 @@ def _make_service(polls, chats_by_poll=None, messages_by_chat=None, agent_execut
 
     storage = AsyncMock()
     storage.create = AsyncMock(side_effect=lambda r: r)
+    # Idempotency guard in generate_report — default to "report doesn't exist
+    # yet" so unit tests exercise the full generation path.
+    storage.exists_for_user_on_date = AsyncMock(return_value=False)
 
     poll_service = AsyncMock()
     poll_service.list_by_org_and_date = AsyncMock(return_value=polls)
