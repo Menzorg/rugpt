@@ -292,6 +292,7 @@ class RAGService:
             stage = "text_extraction"
             logger.info(f"[{fid}] stage={stage}")
             full_text = self._extract_text_with_tika(data, filename or "uploaded_file")
+            full_text.replace("....", "") # Remove noise like .... in ToC
             if not full_text:
                 raise ValueError("No text content extracted from file.")
             logger.info(f"[{fid}] extracted {len(full_text)} chars")
