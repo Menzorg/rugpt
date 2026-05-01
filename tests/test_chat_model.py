@@ -54,3 +54,24 @@ def test_chat_legacy_dict_without_support_ticket_id():
     }
     c = Chat.from_dict(legacy_dict)
     assert c.support_ticket_id is None
+
+
+def test_chat_type_poll_exists():
+    from src.engine.models.chat import ChatType
+    assert ChatType.POLL.value == "poll"
+
+
+def test_chat_poll_id_field():
+    from src.engine.models.chat import Chat, ChatType
+    from uuid import uuid4
+    poll_id = uuid4()
+    chat = Chat(type=ChatType.POLL, poll_id=poll_id)
+    assert chat.poll_id == poll_id
+
+    d = chat.to_dict()
+    assert d["poll_id"] == str(poll_id)
+    assert d["type"] == "poll"
+
+    c2 = Chat.from_dict(d)
+    assert c2.type == ChatType.POLL
+    assert c2.poll_id == poll_id

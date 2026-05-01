@@ -215,6 +215,39 @@ class ChatService:
             await self.chat_storage.update(chat)
 
     # ============================================
+    # Poll chats
+    # ============================================
+
+    async def create_poll_chat(
+        self,
+        poll_id: UUID,
+        assignee_user_id: UUID,
+        interviewer_user_id: UUID,
+        org_id: UUID,
+    ) -> Chat:
+        """Idempotent creation of a poll-scoped chat.
+
+        Participants: [assignee, poll_interviewer_ai].
+        Returns existing chat if one already exists for this poll_id.
+        """
+        existing = await self.chat_storage.get_by_poll_id(poll_id)
+        if existing is not None:
+            return existing
+
+        chat = Chat(
+            org_id=org_id,
+            type=ChatType.POLL,
+            participants=[assignee_user_id, interviewer_user_id],
+            poll_id=poll_id,
+        )
+        created = await self.chat_storage.create(chat)
+        logger.info(
+            f"create_poll_chat: id={created.id} poll={poll_id} "
+            f"assignee={assignee_user_id} interviewer={interviewer_user_id}"
+        )
+        return created
+
+    # ============================================
     # Project chats
     # ============================================
 

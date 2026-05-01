@@ -16,6 +16,7 @@ class ChatType(str, Enum):
     TASK = "task"         # Chat attached to a task
     PROJECT = "project"   # Chat attached to a project
     SUPPORT = "support"   # Tech support ticket chat (cross-org, see ChatType.SUPPORT exemption)
+    POLL = "poll"         # Daily morning poll chat — AI-driven dialog over outstanding tasks
 
 
 def _coerce_chat_type(raw) -> ChatType:
@@ -59,6 +60,7 @@ class Chat:
     task_id: Optional[UUID] = None                   # Set iff type == TASK
     project_id: Optional[UUID] = None                # Set iff type == PROJECT
     support_ticket_id: Optional[UUID] = None         # Set iff type == SUPPORT
+    poll_id: Optional[UUID] = None                   # Set iff type == POLL (FK task_polls.id)
     mem_id: Optional[UUID] = None                    # FK memory_snapshots (active memory for this chat)
     is_active: bool = True                           # Active/archived status
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -77,6 +79,7 @@ class Chat:
             "task_id": str(self.task_id) if self.task_id else None,
             "project_id": str(self.project_id) if self.project_id else None,
             "support_ticket_id": str(self.support_ticket_id) if self.support_ticket_id else None,
+            "poll_id": str(self.poll_id) if self.poll_id else None,
             "mem_id": str(self.mem_id) if self.mem_id else None,
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat(),
@@ -106,6 +109,7 @@ class Chat:
             task_id=_uuid_or_none(data.get("task_id")),
             project_id=_uuid_or_none(data.get("project_id")),
             support_ticket_id=_uuid_or_none(data.get("support_ticket_id")),
+            poll_id=_uuid_or_none(data.get("poll_id")),
             mem_id=_uuid_or_none(data.get("mem_id")),
             is_active=data.get("is_active", True),
             created_at=datetime.fromisoformat(data["created_at"]) if isinstance(data.get("created_at"), str) else data.get("created_at", datetime.utcnow()),

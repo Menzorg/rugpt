@@ -79,6 +79,45 @@ class AgentRunStorage(BaseStorage):
             request_id, error[:2000] if error else None,
         )
 
+    async def count_failed_by_chat_and_kind(
+        self, chat_id: UUID, kind: str,
+    ) -> int:
+        """Count failed agent_runs for a given chat scoped by `kind`.
+
+        agent_runs has no separate `kind` column — the discriminator is
+        `role_code` (e.g. 'poll_interviewer' for the poll_initial flow,
+        'poll_summarizer' for poll_summary). The `kind` arg here is mapped
+        directly onto role_code.
+
+        Used by SchedulerService._retry_stuck_poll_initials to bound retries
+        at 3 failures.
+        """
+        query = """
+            SELECT COUNT(*) AS cnt FROM agent_runs
+            WHERE chat_id = $1 AND role_code = $2 AND status = 'failed'
+        """
+        row = await self.fetchrow(query, chat_id, kind)
+        return row["cnt"] if row else 0
+
+    async def last_failed_at(
+        self, chat_id: UUID, kind: str,
+    ) -> Optional[datetime]:
+        """Most recent `finished_at` of a failed agent_run for this chat+kind.
+
+        Returns None if there's been no failed run yet. Used for retry-cooldown:
+        scheduler skips polls whose last failure is too recent, preventing 3
+        retries from being burned in 90 seconds during a transient LLM/Kafka
+        outage.
+        """
+        query = """
+            SELECT finished_at FROM agent_runs
+            WHERE chat_id = $1 AND role_code = $2 AND status = 'failed'
+            ORDER BY finished_at DESC NULLS LAST
+            LIMIT 1
+        """
+        row = await self.fetchrow(query, chat_id, kind)
+        return row["finished_at"] if row else None
+
     def _row_to_run(self, row) -> AgentRun:
         return AgentRun(
             request_id=row["request_id"],

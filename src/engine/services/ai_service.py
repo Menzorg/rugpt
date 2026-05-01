@@ -34,8 +34,16 @@ if TYPE_CHECKING:
     from ..kafka.producer import KafkaProducerService
     from ..storage.support_ticket_storage import SupportTicketStorage
     from ..storage.support_ticket_event_storage import SupportTicketEventStorage
+    from ..storage.task_poll_storage import TaskPollStorage
+    from ..storage.task_storage import TaskStorage
 
 logger = logging.getLogger("rugpt.services.ai")
+
+
+# Poll-dialog role codes (lives in system org per migration 029).
+POLL_INTERVIEWER_ROLE_CODE = "poll_interviewer"
+POLL_SUMMARIZER_ROLE_CODE = "poll_summarizer"
+RUGPT_SYSTEM_ORG_ID = UUID("00000000-0000-0000-0000-000000000000")
 
 
 class AIService:
@@ -53,6 +61,8 @@ class AIService:
         kafka_producer: Optional["KafkaProducerService"] = None,
         support_ticket_storage: Optional["SupportTicketStorage"] = None,
         support_ticket_event_storage: Optional["SupportTicketEventStorage"] = None,
+        task_poll_storage: Optional["TaskPollStorage"] = None,
+        task_storage: Optional["TaskStorage"] = None,
     ):
         self.role_storage = role_storage
         self.user_storage = user_storage
@@ -67,6 +77,13 @@ class AIService:
         # callers / tests construct AIService without these and inject later).
         self.support_ticket_storage = support_ticket_storage
         self.support_ticket_event_storage = support_ticket_event_storage
+        # Poll-dialog deps — wired by EngineService for poll_interviewer /
+        # poll_summarizer LLM scenarios. Default None for backward compat with
+        # callers/tests that construct AIService without these (they degrade
+        # gracefully — the poll methods raise a clear RuntimeError if invoked
+        # without these wired).
+        self.task_poll_storage = task_poll_storage
+        self.task_storage = task_storage
 
     def _is_support_aware(self) -> bool:
         """True iff both support storages are wired. Gates the support hook so
@@ -455,6 +472,269 @@ class AIService:
         created = await self.message_storage.create(message)
         await self.chat_storage.update_last_message(chat_id)
         return created
+
+    async def generate_poll_initial(
+        self,
+        poll_id: UUID,
+        chat_id: UUID,
+        responder_id: UUID,
+    ) -> Message:
+        """Generate first AI greeting in a poll chat.
+
+        Reads poll.task_ids snapshot, bulk-fetches task titles via task_storage,
+        calls AgentExecutor with role=poll_interviewer, persists AI message
+        in chat.messages and returns it.
+
+        Raises RuntimeError if poll/role/storages not found or LLM returns empty.
+        """
+        if self.task_poll_storage is None or self.task_storage is None:
+            raise RuntimeError("AIService: task_poll_storage / task_storage not wired")
+
+        poll = await self.task_poll_storage.get_by_id(poll_id)
+        if poll is None:
+            raise RuntimeError(f"poll {poll_id} not found")
+
+        role = await self.role_storage.get_by_code(
+            POLL_INTERVIEWER_ROLE_CODE, RUGPT_SYSTEM_ORG_ID,
+        )
+        if role is None:
+            raise RuntimeError(
+                f"role '{POLL_INTERVIEWER_ROLE_CODE}' not found in system org "
+                f"(did migration 029 run?)"
+            )
+
+        # Resolve assignee name
+        assignee = await self.user_storage.get_by_id(poll.assignee_user_id)
+        assignee_name = (assignee.name or assignee.username) if assignee else "сотрудник"
+
+        # Bulk-fetch task titles
+        task_ids_uuid = list(poll.task_ids or [])
+        tasks_map = (
+            await self.task_storage.get_many_by_ids(task_ids_uuid)
+            if task_ids_uuid else {}
+        )
+
+        # Build user input listing tasks
+        lines = [f"Сотрудник: {assignee_name}.", "Активные задачи на сегодня:"]
+        if not tasks_map:
+            lines.append("- (список задач пуст)")
+        else:
+            for tid in task_ids_uuid:
+                t = tasks_map.get(tid)
+                if t:
+                    deadline_str = f" (срок: {t.deadline.strftime('%d.%m.%Y')})" if t.deadline else ""
+                    lines.append(f"- {t.title}{deadline_str}")
+        lines.append("")
+        lines.append(
+            "Поприветствуй сотрудника, перечисли задачи и попроси рассказать "
+            "про каждую: статус, что изменилось, есть ли проблемы."
+        )
+        user_input = "\n".join(lines)
+
+        result = await self.agent_executor.execute(
+            role=role,
+            messages=[{"role": "user", "content": user_input}],
+            temperature=0.5,
+            max_tokens=1024,
+            user_id=poll.assignee_user_id,
+        )
+
+        if not (result and result.content and result.content.strip()):
+            raise RuntimeError("agent_executor returned empty content")
+
+        ai_message = Message(
+            chat_id=chat_id,
+            sender_id=responder_id,
+            sender_type=SenderType.AI_ROLE,
+            content=result.content.strip(),
+            ai_is_valid=True,
+        )
+        return await self.message_storage.create(ai_message)
+
+    async def enqueue_poll_initial(
+        self,
+        poll_id: UUID,
+        chat_id: UUID,
+        responder_id: UUID,
+    ) -> UUID:
+        """Create AgentRun(pending) and publish kind='poll_initial' to agent.requests.
+
+        Returns request_id, or raises if Kafka publish failed (after best-effort
+        mark_failed on the AgentRun row).
+
+        Note: differs from `_enqueue_agent_run` which returns None on failure —
+        poll-flow must fail loudly because there is no user-message fallback path.
+        """
+        if self.agent_run_storage is None or self.kafka_producer is None:
+            raise RuntimeError("AIService: agent_run_storage / kafka_producer not wired")
+
+        request_id = uuid4()
+        # AgentRun has request_id (PK), chat_id, status — and optional fields for
+        # the legacy mention path (user_message_id / triggering_user_id / role_code).
+        # For poll_initial there is no triggering user-message; we record responder
+        # as triggering_user_id for traceability and stamp role_code so logs/metrics
+        # can split by kind without inspecting the Kafka payload.
+        agent_run = AgentRun(
+            request_id=request_id,
+            chat_id=chat_id,
+            triggering_user_id=responder_id,
+            role_code=POLL_INTERVIEWER_ROLE_CODE,
+            status="pending",
+        )
+        try:
+            await self.agent_run_storage.create(agent_run)
+            await self.kafka_producer.send(
+                Config.KAFKA_TOPIC_AGENT_REQUESTS,
+                {
+                    "request_id": str(request_id),
+                    "chat_id": str(chat_id),
+                    "responder_id": str(responder_id),
+                    "kind": "poll_initial",
+                    "poll_id": str(poll_id),
+                },
+                key=str(chat_id),
+            )
+            return request_id
+        except Exception as e:
+            logger.error(
+                f"enqueue_poll_initial: failed for poll={poll_id}: {e}",
+                exc_info=True,
+            )
+            try:
+                await self.agent_run_storage.mark_failed(request_id, str(e))
+            except Exception:
+                pass
+            raise
+
+    async def generate_poll_summary(
+        self,
+        poll_id: UUID,
+        chat_id: UUID,
+        responder_id: UUID,
+    ) -> Message:
+        """Build transcript from chat.messages, call poll_summarizer LLM,
+        write result to poll.summary, mark poll completed, persist
+        'Отчёт сдан, спасибо.' system message in chat.
+
+        Raises RuntimeError on missing dependencies/poll/role/empty LLM output.
+        """
+        if self.task_poll_storage is None:
+            raise RuntimeError("AIService: task_poll_storage not wired")
+
+        poll = await self.task_poll_storage.get_by_id(poll_id)
+        if poll is None:
+            raise RuntimeError(f"poll {poll_id} not found")
+
+        role = await self.role_storage.get_by_code(
+            POLL_SUMMARIZER_ROLE_CODE, RUGPT_SYSTEM_ORG_ID,
+        )
+        if role is None:
+            raise RuntimeError(
+                f"role '{POLL_SUMMARIZER_ROLE_CODE}' not found "
+                f"(did migration 029 run?)"
+            )
+
+        # Explicit large limit: default is 50 with ORDER BY created_at DESC,
+        # which would silently drop the *oldest* messages — losing the AI greeting +
+        # task list at the top of the dialog and skewing the summary. 500 is far
+        # above realistic poll dialog length (~5-30 turns).
+        messages = await self.message_storage.list_by_chat(chat_id, limit=500)
+        transcript_lines = []
+        for m in messages:
+            sender_type_value = (
+                m.sender_type.value if hasattr(m.sender_type, "value") else m.sender_type
+            )
+            role_label = "USER" if sender_type_value == "user" else "ASSISTANT"
+            transcript_lines.append(f"{role_label}: {m.content}")
+        transcript = "\n".join(transcript_lines) if transcript_lines else "(пусто)"
+
+        user_input = (
+            f"Транскрипт диалога:\n\n{transcript}\n\n"
+            f"Извлеки сводку по структуре, описанной в системном промпте."
+        )
+
+        result = await self.agent_executor.execute(
+            role=role,
+            messages=[{"role": "user", "content": user_input}],
+            temperature=0.3,
+            max_tokens=2048,
+            user_id=poll.assignee_user_id,
+        )
+
+        if not (result and result.content and result.content.strip()):
+            raise RuntimeError("agent_executor returned empty content")
+
+        summary_text = result.content.strip()
+
+        # Sequential UPDATE pair. If failure between — handler marks agent_run failed,
+        # Kafka redelivery will retry idempotently (CAS pending->running guards re-runs).
+        await self.task_poll_storage.update_summary(poll_id, summary_text)
+        # update_status sets status='completed' and stamps completed_at internally.
+        await self.task_poll_storage.update_status(poll_id, "completed")
+
+        sys_message = Message(
+            chat_id=chat_id,
+            sender_id=responder_id,
+            sender_type=SenderType.AI_ROLE,
+            content="Отчёт сдан, спасибо.",
+            ai_is_valid=True,
+        )
+        return await self.message_storage.create(sys_message)
+
+    async def enqueue_poll_summary(
+        self,
+        poll_id: UUID,
+        chat_id: UUID,
+        responder_id: UUID,
+    ) -> UUID:
+        """Create AgentRun(pending) and publish kind='poll_summary' to agent.requests.
+
+        Returns request_id, or raises if Kafka publish failed (after best-effort
+        mark_failed on the AgentRun row).
+
+        Note: differs from `_enqueue_agent_run` which returns None on failure —
+        poll-flow must fail loudly because there is no user-message fallback path.
+        """
+        if self.agent_run_storage is None or self.kafka_producer is None:
+            raise RuntimeError("AIService: agent_run_storage / kafka_producer not wired")
+
+        request_id = uuid4()
+        # AgentRun has request_id (PK), chat_id, status — and optional fields for
+        # the legacy mention path (user_message_id / triggering_user_id / role_code).
+        # For poll_summary there is no triggering user-message; we record responder
+        # as triggering_user_id for traceability and stamp role_code so logs/metrics
+        # can split by kind without inspecting the Kafka payload.
+        agent_run = AgentRun(
+            request_id=request_id,
+            chat_id=chat_id,
+            triggering_user_id=responder_id,
+            role_code=POLL_SUMMARIZER_ROLE_CODE,
+            status="pending",
+        )
+        try:
+            await self.agent_run_storage.create(agent_run)
+            await self.kafka_producer.send(
+                Config.KAFKA_TOPIC_AGENT_REQUESTS,
+                {
+                    "request_id": str(request_id),
+                    "chat_id": str(chat_id),
+                    "responder_id": str(responder_id),
+                    "kind": "poll_summary",
+                    "poll_id": str(poll_id),
+                },
+                key=str(chat_id),
+            )
+            return request_id
+        except Exception as e:
+            logger.error(
+                f"enqueue_poll_summary: failed for poll={poll_id}: {e}",
+                exc_info=True,
+            )
+            try:
+                await self.agent_run_storage.mark_failed(request_id, str(e))
+            except Exception:
+                pass
+            raise
 
     async def close(self):
         """No LLM client to close — inference goes through AgentExecutor which is owned by EngineService."""

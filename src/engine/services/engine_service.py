@@ -297,6 +297,10 @@ class EngineService:
         )
         self.agent_executor.memory_service = self.memory_service
         self.task_report_service.agent_executor = self.agent_executor
+        # Wire chat/message storage so TaskReportService can fall back to raw
+        # transcript when an expired poll has no AI-generated summary.
+        self.task_report_service.chat_storage = self.chat_storage
+        self.task_report_service.message_storage = self.message_storage
 
         # Initialize scheduler (started in initialize(), stopped in close())
         self.scheduler_service = SchedulerService(
@@ -326,7 +330,25 @@ class EngineService:
             kafka_producer=self.kafka_producer,
             support_ticket_storage=self.support_ticket_storage,
             support_ticket_event_storage=self.support_ticket_event_storage,
+            task_poll_storage=self.task_poll_storage,
+            task_storage=self.task_storage,
         )
+
+        # Wire poll-chat + AI deps into TaskPollService (post-construction —
+        # AIService and ChatService are constructed after TaskPollService to
+        # avoid circular dependency at __init__ time).
+        self.task_poll_service.chat_service = self.chat_service
+        self.task_poll_service.ai_service = self.ai_service
+        self.task_poll_service.user_storage = self.user_storage
+
+        # Wire poll-retry deps into SchedulerService (post-construction —
+        # AIService is constructed after SchedulerService for the same reason).
+        # Used by SchedulerService._retry_stuck_poll_initials.
+        self.scheduler_service.chat_storage = self.chat_storage
+        self.scheduler_service.message_storage = self.message_storage
+        self.scheduler_service.agent_run_storage = self.agent_run_storage
+        self.scheduler_service.ai_service = self.ai_service
+        self.scheduler_service.in_app_notification_service = self.in_app_notification_service
 
         # Kafka consumer for agent.requests topic (async inference).
         # Created here; started in initialize() after storages are connected.

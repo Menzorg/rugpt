@@ -149,6 +149,21 @@ class MessageStorage(BaseStorage):
         row = await self.fetchrow(query, chat_id)
         return row["count"] if row else 0
 
+    async def messages_exist_from_sender(
+        self, chat_id: UUID, sender_id: UUID,
+    ) -> bool:
+        """True iff at least one non-deleted message from `sender_id` exists in `chat_id`.
+        Used by submit-poll to validate that the assignee actually replied to the AI
+        before allowing summary generation. Cheap: SELECT 1 ... LIMIT 1.
+        """
+        query = (
+            "SELECT 1 FROM messages "
+            "WHERE chat_id = $1 AND sender_id = $2 AND is_deleted = false "
+            "LIMIT 1"
+        )
+        row = await self.fetchrow(query, chat_id, sender_id)
+        return row is not None
+
     def _row_to_message(self, row) -> Message:
         """Convert database row to Message"""
         mentions_data = row["mentions"]

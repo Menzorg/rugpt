@@ -22,17 +22,17 @@ class ChatStorage(BaseStorage):
         query = """
             INSERT INTO chats (
                 id, org_id, type, name, participants, created_by,
-                task_id, project_id, support_ticket_id,
+                task_id, project_id, support_ticket_id, poll_id,
                 is_active, created_at, updated_at, last_message_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             RETURNING *
         """
         row = await self.fetchrow(
             query,
             chat.id, chat.org_id, chat.type.value, chat.name,
             [str(p) for p in chat.participants], chat.created_by,
-            chat.task_id, chat.project_id, chat.support_ticket_id,
+            chat.task_id, chat.project_id, chat.support_ticket_id, chat.poll_id,
             chat.is_active, chat.created_at, chat.updated_at, chat.last_message_at
         )
         return self._row_to_chat(row)
@@ -98,6 +98,27 @@ class ChatStorage(BaseStorage):
             "SELECT * FROM chats WHERE support_ticket_id = $1 LIMIT 1",
             support_ticket_id,
         )
+        return self._row_to_chat(row) if row else None
+
+    async def get_by_poll_id(
+        self, poll_id: UUID, *, active_only: bool = True,
+    ) -> Optional[Chat]:
+        """Find poll-scoped chat by poll_id.
+
+        active_only=True (default): used as idempotent helper for create_poll_chat
+            — skip archived chats from prior poll lifecycles.
+        active_only=False: used by read-only history endpoints — include archived.
+        """
+        if active_only:
+            row = await self.fetchrow(
+                "SELECT * FROM chats WHERE poll_id = $1 AND is_active = true LIMIT 1",
+                poll_id,
+            )
+        else:
+            row = await self.fetchrow(
+                "SELECT * FROM chats WHERE poll_id = $1 LIMIT 1",
+                poll_id,
+            )
         return self._row_to_chat(row) if row else None
 
     async def list_by_org(self, org_id: UUID, active_only: bool = True) -> List[Chat]:
@@ -178,6 +199,7 @@ class ChatStorage(BaseStorage):
         task_id = row["task_id"] if "task_id" in keys else None
         project_id = row["project_id"] if "project_id" in keys else None
         support_ticket_id = row["support_ticket_id"] if "support_ticket_id" in keys else None
+        poll_id = row["poll_id"] if "poll_id" in keys else None
         mem_id = row["mem_id"] if "mem_id" in keys else None
 
         return Chat(
@@ -190,6 +212,7 @@ class ChatStorage(BaseStorage):
             task_id=task_id,
             project_id=project_id,
             support_ticket_id=support_ticket_id,
+            poll_id=poll_id,
             mem_id=mem_id,
             is_active=row["is_active"],
             created_at=row["created_at"],

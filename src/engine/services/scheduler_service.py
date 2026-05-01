@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from .calendar_service import CalendarService
+from ..config import Config
 from ..logging_context import bind_correlation_id, correlation_id_var
 
 if TYPE_CHECKING:
@@ -24,11 +25,21 @@ if TYPE_CHECKING:
     from ..storage.role_storage import RoleStorage
     from ..storage.user_storage import UserStorage
     from ..storage.org_storage import OrgStorage
+    from ..storage.chat_storage import ChatStorage
+    from ..storage.message_storage import MessageStorage
+    from ..storage.agent_run_storage import AgentRunStorage
     from .task_service import TaskService
     from .task_poll_service import TaskPollService
     from .task_report_service import TaskReportService
+    from .ai_service import AIService
+    from .in_app_notification_service import InAppNotificationService
 
 logger = logging.getLogger("rugpt.services.scheduler")
+
+
+# Per-poll cooldown between consecutive poll_initial retry attempts. Spaces
+# out the 3-attempt budget so a transient outage doesn't burn it in 90s.
+POLL_RETRY_COOLDOWN_MINUTES = 5
 
 
 class SchedulerService:
@@ -75,6 +86,15 @@ class SchedulerService:
         self.evening_hours = evening_hours
         self._task: Optional[asyncio.Task] = None
         self._running = False
+
+        # Poll-retry deps — wired post-construction by EngineService (avoids
+        # circular import of AIService / ChatStorage at scheduler init time).
+        # All optional: if any is missing, _retry_stuck_poll_initials is a no-op.
+        self.chat_storage: Optional["ChatStorage"] = None
+        self.message_storage: Optional["MessageStorage"] = None
+        self.agent_run_storage: Optional["AgentRunStorage"] = None
+        self.ai_service: Optional["AIService"] = None
+        self.in_app_notification_service: Optional["InAppNotificationService"] = None
 
     async def start(self):
         """Start the scheduler background task"""
@@ -276,6 +296,13 @@ class SchedulerService:
             except Exception as e:
                 logger.error(f"Poll expiry failed: {e}")
 
+        # Always: retry stuck poll_initial (chat exists but AI never greeted).
+        # Bounded at 3 failures, then writes a fallback message + bell notification.
+        try:
+            await self._retry_stuck_poll_initials()
+        except Exception as e:
+            logger.error(f"Poll-initial retry job failed: {e}")
+
         # Time-sensitive jobs require org_storage for timezone lookup
         if not self.org_storage:
             return
@@ -386,6 +413,150 @@ class SchedulerService:
 
         except Exception as e:
             logger.error(f"Evening reports for org {org_id} failed: {e}")
+
+    # ── Poll-initial retry job ────────────────────────────────────
+
+    async def _retry_stuck_poll_initials(self) -> None:
+        """For each pending poll where chat exists and has 0 messages:
+        if failed agent_runs < 3 AND last failure is older than the cooldown,
+        republish poll_initial via Kafka. If >= 3, persist a template fallback
+        message + in-app notification and stop retrying (the fallback message
+        itself bumps msg_count > 0, so subsequent ticks skip — sentinel-effect).
+
+        Cooldown: a transient LLM/Kafka outage can otherwise burn all 3 retries
+        in 90 seconds (3 ticks × 30s). The per-poll cooldown ensures retries
+        are spaced out so the budget covers ~POLL_RETRY_COOLDOWN × 3 of outage.
+        """
+        # Lazy/local imports to avoid circular dependency at module load.
+        from ..services.ai_service import POLL_INTERVIEWER_ROLE_CODE
+        from ..models.message import Message, SenderType
+
+        # Graceful degradation: if any dep is missing (tests, partial wiring,
+        # KAFKA_ENABLED=false-style bare engines), just bail without raising.
+        if not (
+            self.task_poll_service
+            and getattr(self.task_poll_service, "storage", None)
+            and self.chat_storage
+            and self.message_storage
+            and self.agent_run_storage
+            and self.ai_service
+            and self.user_storage
+            and self.in_app_notification_service
+        ):
+            return
+
+        try:
+            pending_polls = await self.task_poll_service.storage.list_pending_today()
+        except Exception as e:
+            logger.error(
+                f"_retry_stuck_poll_initials: list_pending_today failed: {e}",
+                exc_info=True,
+            )
+            return
+
+        if not pending_polls:
+            return
+
+        # poll_interviewer_ai is invariant across the org's lifetime — resolve
+        # once per tick, not per poll.
+        try:
+            interviewer = await self.user_storage.get_by_username(
+                "poll_interviewer_ai",
+                Config.SYSTEM_ORG_ID,
+            )
+        except Exception as e:
+            logger.error(
+                f"_retry_stuck_poll_initials: get_by_username failed: {e}",
+                exc_info=True,
+            )
+            return
+
+        if interviewer is None:
+            logger.error(
+                "_retry_stuck_poll_initials: poll_interviewer_ai not found "
+                "in system org — cannot retry or write fallback for any poll"
+            )
+            return
+
+        now = datetime.utcnow()
+        cooldown = timedelta(minutes=POLL_RETRY_COOLDOWN_MINUTES)
+
+        for poll in pending_polls:
+            try:
+                chat = await self.chat_storage.get_by_poll_id(poll.id)
+                if chat is None:
+                    # Poll has no chat — Task 10 race-mitigation owns this case;
+                    # the retry job intentionally does not create chats.
+                    continue
+
+                msg_count = await self.message_storage.count_by_chat(chat.id)
+                if msg_count > 0:
+                    # AI already greeted (or fallback already written) — done.
+                    continue
+
+                # role_code is the discriminator for poll_initial agent runs
+                # (no separate `kind` column in agent_runs).
+                failed_count = await self.agent_run_storage.count_failed_by_chat_and_kind(
+                    chat.id, kind=POLL_INTERVIEWER_ROLE_CODE,
+                )
+
+                if failed_count >= 3:
+                    fallback_text = (
+                        "Здравствуйте! Произошла ошибка инициализации опроса. "
+                        "Расскажите про свои активные задачи самостоятельно."
+                    )
+                    await self.message_storage.create(Message(
+                        chat_id=chat.id,
+                        sender_id=interviewer.id,
+                        sender_type=SenderType.AI_ROLE,
+                        content=fallback_text,
+                        # ai_is_valid=True: fallback is operator-blessed (not pending review).
+                        ai_is_valid=True,
+                    ))
+                    await self.in_app_notification_service.create(
+                        user_id=poll.assignee_user_id,
+                        org_id=poll.org_id,
+                        type="system",
+                        title="AI временно недоступен",
+                        content="Сводка опроса будет собрана из вашего диалога.",
+                        reference_type="task_poll",
+                        reference_id=poll.id,
+                    )
+                    logger.warning(
+                        f"_retry_stuck_poll_initials: poll {poll.id} reached max "
+                        f"retries (3); wrote fallback message + bell notification"
+                    )
+                    continue
+
+                # Cooldown gate: if we have a recent failed agent_run,
+                # don't burn the next attempt yet — wait out the outage window.
+                if failed_count > 0:
+                    last_failed = await self.agent_run_storage.last_failed_at(
+                        chat.id, kind=POLL_INTERVIEWER_ROLE_CODE,
+                    )
+                    if last_failed is not None and (now - last_failed) < cooldown:
+                        # Logged at DEBUG to avoid log noise — this is normal
+                        # cooldown behavior.
+                        logger.debug(
+                            f"_retry_stuck_poll_initials: poll={poll.id} chat={chat.id} "
+                            f"in cooldown (last fail {now - last_failed} ago, "
+                            f"cooldown {cooldown}) — skipping"
+                        )
+                        continue
+
+                # Re-enqueue with new request_id (best-effort; Kafka may be down)
+                await self.ai_service.enqueue_poll_initial(
+                    poll.id, chat.id, interviewer.id,
+                )
+                logger.info(
+                    f"_retry_stuck_poll_initials: republished poll_initial "
+                    f"poll={poll.id} chat={chat.id} (attempt {failed_count + 1}/3)"
+                )
+            except Exception as e:
+                logger.error(
+                    f"_retry_stuck_poll_initials: poll {poll.id}: {e}",
+                    exc_info=True,
+                )
 
     @property
     def is_running(self) -> bool:

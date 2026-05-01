@@ -2,15 +2,21 @@
 Agent.requests consumer handler.
 
 Called by KafkaConsumerLoop for each message on `agent.requests`. Pipeline:
- 1. Atomic CAS agent_runs status pending->running (idempotency)
- 2. Load the user message that triggered this run
- 3. Call AIService.generate_response() — the existing synchronous logic
-    that builds context, invokes LangGraph agent, persists AI message
+ 1. Parse payload + dispatch by `kind` (message_reply / poll_initial / poll_summary)
+ 2. Atomic CAS agent_runs status pending->running (idempotency)
+ 3. Branch:
+    - message_reply: load user message, AIService.generate_response()
+    - poll_initial:  AIService.generate_poll_initial(poll_id, chat_id, responder_id)
+    - poll_summary:  AIService.generate_poll_summary(poll_id, chat_id, responder_id)
  4. Mark run as done/failed
  5. Publish the AI message to chat.events so NestJS broadcasts via WS
 
 Designed to be robust to Kafka retries: if the same request_id is redelivered
 after success, mark_running returns False and we skip silently.
+
+Poison message protection: malformed payloads / unknown `kind` / missing
+kind-specific required fields are logged and silently skipped (no raise),
+so Kafka does not loop on garbage.
 """
 from __future__ import annotations
 
@@ -44,44 +50,94 @@ class AgentRequestHandler:
 
     async def __call__(self, payload: dict) -> None:
         """Entry point for KafkaConsumerLoop. Raises on failure to trigger retry."""
+        # --- Parse common fields ---
         try:
             request_id = UUID(payload["request_id"])
             chat_id = UUID(payload["chat_id"])
-            user_message_id = UUID(payload["user_message_id"])
             responder_id = UUID(payload["responder_id"])
-            strip_username = payload.get("strip_username")
-        except (KeyError, ValueError) as e:
+            kind = payload.get("kind", "message_reply")
+        except (KeyError, ValueError, TypeError) as e:
             logger.error(f"Malformed agent.requests payload: {e} payload={payload}")
             return  # don't raise — a bad payload can't be retried
 
-        # Idempotency: atomic CAS pending -> running
+        # --- Validate kind-specific fields BEFORE acquiring agent_run lock ---
+        user_message_id: UUID | None = None
+        strip_username = None
+        poll_id: UUID | None = None
+
+        if kind == "message_reply":
+            user_message_id_raw = payload.get("user_message_id")
+            if not user_message_id_raw:
+                logger.error(
+                    f"message_reply payload missing user_message_id: {payload}"
+                )
+                return
+            try:
+                user_message_id = UUID(user_message_id_raw)
+            except (ValueError, TypeError):
+                logger.error(
+                    f"message_reply payload bad user_message_id: {payload}"
+                )
+                return
+            strip_username = payload.get("strip_username")
+        elif kind in ("poll_initial", "poll_summary"):
+            poll_id_raw = payload.get("poll_id")
+            if not poll_id_raw:
+                logger.error(f"{kind} payload missing poll_id: {payload}")
+                return
+            try:
+                poll_id = UUID(poll_id_raw)
+            except (ValueError, TypeError):
+                logger.error(f"{kind} payload bad poll_id: {payload}")
+                return
+        else:
+            logger.error(f"Unknown kind={kind}, payload={payload}")
+            return
+
+        # --- Idempotency: atomic CAS pending -> running ---
         acquired = await self.agent_run_storage.mark_running(request_id)
         if not acquired:
             existing = await self.agent_run_storage.get(request_id)
             logger.info(
-                f"agent_run {request_id} already status={existing.status if existing else 'missing'}, skipping"
+                f"agent_run {request_id} already status="
+                f"{existing.status if existing else 'missing'}, skipping"
             )
             return
 
         try:
-            # Load the triggering user message
-            user_message = await self.message_storage.get_by_id(user_message_id)
-            if user_message is None:
-                raise RuntimeError(f"user_message {user_message_id} not found")
-
-            # Call existing synchronous generation pipeline — it handles
-            # role resolution, context build, LangGraph run, persistence.
-            ai_message = await self.ai_service.generate_response(
-                message=user_message,
-                responder_id=responder_id,
-                strip_username=strip_username,
-            )
+            # --- Dispatch ---
+            if kind == "message_reply":
+                user_message = await self.message_storage.get_by_id(user_message_id)
+                if user_message is None:
+                    raise RuntimeError(f"user_message {user_message_id} not found")
+                ai_message = await self.ai_service.generate_response(
+                    message=user_message,
+                    responder_id=responder_id,
+                    strip_username=strip_username,
+                )
+            elif kind == "poll_initial":
+                ai_message = await self.ai_service.generate_poll_initial(
+                    poll_id=poll_id,
+                    chat_id=chat_id,
+                    responder_id=responder_id,
+                )
+            elif kind == "poll_summary":
+                ai_message = await self.ai_service.generate_poll_summary(
+                    poll_id=poll_id,
+                    chat_id=chat_id,
+                    responder_id=responder_id,
+                )
+            else:
+                # Unreachable — guarded above, but keep defensively.
+                raise RuntimeError(f"unreachable kind={kind}")
 
             if ai_message is None:
                 await self.agent_run_storage.mark_failed(
-                    request_id, "generate_response returned None",
+                    request_id, f"{kind}: returned None",
                 )
-                logger.warning(f"agent_run {request_id}: generate_response returned None")
+                logger.warning(
+                    f"agent_run {request_id} kind={kind}: returned None"
+                )
                 return
 
             await self.agent_run_storage.mark_done(request_id, ai_message.id)
@@ -100,12 +156,12 @@ class AgentRequestHandler:
                 logger.error(f"Failed to publish AI message to chat.events: {e}")
 
             logger.info(
-                f"agent_run {request_id} done: ai_message={ai_message.id}"
+                f"agent_run {request_id} kind={kind} done: ai_message={ai_message.id}"
             )
 
         except Exception as e:
             logger.error(
-                f"agent_run {request_id} failed: {e}", exc_info=True,
+                f"agent_run {request_id} kind={kind} failed: {e}", exc_info=True,
             )
             try:
                 await self.agent_run_storage.mark_failed(request_id, str(e))

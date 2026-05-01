@@ -26,6 +26,8 @@ class TaskPoll:
     created_at: datetime = field(default_factory=datetime.utcnow)
     completed_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
+    summary: Optional[str] = None                    # AI-generated markdown summary after dialog completion
+    task_ids: List[UUID] = field(default_factory=list)  # Snapshot of UUIDs of tasks polled (frozen on poll creation)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for API response"""
@@ -39,4 +41,6 @@ class TaskPoll:
             "created_at": self.created_at.isoformat(),
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "summary": self.summary,
+            "task_ids": [str(x) for x in self.task_ids],
         }
