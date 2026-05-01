@@ -19,6 +19,7 @@ from langchain_core.tools import StructuredTool, InjectedToolArg
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("rugpt.agents.tools.user")
+_TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _MAX_RESULTS = 60
 
@@ -127,8 +128,8 @@ def create_user_tools(user_storage, role_storage, department_service):
             more = f" (showing first {_MAX_RESULTS})" if total > _MAX_RESULTS else ""
             return f"User search results ({total} total{more}):\n" + "\n".join(lines)
         except Exception as e:
-            logger.error(f"user_search failed: {e}")
-            return f"Failed to search users: {e}"
+            logger.error(f"user_search failed: {e}", exc_info=True)
+            return _TOOL_ERROR_RESULT
 
     search_tool = StructuredTool.from_function(
         coroutine=_user_search_async,

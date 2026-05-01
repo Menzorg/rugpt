@@ -15,6 +15,7 @@ from langchain_core.tools import tool
 from ...config import Config
 
 logger = logging.getLogger("rugpt.agents.tools.web")
+_TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 _MODEL = "sonar"
@@ -58,28 +59,17 @@ async def web_search(query: str) -> str:
             )
             response.raise_for_status()
             data = response.json()
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Perplexity HTTP {e.response.status_code}: {e.response.text[:200]}")
-        return f"Ошибка веб-поиска: код {e.response.status_code}."
-    except httpx.RequestError as e:
-        logger.error(f"Perplexity request error: {e}")
-        return "Не удалось достучаться до Perplexity (сетевая ошибка)."
-    except Exception as e:
-        logger.exception(f"Perplexity unexpected error: {e}")
-        return f"Непредвиденная ошибка веб-поиска: {e}"
 
-    try:
         answer = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError):
-        logger.error(f"Perplexity returned unexpected shape: {data}")
-        return "Perplexity вернул ответ в непонятном формате."
+        citations = data.get("citations") or []
+        if citations:
+            sources_block = "\n\nИсточники:\n" + "\n".join(
+                f"[{i}] {url}" for i, url in enumerate(citations, 1)
+            )
+        else:
+            sources_block = ""
 
-    citations = data.get("citations") or []
-    if citations:
-        sources_block = "\n\nИсточники:\n" + "\n".join(
-            f"[{i}] {url}" for i, url in enumerate(citations, 1)
-        )
-    else:
-        sources_block = ""
-
-    return answer + sources_block
+        return answer + sources_block
+    except Exception as e:
+        logger.error(f"web_search failed: {e}", exc_info=True)
+        return _TOOL_ERROR_RESULT

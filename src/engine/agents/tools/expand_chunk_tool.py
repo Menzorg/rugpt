@@ -19,6 +19,7 @@ from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
 
 logger = logging.getLogger("rugpt.agents.tools.expand_chunk")
+_TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 
 class ExpandChunkInput(BaseModel):
@@ -55,41 +56,45 @@ def create_expand_chunk_tool(
             file_id: Document ID of the source file.
             chunk_index: Index of the center chunk inside the file.
         """
-        configurable = (config or {}).get("configurable", {})
-        org_id = configurable.get("org_id", "")
-        user_id = configurable.get("user_id", "")
+        try:
+            configurable = (config or {}).get("configurable", {})
+            org_id = configurable.get("org_id", "")
+            user_id = configurable.get("user_id", "")
 
-        logger.info(
-            "expand_chunk called: file_id=%s, chunk_index=%d, org_id=%s, user_id=%s",
-            file_id, chunk_index, org_id, user_id,
-        )
+            logger.info(
+                "expand_chunk called: file_id=%s, chunk_index=%d, org_id=%s, user_id=%s",
+                file_id, chunk_index, org_id, user_id,
+            )
 
-        if not org_id or not user_id:
-            logger.error("expand_chunk: missing org_id or user_id in config")
-            return "Expand chunk unavailable: missing context."
+            if not org_id or not user_id:
+                logger.error("expand_chunk: missing org_id or user_id in config")
+                return "Expand chunk unavailable: missing context."
 
-        if not await _can_access_file(file_id, org_id, user_id):
-            return "You don't have access to that document."
+            if not await _can_access_file(file_id, org_id, user_id):
+                return "You don't have access to that document."
 
-        doc = await rag_service.get_doc_by_id(file_id)
-        if doc is None:
-            logger.info("expand_chunk: document not found for file_id='%s'", file_id)
-            return "Document not found."
+            doc = await rag_service.get_doc_by_id(file_id)
+            if doc is None:
+                logger.info("expand_chunk: document not found for file_id='%s'", file_id)
+                return "Document not found."
 
-        chunks = await rag_service.get_expanded_context_by_index(
-            file_id=file_id,
-            chunk_index=chunk_index,
-        )
+            chunks = await rag_service.get_expanded_context_by_index(
+                file_id=file_id,
+                chunk_index=chunk_index,
+            )
 
-        if not chunks:
-            return f"No chunk found in '{doc.doc_title or file_id}' for chunk_index={chunk_index}."
+            if not chunks:
+                return f"No chunk found in '{doc.doc_title or file_id}' for chunk_index={chunk_index}."
 
-        lines = [f"## {doc.doc_title or file_id}", f"Center chunk index: {chunk_index}"]
-        for chunk in chunks:
-            idx = chunk.chunk_index if chunk.chunk_index is not None else "?"
-            lines.append(f"\n[chunk {idx}] {chunk.chunk_text}")
+            lines = [f"## {doc.doc_title or file_id}", f"Center chunk index: {chunk_index}"]
+            for chunk in chunks:
+                idx = chunk.chunk_index if chunk.chunk_index is not None else "?"
+                lines.append(f"\n[chunk {idx}] {chunk.chunk_text}")
 
-        return "\n".join(lines)
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"expand_chunk failed: {e}", exc_info=True)
+            return _TOOL_ERROR_RESULT
 
     return StructuredTool.from_function(
         coroutine=_expand_chunk_async,

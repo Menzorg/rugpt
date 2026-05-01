@@ -17,6 +17,7 @@ from langchain_core.tools import StructuredTool, InjectedToolArg
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("rugpt.agents.tools.calendar")
+_TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 
 # ============================================
@@ -79,8 +80,8 @@ def create_calendar_tools(
             )
             return f"Calendar event '{title}' created (id={event.id})"
         except Exception as e:
-            logger.error(f"calendar_create failed: {e}")
-            return f"Failed to create event: {e}"
+            logger.error(f"calendar_create failed: {e}", exc_info=True)
+            return _TOOL_ERROR_RESULT
 
     async def _calendar_query_async(
         query: str = "",
@@ -105,8 +106,8 @@ def create_calendar_tools(
             lines = [f"- {e.title} (at {e.next_trigger_at})" for e in events[:10]]
             return "Upcoming events:\n" + "\n".join(lines)
         except Exception as e:
-            logger.error(f"calendar_query failed: {e}")
-            return f"Failed to query events: {e}"
+            logger.error(f"calendar_query failed: {e}", exc_info=True)
+            return _TOOL_ERROR_RESULT
 
     create_tool = StructuredTool.from_function(
         coroutine=_calendar_create_async,
