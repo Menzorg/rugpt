@@ -430,7 +430,9 @@ class RAGService:
         tsv_weight: Optional[float] = 1,
     ) -> list[ChunkSearchResult]:
         """Return top-k concrete matches inside one file."""
-        query_embedding = self._embed_query(query)
+        qwen_query = ("Instruct: Given a web search query, retrieve relevant passages that answer the query"
+                f"Query: {query}")
+        query_embedding = self._embed_query(qwen_query)
         return await self._store.call_search_concrete_chunks(
             file_id=file_id,
             query=query,
