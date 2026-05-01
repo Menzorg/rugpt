@@ -32,6 +32,7 @@ class Task:
     proposed_deadline: Optional[datetime] = None
     proposed_deadline_by: Optional[UUID] = None
     project_id: Optional[UUID] = None
+    priority: int = 1
     is_active: bool = True
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
@@ -51,6 +52,7 @@ class Task:
             "proposed_deadline": self.proposed_deadline.isoformat() if self.proposed_deadline else None,
             "proposed_deadline_by": str(self.proposed_deadline_by) if self.proposed_deadline_by else None,
             "project_id": str(self.project_id) if self.project_id else None,
+            "priority": self.priority,
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),

@@ -71,6 +71,7 @@ def create_task_tools(
         assignee_user_id: str,
         deadline: Optional[str] = "",
         description: Optional[str] = "",
+        priority: Optional[int] = None,
         config: Annotated[RunnableConfig, InjectedToolArg] = None,
     ) -> str:
         """Create a task for an employee. Use when a manager assigns work via chat.
@@ -79,9 +80,13 @@ def create_task_tools(
             assignee_user_id: UUID of the employee
             description: Task description
             deadline: Deadline in ISO format
+            priority: Task priority — 1 (Обычно), 2 (Важно), 3 (Срочно).
+                ALWAYS ask the user which priority they want before creating the task.
+                Do not guess. If the user has not specified, ask explicitly.
         """
         logger.info(
-            f"tool task_create: title={title!r} assignee={assignee_user_id} deadline={deadline!r}"
+            f"tool task_create: title={title!r} assignee={assignee_user_id} "
+            f"deadline={deadline!r} priority={priority}"
         )
         try:
             configurable = (config or {}).get("configurable", {})
@@ -107,6 +112,9 @@ def create_task_tools(
                 if not visible:
                     return "Cannot assign task: user not visible to you."
 
+            if priority is not None and priority not in (1, 2, 3):
+                return "priority must be 1 (Обычно), 2 (Важно) or 3 (Срочно)"
+
             task = await task_service.create(
                 org_id=task_org_id,
                 title=title,
@@ -114,6 +122,7 @@ def create_task_tools(
                 assignee_user_id=assignee_uuid,
                 deadline=dl,
                 created_by_user_id=UUID(user_id) if user_id else None,
+                priority=priority,
             )
             return f"Task '{title}' created (id={task.id})"
         except Exception as e:

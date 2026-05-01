@@ -12,6 +12,7 @@ from uuid import UUID
 from ..models.task import Task, VALID_STATUSES
 from ..models.user import User
 from ..storage.task_storage import TaskStorage
+from ..storage.user_storage import UserStorage
 from .in_app_notification_service import InAppNotificationService
 
 if TYPE_CHECKING:
@@ -49,6 +50,7 @@ class TaskService:
         task_event_service: Optional["TaskEventService"] = None,
         project_service: Optional["ProjectService"] = None,
         task_notification_service: Optional["TaskNotificationService"] = None,
+        user_storage: Optional[UserStorage] = None,
     ):
         self.storage = storage
         self.notification_service = in_app_notification_service
@@ -56,6 +58,7 @@ class TaskService:
         self.task_event_service = task_event_service
         self.project_service = project_service
         self.task_notification_service = task_notification_service
+        self.user_storage = user_storage
 
     async def _notify(self, method_name: str, *args, **kwargs) -> None:
         """Best-effort PM notification via TaskNotificationService. Silent no-op if absent."""
@@ -68,6 +71,23 @@ class TaskService:
             logger.error(f"PM notify {method_name} failed: {e}")
 
     # --- Internal helpers ---
+
+    async def _default_priority_for_creator(self, creator_id: Optional[UUID]) -> int:
+        """Derive default priority from creator's role: admin=3, head=2, regular=1.
+        Returns 1 if creator unknown or user_storage not wired."""
+        if creator_id is None or self.user_storage is None:
+            return 1
+        try:
+            user = await self.user_storage.get_by_id(creator_id)
+        except Exception as e:
+            logger.warning(f"Failed to load creator {creator_id} for priority default: {e}")
+            return 1
+        if user is None:
+            return 1
+        return compute_priority({
+            "is_admin": getattr(user, "is_admin", False),
+            "is_head": getattr(user, "is_head", False),
+        })
 
     async def _record_event(
         self,
@@ -95,10 +115,17 @@ class TaskService:
         deadline: Optional[datetime] = None,
         created_by_user_id: Optional[UUID] = None,
         project_id: Optional[UUID] = None,
+        priority: Optional[int] = None,
     ) -> Task:
-        """Create a new task, auto-create its chat, link it to a project chat, notify assignee."""
+        """Create a new task, auto-create its chat, link it to a project chat, notify assignee.
+
+        priority: 1..3. If None, derived from creator's role (admin=3, head=2, regular=1).
+        """
         if not title:
             raise ValueError("Task title is required")
+
+        if priority is not None and priority not in (1, 2, 3):
+            raise ValueError("priority must be 1, 2 or 3")
 
         # Multi-tenancy guard: project must belong to same org and be active.
         if project_id is not None:
@@ -110,6 +137,10 @@ class TaskService:
                     f"Project {project_id} is not available in this organization"
                 )
 
+        # Default priority by creator role when not explicitly chosen.
+        if priority is None:
+            priority = await self._default_priority_for_creator(created_by_user_id)
+
         task = Task(
             org_id=org_id,
             title=title,
@@ -118,6 +149,7 @@ class TaskService:
             created_by_user_id=created_by_user_id,
             deadline=deadline,
             project_id=project_id,
+            priority=priority,
         )
         created = await self.storage.create(task)
         logger.info(
@@ -235,13 +267,10 @@ class TaskService:
         include_done: bool = False,
     ) -> List[dict]:
         """
-        Tasks where user is assignee. Sorted by priority (creator role) + deadline.
-        Returns list of dicts with `task`, `creator`, `priority` keys.
+        Tasks where user is assignee. Sorted by stored priority + deadline.
+        Returns list of dicts with `task`, `creator` keys; priority is part of task.to_dict().
         """
-        rows = await self.storage.list_by_assignee_with_priority(user_id, include_done)
-        for entry in rows:
-            entry["priority"] = compute_priority(entry["creator"])
-        return rows
+        return await self.storage.list_by_assignee_with_priority(user_id, include_done)
 
     async def list_tasks_created_by(
         self,
@@ -250,12 +279,9 @@ class TaskService:
     ) -> List[dict]:
         """
         Tasks where user is creator. Includes assignee info.
-        Returns list of dicts with `task`, `creator`, `assignee`, `priority` keys.
+        Returns list of dicts with `task`, `creator`, `assignee` keys.
         """
-        rows = await self.storage.list_by_creator_with_assignee(user_id, include_done)
-        for entry in rows:
-            entry["priority"] = compute_priority(entry["creator"])
-        return rows
+        return await self.storage.list_by_creator_with_assignee(user_id, include_done)
 
     async def list_archived(
         self,
@@ -265,13 +291,9 @@ class TaskService:
     ) -> List[dict]:
         """
         Archived tasks for a user: done OR cancelled (is_active=false), where
-        the user was creator or assignee. Same dict shape as list_tasks_created_by
-        (`task`, `creator`, `assignee`, `priority`).
+        the user was creator or assignee. Same dict shape as list_tasks_created_by.
         """
-        rows = await self.storage.list_archived_for_user(user_id, org_id, limit)
-        for entry in rows:
-            entry["priority"] = compute_priority(entry["creator"])
-        return rows
+        return await self.storage.list_archived_for_user(user_id, org_id, limit)
 
     async def update_status(
         self,
@@ -303,20 +325,25 @@ class TaskService:
         assignee_user_id: Optional[UUID] = None,
         deadline: Optional[datetime] = None,
         project_id=_UNSET,  # sentinel: _UNSET = no change, None = detach, UUID = set
+        priority: Optional[int] = None,
         actor_user_id: Optional[UUID] = None,
     ) -> Optional[Task]:
         """Update task fields. Status changes go through dedicated methods.
 
         project_id uses sentinel semantics so None can explicitly detach.
-        When assignee or project_id changes, chat membership is recomputed
-        and corresponding task_events are written.
+        When assignee, project_id or priority changes, chat membership is
+        recomputed (assignee/project) and corresponding task_events are written.
         """
+        if priority is not None and priority not in (1, 2, 3):
+            raise ValueError("priority must be 1, 2 or 3")
+
         task = await self.storage.get_by_id(task_id)
         if not task:
             return None
 
         old_assignee = task.assignee_user_id
         old_project = task.project_id
+        old_priority = task.priority
 
         if title is not None:
             task.title = title
@@ -335,6 +362,8 @@ class TaskService:
                         f"Project {project_id} is not available in this organization"
                     )
             task.project_id = project_id
+        if priority is not None:
+            task.priority = priority
 
         updated = await self.storage.update(task)
 
@@ -372,6 +401,14 @@ class TaskService:
                     "from": str(old_project) if old_project else None,
                     "to": str(project_id) if project_id else None,
                 },
+            )
+
+        if priority is not None and priority != old_priority:
+            await self._record_event(
+                task_id=updated.id,
+                actor_user_id=actor_user_id,
+                event_type="priority_changed",
+                payload={"from": old_priority, "to": priority},
             )
 
         return updated

@@ -164,6 +164,7 @@ class EngineService:
             task_event_service=self.task_event_service,
             project_service=self.project_service,
             task_notification_service=self.task_notification_service,
+            user_storage=self.user_storage,
         )
 
         # Reference service (parallel to mentions, resolves !<uuid>/!!<uuid> in messages)

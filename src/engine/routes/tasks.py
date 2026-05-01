@@ -25,6 +25,7 @@ class CreateTaskRequest(BaseModel):
     assignee_user_id: str
     deadline: Optional[str] = None  # ISO 8601
     project_id: Optional[str] = None
+    priority: Optional[int] = None  # 1..3; default derived from creator's role
 
 
 class UpdateTaskRequest(BaseModel):
@@ -36,6 +37,7 @@ class UpdateTaskRequest(BaseModel):
     # Pydantic v1/v2 both accept missing keys as None -- to distinguish, we use a marker field.
     project_id: Optional[str] = None
     detach_project: bool = False
+    priority: Optional[int] = None  # 1..3
 
 
 class DeadlineRequest(BaseModel):
@@ -51,9 +53,8 @@ class RejectRequest(BaseModel):
 
 
 def _serialize_entry(entry: dict) -> dict:
-    """Serialize a {task, creator?, assignee?, priority} entry to dict for API response."""
+    """Serialize a {task, creator?, assignee?} entry to dict for API response."""
     out = entry["task"].to_dict()
-    out["priority"] = entry.get("priority", 1)
     if entry.get("creator"):
         out["creator"] = {
             "id": str(entry["creator"]["id"]),
@@ -206,6 +207,9 @@ async def create_task(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid project_id")
 
+    if request.priority is not None and request.priority not in (1, 2, 3):
+        raise HTTPException(status_code=400, detail="priority must be 1, 2 or 3")
+
     try:
         task = await engine.task_service.create(
             org_id=current_user["org_id"],
@@ -215,6 +219,7 @@ async def create_task(
             deadline=deadline,
             created_by_user_id=current_user["user_id"],
             project_id=project_uuid,
+            priority=request.priority,
         )
         return task.to_dict()
     except ValueError as e:
@@ -261,12 +266,20 @@ async def update_task(
     if task.org_id != current_user["org_id"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Only creator can update non-status fields (or admin)
-    if task.created_by_user_id is not None:
-        if task.created_by_user_id != current_user["user_id"] and not current_user.get("is_admin"):
-            raise HTTPException(status_code=403, detail="Only creator can update task")
-    elif not current_user.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Only admin can update legacy task")
+    # Only the creator can edit a task. Admins do not get an override —
+    # editing other people's tasks isn't part of the admin role.
+    # Legacy tasks without a creator are not editable (status transitions still work).
+    if task.created_by_user_id is None:
+        raise HTTPException(status_code=403, detail="Legacy task without creator cannot be edited")
+    if task.created_by_user_id != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="Only creator can update task")
+
+    # Lock editing on terminal statuses — done/cancelled tasks are historical.
+    if task.status in ("done", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot edit task with status '{task.status}'",
+        )
 
     assignee_uuid = None
     if request.assignee_user_id:
@@ -298,6 +311,9 @@ async def update_task(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid project_id")
 
+    if request.priority is not None and request.priority not in (1, 2, 3):
+        raise HTTPException(status_code=400, detail="priority must be 1, 2 or 3")
+
     try:
         updated = await engine.task_service.update(
             task_id=task_uuid,
@@ -306,6 +322,7 @@ async def update_task(
             assignee_user_id=assignee_uuid,
             deadline=deadline,
             project_id=project_kwarg,
+            priority=request.priority,
             actor_user_id=current_user["user_id"],
         )
         return updated.to_dict()
@@ -315,7 +332,7 @@ async def update_task(
 
 @router.delete("/{task_id}")
 async def deactivate_task(task_id: str, current_user: dict = Depends(get_current_user)):
-    """Soft-delete a task (only creator or admin)"""
+    """Soft-delete a task (only creator)."""
     engine = get_engine_service()
     try:
         task_uuid = UUID(task_id)
@@ -327,7 +344,9 @@ async def deactivate_task(task_id: str, current_user: dict = Depends(get_current
         raise HTTPException(status_code=404, detail="Task not found")
     if task.org_id != current_user["org_id"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    if task.created_by_user_id is not None and task.created_by_user_id != current_user["user_id"] and not current_user.get("is_admin"):
+    if task.created_by_user_id is None:
+        raise HTTPException(status_code=403, detail="Legacy task without creator cannot be deleted")
+    if task.created_by_user_id != current_user["user_id"]:
         raise HTTPException(status_code=403, detail="Only creator can delete task")
 
     user = await _load_user(engine, current_user["user_id"])

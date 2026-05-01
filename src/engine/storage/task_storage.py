@@ -23,9 +23,9 @@ class TaskStorage(BaseStorage):
                 (id, org_id, title, description, status,
                  assignee_user_id, created_by_user_id, deadline,
                  awaiting_review_at, proposed_deadline, proposed_deadline_by,
-                 project_id,
+                 project_id, priority,
                  is_active, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             RETURNING *
         """
         row = await self.fetchrow(
@@ -33,7 +33,7 @@ class TaskStorage(BaseStorage):
             task.id, task.org_id, task.title, task.description, task.status,
             task.assignee_user_id, task.created_by_user_id, task.deadline,
             task.awaiting_review_at, task.proposed_deadline, task.proposed_deadline_by,
-            task.project_id,
+            task.project_id, task.priority,
             task.is_active, task.created_at, task.updated_at,
         )
         return self._row_to_task(row)
@@ -110,11 +110,7 @@ class TaskStorage(BaseStorage):
             LEFT JOIN users u ON u.id = t.created_by_user_id
             WHERE t.assignee_user_id = $1 AND t.is_active = true {done_filter}
             ORDER BY
-                CASE
-                    WHEN u.is_admin THEN 3
-                    WHEN u.is_head THEN 2
-                    ELSE 1
-                END DESC,
+                t.priority DESC,
                 t.deadline ASC NULLS LAST,
                 t.created_at DESC
         """
@@ -284,7 +280,8 @@ class TaskStorage(BaseStorage):
                 proposed_deadline = $8,
                 proposed_deadline_by = $9,
                 project_id = $10,
-                updated_at = $11
+                priority = $11,
+                updated_at = $12
             WHERE id = $1 AND is_active = true
             RETURNING *
         """
@@ -293,7 +290,7 @@ class TaskStorage(BaseStorage):
             task.id, task.title, task.description, task.status,
             task.assignee_user_id, task.deadline,
             task.awaiting_review_at, task.proposed_deadline, task.proposed_deadline_by,
-            task.project_id,
+            task.project_id, task.priority,
             task.updated_at,
         )
         return self._row_to_task(row)
@@ -393,6 +390,7 @@ class TaskStorage(BaseStorage):
         """Map asyncpg Record to Task"""
         keys = set(row.keys())
         project_id = row["project_id"] if "project_id" in keys else None
+        priority = row["priority"] if "priority" in keys else 1
         return Task(
             id=row["id"],
             org_id=row["org_id"],
@@ -406,6 +404,7 @@ class TaskStorage(BaseStorage):
             proposed_deadline=row["proposed_deadline"],
             proposed_deadline_by=row["proposed_deadline_by"],
             project_id=project_id,
+            priority=priority,
             is_active=row["is_active"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
