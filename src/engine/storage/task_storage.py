@@ -95,18 +95,24 @@ class TaskStorage(BaseStorage):
         include_done: bool = False,
     ) -> List[dict]:
         """
-        Tasks where user is assignee, sorted by priority (creator role) then deadline.
-        Returns list of dicts {task, creator}.
+        Tasks where user is assignee, sorted by stored priority then deadline.
+        Returns list of dicts {task, creator, assignee}. Assignee is included
+        for completeness — UI on the "my" tab still shows the assignee column
+        (the user themselves), so the field must be populated.
         """
         done_filter = "" if include_done else "AND t.status != 'done'"
         query = f"""
             SELECT
                 t.*,
+                a.id AS assignee_id,
+                a.name AS assignee_name,
+                a.is_head AS assignee_is_head,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
+            LEFT JOIN users a ON a.id = t.assignee_user_id
             LEFT JOIN users u ON u.id = t.created_by_user_id
             WHERE t.assignee_user_id = $1 AND t.is_active = true {done_filter}
             ORDER BY
@@ -115,7 +121,16 @@ class TaskStorage(BaseStorage):
                 t.created_at DESC
         """
         rows = await self.fetch(query, assignee_user_id)
-        return [self._row_with_creator(r) for r in rows]
+        result = []
+        for r in rows:
+            entry = self._row_with_creator(r)
+            entry["assignee"] = {
+                "id": r["assignee_id"],
+                "name": r["assignee_name"],
+                "is_head": r["assignee_is_head"],
+            } if r["assignee_id"] else None
+            result.append(entry)
+        return result
 
     async def list_by_creator_with_assignee(
         self,
@@ -350,6 +365,121 @@ class TaskStorage(BaseStorage):
             project_id,
         )
         return int(value or 0)
+
+    async def user_has_any_active_task_in_project(
+        self, project_id: UUID, user_id: UUID,
+    ) -> bool:
+        """
+        Returns True if user is creator, assignee, or participant of at least
+        one active task in the given project. Used to decide if user should
+        be removed from project chat after losing one role on one task.
+        """
+        value = await self.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM tasks t
+                WHERE t.project_id = $1
+                  AND t.is_active = true
+                  AND (
+                    t.assignee_user_id = $2
+                    OR t.created_by_user_id = $2
+                    OR EXISTS (
+                        SELECT 1 FROM task_participants tp
+                        WHERE tp.task_id = t.id AND tp.user_id = $2
+                    )
+                  )
+            )
+            """,
+            project_id, user_id,
+        )
+        return bool(value)
+
+    async def list_by_participant_with_priority(
+        self,
+        user_id: UUID,
+        include_done: bool = False,
+    ) -> List[dict]:
+        """
+        Tasks where user is in task_participants. Sorted like /my (priority + deadline).
+        Returns list of dicts {task, creator, assignee} — same shape as list_by_assignee_with_priority.
+        """
+        done_filter = "" if include_done else "AND t.status != 'done'"
+        query = f"""
+            SELECT
+                t.*,
+                a.id AS assignee_id,
+                a.name AS assignee_name,
+                a.is_head AS assignee_is_head,
+                u.is_admin AS creator_is_admin,
+                u.is_head AS creator_is_head,
+                u.id AS creator_id,
+                u.name AS creator_name
+            FROM tasks t
+            JOIN task_participants tp ON tp.task_id = t.id
+            LEFT JOIN users a ON a.id = t.assignee_user_id
+            LEFT JOIN users u ON u.id = t.created_by_user_id
+            WHERE tp.user_id = $1 AND t.is_active = true {done_filter}
+            ORDER BY
+                t.priority DESC,
+                t.deadline ASC NULLS LAST,
+                t.created_at DESC
+        """
+        rows = await self.fetch(query, user_id)
+        result = []
+        for r in rows:
+            entry = self._row_with_creator(r)
+            entry["assignee"] = {
+                "id": r["assignee_id"],
+                "name": r["assignee_name"],
+                "is_head": r["assignee_is_head"],
+            } if r["assignee_id"] else None
+            result.append(entry)
+        return result
+
+    async def list_done_for_user(self, user_id: UUID) -> List[dict]:
+        """
+        Done tasks (status='done', is_active=true) where user is
+        creator OR assignee OR participant. Used by `/tasks/done`.
+        Returns dicts {task, creator, assignee} ordered by updated_at DESC.
+
+        Uses EXISTS (not LEFT JOIN) to avoid row duplication when a user has
+        multiple roles in the same task (e.g. creator + participant).
+        """
+        query = """
+            SELECT
+                t.*,
+                a.id AS assignee_id,
+                a.name AS assignee_name,
+                a.is_head AS assignee_is_head,
+                u.is_admin AS creator_is_admin,
+                u.is_head AS creator_is_head,
+                u.id AS creator_id,
+                u.name AS creator_name
+            FROM tasks t
+            LEFT JOIN users a ON a.id = t.assignee_user_id
+            LEFT JOIN users u ON u.id = t.created_by_user_id
+            WHERE t.is_active = true AND t.status = 'done'
+              AND (
+                t.assignee_user_id = $1
+                OR t.created_by_user_id = $1
+                OR EXISTS (
+                    SELECT 1 FROM task_participants tp
+                    WHERE tp.task_id = t.id AND tp.user_id = $1
+                )
+              )
+            ORDER BY t.updated_at DESC
+        """
+        rows = await self.fetch(query, user_id)
+        result = []
+        for r in rows:
+            entry = self._row_with_creator(r)
+            entry["assignee"] = {
+                "id": r["assignee_id"],
+                "name": r["assignee_name"],
+                "is_head": r["assignee_is_head"],
+            } if r["assignee_id"] else None
+            result.append(entry)
+        return result
 
     async def text_search(
         self,

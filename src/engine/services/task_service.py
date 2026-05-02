@@ -9,6 +9,8 @@ from datetime import date, datetime
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID
 
+import asyncpg
+
 from ..models.task import Task, VALID_STATUSES
 from ..models.user import User
 from ..storage.task_storage import TaskStorage
@@ -20,8 +22,14 @@ if TYPE_CHECKING:
     from .task_event_service import TaskEventService
     from .project_service import ProjectService
     from .task_notification_service import TaskNotificationService
+    from ..storage.task_participant_storage import TaskParticipantStorage
 
 logger = logging.getLogger("rugpt.services.task")
+
+
+class ParticipantAlreadyExists(ValueError):
+    """Raised when add_participant called with a user_id already in task_participants."""
+    pass
 
 
 def compute_priority(creator: Optional[dict]) -> int:
@@ -51,6 +59,7 @@ class TaskService:
         project_service: Optional["ProjectService"] = None,
         task_notification_service: Optional["TaskNotificationService"] = None,
         user_storage: Optional[UserStorage] = None,
+        task_participant_storage: Optional["TaskParticipantStorage"] = None,
     ):
         self.storage = storage
         self.notification_service = in_app_notification_service
@@ -59,6 +68,7 @@ class TaskService:
         self.project_service = project_service
         self.task_notification_service = task_notification_service
         self.user_storage = user_storage
+        self.task_participant_storage = task_participant_storage
 
     async def _notify(self, method_name: str, *args, **kwargs) -> None:
         """Best-effort PM notification via TaskNotificationService. Silent no-op if absent."""
@@ -116,6 +126,7 @@ class TaskService:
         created_by_user_id: Optional[UUID] = None,
         project_id: Optional[UUID] = None,
         priority: Optional[int] = None,
+        participant_user_ids: Optional[List[UUID]] = None,
     ) -> Task:
         """Create a new task, auto-create its chat, link it to a project chat, notify assignee.
 
@@ -157,7 +168,27 @@ class TaskService:
             f"by {created_by_user_id} project={project_id}"
         )
 
-        # 1. Auto-create task chat.
+        # 0. Persist participants (filter assignee/creator + dedupe).
+        filtered_participants: List[UUID] = []
+        if participant_user_ids and self.task_participant_storage is not None:
+            seen = {created.assignee_user_id, created.created_by_user_id}
+            for pid in participant_user_ids:
+                if pid is None or pid in seen:
+                    continue
+                seen.add(pid)
+                try:
+                    await self.task_participant_storage.add(
+                        task_id=created.id,
+                        user_id=pid,
+                        added_by_user_id=created_by_user_id,
+                    )
+                    filtered_participants.append(pid)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to add participant {pid} to task {created.id}: {e}"
+                    )
+
+        # 1. Auto-create task chat. Extend membership with participants.
         if self.chat_service is not None:
             try:
                 await self.chat_service.create_task_chat(
@@ -166,12 +197,24 @@ class TaskService:
                     creator_id=created_by_user_id or assignee_user_id,
                     assignee_id=assignee_user_id,
                 )
+                for pid in filtered_participants:
+                    try:
+                        await self.chat_service.add_task_chat_participant(
+                            created.id, pid,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"add_task_chat_participant failed for {pid}: {e}"
+                        )
             except Exception as e:
                 logger.error(f"Failed to create task chat for {created.id}: {e}")
 
         # 2. Ensure project chat membership (lazy-creates on first task).
         if project_id and self.chat_service is not None:
-            participants = [u for u in [created_by_user_id, assignee_user_id] if u]
+            participants = [
+                u for u in [created_by_user_id, assignee_user_id, *filtered_participants]
+                if u
+            ]
             try:
                 await self.chat_service.ensure_project_chat_membership(
                     project_id=project_id,
@@ -190,6 +233,7 @@ class TaskService:
                 "title": title,
                 "assignee_user_id": str(assignee_user_id),
                 "project_id": str(project_id) if project_id else None,
+                "participant_user_ids": [str(p) for p in filtered_participants],
             },
         )
 
@@ -203,6 +247,13 @@ class TaskService:
             reference_type="task",
             reference_id=created.id,
         )
+
+        # 5. Notify each new participant.
+        for pid in filtered_participants:
+            await self._notify(
+                "notify_added_as_participant", created, pid,
+                by_user_id=created_by_user_id,
+            )
 
         return created
 
@@ -373,6 +424,37 @@ class TaskService:
                 await self.chat_service.add_task_chat_participant(
                     updated.id, assignee_user_id,
                 )
+                # Project chat: ensure new assignee is in the project chat (they may not have been
+                # creator/assignee/participant of any task in this project before).
+                if updated.project_id is not None:
+                    try:
+                        await self.chat_service.ensure_project_chat_membership(
+                            project_id=updated.project_id,
+                            org_id=updated.org_id,
+                            user_ids=[assignee_user_id],
+                        )
+                    except Exception as e:
+                        logger.warning(f"ensure_project_chat_membership on reassign failed: {e}")
+            # Auto-swap participants on reassign:
+            #   - old assignee: add to participants (unless they are creator or same as new)
+            #   - new assignee: remove from participants if they were one
+            # Order: add-old first so a partial failure (rare) leaves a visible duplicate
+            # rather than silent data loss.
+            if self.task_participant_storage is not None:
+                if old_assignee and old_assignee != updated.created_by_user_id and old_assignee != assignee_user_id:
+                    try:
+                        await self.task_participant_storage.add(
+                            task_id=updated.id, user_id=old_assignee,
+                            added_by_user_id=actor_user_id,
+                        )
+                    except asyncpg.UniqueViolationError:
+                        pass  # already a participant somehow — fine
+                    except Exception as e:
+                        logger.warning(f"swap-add participant failed: {e}")
+                try:
+                    await self.task_participant_storage.remove(updated.id, assignee_user_id)
+                except Exception as e:
+                    logger.warning(f"swap-remove participant failed: {e}")
             await self._record_event(
                 task_id=updated.id,
                 actor_user_id=actor_user_id,
@@ -460,6 +542,139 @@ class TaskService:
         return True
 
     # ============================================
+    # Participants
+    # ============================================
+
+    async def add_participant(
+        self, task_id: UUID, user_id: UUID, actor: User,
+    ) -> dict:
+        """Add a participant. Returns {id, name}. Raises:
+        - PermissionError if actor is not creator/head/admin
+        - ValueError if user is already creator or assignee
+        - ValueError if duplicate (409 mapping at route layer)
+        """
+        if self.task_participant_storage is None:
+            raise RuntimeError("task_participant_storage required")
+        task = await self.storage.get_by_id(task_id)
+        if task is None:
+            raise ValueError(f"Task {task_id} not found")
+        self._check_creator_or_head(task, actor)
+        if user_id == task.assignee_user_id:
+            raise ValueError("User is already assignee of this task")
+        if task.created_by_user_id is not None and user_id == task.created_by_user_id:
+            raise ValueError("User is already creator of this task")
+
+        try:
+            await self.task_participant_storage.add(
+                task_id=task_id, user_id=user_id, added_by_user_id=actor.id,
+            )
+        except asyncpg.UniqueViolationError:
+            raise ParticipantAlreadyExists("User is already a participant")
+
+        # Hook: task chat
+        if self.chat_service is not None:
+            try:
+                await self.chat_service.add_task_chat_participant(task_id, user_id)
+            except Exception as e:
+                logger.warning(f"add_task_chat_participant failed: {e}")
+
+        # Hook: project chat
+        if task.project_id and self.chat_service is not None:
+            try:
+                await self.chat_service.ensure_project_chat_membership(
+                    project_id=task.project_id, org_id=task.org_id,
+                    user_ids=[user_id],
+                )
+            except Exception as e:
+                logger.warning(f"ensure_project_chat_membership failed: {e}")
+
+        # Audit event
+        await self._record_event(
+            task_id=task_id, actor_user_id=actor.id,
+            event_type="participant_added",
+            payload={"user_id": str(user_id), "added_by": str(actor.id)},
+        )
+
+        # Notify
+        await self._notify(
+            "notify_added_as_participant", task, user_id, by_user_id=actor.id,
+        )
+
+        # Return shape for API — fetch the just-added user directly.
+        if self.user_storage is not None:
+            user = await self.user_storage.get_by_id(user_id)
+            if user is not None:
+                return {"id": user_id, "name": user.name}
+        return {"id": user_id, "name": ""}
+
+    async def remove_participant(
+        self, task_id: UUID, user_id: UUID, actor: User,
+    ) -> bool:
+        """Remove participant. Returns False if not present (404 mapping at route layer)."""
+        if self.task_participant_storage is None:
+            raise RuntimeError("task_participant_storage required")
+        task = await self.storage.get_by_id(task_id)
+        if task is None:
+            raise ValueError(f"Task {task_id} not found")
+        self._check_creator_or_head(task, actor)
+
+        removed = await self.task_participant_storage.remove(task_id, user_id)
+        if not removed:
+            return False
+
+        # Hook: task chat — remove from chat only if user is not creator/assignee.
+        if self.chat_service is not None and user_id not in {
+            task.created_by_user_id, task.assignee_user_id,
+        }:
+            try:
+                chat = await self.chat_service.get_task_chat(task_id)
+                if chat is not None:
+                    await self.chat_service.remove_participant(chat.id, user_id)
+            except Exception as e:
+                logger.warning(f"remove from task chat failed: {e}")
+
+        # Hook: project chat — remove only if user has no other active task in project.
+        if task.project_id and self.chat_service is not None:
+            try:
+                still_in = await self.storage.user_has_any_active_task_in_project(
+                    task.project_id, user_id,
+                )
+                if not still_in:
+                    chat = await self.chat_service.chat_storage.get_by_project_id(
+                        task.project_id,
+                    )
+                    if chat is not None:
+                        await self.chat_service.remove_participant(chat.id, user_id)
+            except Exception as e:
+                logger.warning(f"remove from project chat failed: {e}")
+
+        # Audit
+        await self._record_event(
+            task_id=task_id, actor_user_id=actor.id,
+            event_type="participant_removed",
+            payload={"user_id": str(user_id), "removed_by": str(actor.id)},
+        )
+
+        # Notify
+        await self._notify(
+            "notify_removed_as_participant", task, user_id, by_user_id=actor.id,
+        )
+
+        return True
+
+    async def list_participating(
+        self, user_id: UUID, include_done: bool = False,
+    ) -> List[dict]:
+        """Tasks where user is in task_participants. Same shape as list_my_tasks."""
+        return await self.storage.list_by_participant_with_priority(
+            user_id, include_done,
+        )
+
+    async def list_done(self, user_id: UUID) -> List[dict]:
+        """Done tasks where user is creator OR assignee OR participant."""
+        return await self.storage.list_done_for_user(user_id)
+
+    # ============================================
     # Permission helpers
     # ============================================
 
@@ -475,6 +690,14 @@ class TaskService:
             # Legacy task: only admin can manage
             if not user.is_admin:
                 raise PermissionError("Only admin can manage legacy tasks without creator")
+
+    def _check_creator_or_head(self, task: Task, user: User):
+        """Allows: creator (if task has one) OR head OR admin."""
+        if user.is_admin or getattr(user, "is_head", False):
+            return
+        if task.created_by_user_id is not None and task.created_by_user_id == user.id:
+            return
+        raise PermissionError("Only creator, head, or admin can perform this action")
 
     # ============================================
     # Status transitions
