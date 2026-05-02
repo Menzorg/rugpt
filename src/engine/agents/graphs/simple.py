@@ -6,7 +6,7 @@ Two modes:
 - With tools: ReAct agent (LLM decides when to call tools)
 """
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
@@ -27,6 +27,7 @@ async def run_simple_agent(
     max_tokens: int = 2048,
     temperature: float = 0.7,
     config: Optional[RunnableConfig] = None,
+    context_schema: Optional[Any] = None,
 ) -> AgentResult:
     """
     Run simple agent.
@@ -70,7 +71,14 @@ async def run_simple_agent(
                 }
             })
         # ReAct agent with tools
-        return await _react_agent_call(llm_nothink, lc_messages, system_prompt, tools, config)
+        return await _react_agent_call(
+            llm_nothink,
+            lc_messages,
+            system_prompt,
+            tools,
+            config,
+            context_schema,
+        )
 
 
 async def _direct_llm_call(
@@ -105,15 +113,30 @@ async def _react_agent_call(
     system_prompt: str,
     tools: List[BaseTool],
     config: Optional[RunnableConfig] = None,
+    context_schema: Optional[Any] = None,
 ) -> AgentResult:
     """ReAct agent with tool calling"""
     try:
-        agent = create_react_agent(llm, tools, prompt=system_prompt)
+        context = (
+            None
+            if context_schema is None or isinstance(context_schema, type)
+            else context_schema
+        )
+        schema = (
+            context_schema
+            if context_schema is None or isinstance(context_schema, type)
+            else type(context_schema)
+        )
+        agent = create_react_agent(llm, tools, prompt=system_prompt, context_schema=schema)
 
         # The last message should be the user input
         # ReAct agent expects {"messages": [...]}
         # config carries org_id/user_id for tools like rag_search
-        result = await agent.ainvoke({"messages": messages}, config={**config, "recursion_limit": 20})
+        result = await agent.ainvoke(
+            {"messages": messages},
+            config={**(config or {}), "recursion_limit": 20},
+            context=context,
+        )
 
         # Extract final response from the result
         output_messages = result.get("messages", [])

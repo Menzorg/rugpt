@@ -9,11 +9,15 @@ plus `is_public` files within the same org.
 Service lifecycle: call init_document_service(storage) once during engine startup.
 """
 import logging
+from dataclasses import dataclass, field
 from typing import Annotated, Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool, InjectedToolArg
+from langgraph.prebuilt import ToolRuntime
+
+from src.engine.agents.runtime import RuntimeContext
 
 from ...constants import IMAGE_TYPES
 from ...models.rag import RelatedDoc
@@ -30,6 +34,11 @@ _SUMMARY_CHARS_BUDGET = 20000  # with 30 docs each gets at least 100 chars of su
 
 _user_file_storage: Optional[UserFileStorage] = None
 _rag_service: Optional[RAGService] = None
+
+
+@dataclass
+class ListDocumentsToolRuntime:
+    seen_ids: set[str] = field(default_factory=set)
 
 
 def init_document_service(
@@ -65,9 +74,21 @@ def _is_image_file(f: UserFile) -> bool:
     return any(filename.endswith(f".{ext}") for ext in IMAGE_TYPES)
 
 
+def _with_dedup_header(deduplicated_across_runs: bool, result: str) -> str:
+    if not deduplicated_across_runs:
+        return result
+    return "DOCS FOUND IN PREVIOUS TOOL CALLS WERE DEDUPLICATED\n" + result
+
+
+def _remember_seen_documents(runsession: object, files: list[UserFile]) -> None:
+    if isinstance(runsession, ListDocumentsToolRuntime):
+        runsession.seen_ids.update(str(f.id) for f in files)
+
+
 @tool(response_format="content")
 async def list_documents(
     config: Annotated[RunnableConfig, InjectedToolArg],
+    runtime: ToolRuntime[RuntimeContext],
     name_query: Optional[str] = None,
     summary_query: Optional[str] = None,
 ) -> str:
@@ -105,14 +126,31 @@ async def list_documents(
             if (f.uploaded_by_user_id == user_id or f.is_public)
             and not _is_image_file(f)
         ]
+        
+        # --- deduplication across whole run ---
+        toolruntime = runtime.context.list_documents_toolruntime
+        seen_ids = (
+            toolruntime.seen_ids
+            if isinstance(toolruntime, ListDocumentsToolRuntime)
+            else set()
+        )
+        deduplicated_across_runs = bool(seen_ids)
+        if deduplicated_across_runs:
+            visible = [f for f in visible if str(f.id) not in seen_ids]
 
         if not visible:
-            return "No documents in your scope."
+            return _with_dedup_header(
+                deduplicated_across_runs,
+                "No documents in your scope.",
+            )
 
         # --- Search mode: one or both queries provided ---
         if has_name_query or has_summary_query:
             if _rag_service is None:
-                return "list_documents: search unavailable (RAG service not initialized)."
+                return _with_dedup_header(
+                    deduplicated_across_runs,
+                    "list_documents: search unavailable (RAG service not initialized).",
+                )
 
             matched_ids: set[str] = set()
 
@@ -136,14 +174,24 @@ async def list_documents(
                 for d in docs:
                     matched_ids.add(d.file_id)
 
-            results: list[UserFile] = [f for f in visible if str(f.id) in matched_ids][:_MAX_RESULTS]
+            results: list[UserFile] = [
+                f for f in visible
+                if str(f.id) in matched_ids
+            ][:_MAX_RESULTS]
 
             if not results:
-                return "No documents matched your query."
+                return _with_dedup_header(
+                    deduplicated_across_runs,
+                    "No documents matched your query.",
+                )
 
             summary_max_chars = max(1, _SUMMARY_CHARS_BUDGET // len(results))
             lines = [_format_user_file(f, summary_max_chars) for f in results]
-            return f"Documents found ({len(lines)}):\n" + "\n".join(lines)
+            _remember_seen_documents(toolruntime, results)
+            return _with_dedup_header(
+                deduplicated_across_runs,
+                f"Documents found ({len(lines)}):\n" + "\n".join(lines),
+            )
 
         # --- List mode: no queries ---
         total = len(visible)
@@ -159,11 +207,19 @@ async def list_documents(
             footer_trunc = f"\nTOO MUCH DOCUMENTS. LIST IS TRUNCATED TO {_TRUNCATED_LIMIT} of {total}\n" if total > _TRUNCATED_LIMIT else ""
             omitted_fields = "created_at, rag_status, file_size, summary"
             footer = f"\n[FIELDS OMITTED TO REDUCE OUTPUT: {omitted_fields}. USE FILTERS TO GET FULL INFO ON SPECIFIC DOCS.]"
-            return f"Documents found ({len(lines)}):\n" + "\n".join(lines) + footer + footer_trunc
+            _remember_seen_documents(toolruntime, truncated)
+            return _with_dedup_header(
+                deduplicated_across_runs,
+                f"Documents found ({len(lines)}):\n" + "\n".join(lines) + footer + footer_trunc,
+            )
 
         summary_max_chars = max(1, _SUMMARY_CHARS_BUDGET // len(visible))
         lines = [_format_user_file(f, summary_max_chars) for f in visible]
-        return f"Documents found ({total} total):\n" + "\n".join(lines)
+        _remember_seen_documents(toolruntime, visible)
+        return _with_dedup_header(
+            deduplicated_across_runs,
+            f"Documents found ({total} total):\n" + "\n".join(lines),
+        )
 
     except Exception as e:
         logger.error(f"list_documents failed: {e}", exc_info=True)

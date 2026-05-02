@@ -15,6 +15,7 @@ from ..config import Config
 from ..models.role import Role
 from ..services.prompt_cache import PromptCache
 from .result import AgentResult
+from .runtime import RuntimeContext
 from .tools.registry import ToolRegistry
 from .graphs.simple import run_simple_agent
 from .graphs.chain import run_chain_agent
@@ -146,6 +147,7 @@ class AgentExecutor:
         tools, tools_doc = self.tool_registry.resolve(role.tools) if role.tools else ([], "")
         system_prompt = system_prompt.replace("{tools}", tools_doc)
         llm = self._create_llm(model, temperature)
+        runtime_context = RuntimeContext()
 
         # RunnableConfig carries initiator's org_id/user_id for tools.
         config = RunnableConfig(configurable={
@@ -245,6 +247,7 @@ class AgentExecutor:
                     max_tokens=max_tokens,
                     temperature=temperature,
                     config=config,
+                    context_schema=runtime_context,
                 )
 
             elif role.agent_type == "chain":
@@ -276,6 +279,7 @@ class AgentExecutor:
                     max_tokens=max_tokens,
                     temperature=temperature,
                     config=config,
+                    context_schema=runtime_context,
                 )
 
         except Exception as e:
