@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 
 from ..services.engine_service import get_engine_service
+from ..services.task_service import ParticipantAlreadyExists
 from .auth import get_current_user
 
 logger = logging.getLogger("rugpt.routes.tasks")
@@ -26,6 +27,11 @@ class CreateTaskRequest(BaseModel):
     deadline: Optional[str] = None  # ISO 8601
     project_id: Optional[str] = None
     priority: Optional[int] = None  # 1..3; default derived from creator's role
+    participant_user_ids: Optional[list[str]] = None
+
+
+class AddParticipantRequest(BaseModel):
+    user_id: str
 
 
 class UpdateTaskRequest(BaseModel):
@@ -68,12 +74,26 @@ def _serialize_entry(entry: dict) -> dict:
             "name": entry["assignee"]["name"],
             "is_head": entry["assignee"]["is_head"],
         }
+    out["participants"] = [
+        {"id": str(p["id"]), "name": p["name"]} for p in entry.get("participants") or []
+    ]
     return out
 
 
 async def _load_user(engine, user_id: UUID):
     """Helper: load user object from storage (for permission checks)."""
     return await engine.user_storage.get_by_id(user_id)
+
+
+async def _hydrate_participants(engine, entries: list) -> list:
+    """Bulk-fetch active participants for entries and attach as entry['participants']."""
+    if not entries:
+        return entries
+    task_ids = [e["task"].id for e in entries]
+    by_task = await engine.task_participant_storage.get_for_tasks(task_ids)
+    for e in entries:
+        e["participants"] = by_task.get(e["task"].id, [])
+    return entries
 
 
 # ============================================
@@ -117,15 +137,14 @@ async def list_tasks(
 
 @router.get("/my")
 async def list_my_tasks(
-    include_done: bool = Query(False),
     project_id: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user),
 ):
-    """Tasks where current user is assignee. Sorted by priority + deadline.
-    Optional ?project_id filter."""
+    """Tasks where current user is assignee, status != done.
+    Sorted by priority + deadline. Optional ?project_id filter."""
     engine = get_engine_service()
     entries = await engine.task_service.list_my_tasks(
-        current_user["user_id"], include_done,
+        current_user["user_id"], include_done=False,
     )
     if project_id:
         try:
@@ -133,19 +152,20 @@ async def list_my_tasks(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid project_id")
         entries = [e for e in entries if e["task"].project_id == pid]
+    entries = await _hydrate_participants(engine, entries)
     return [_serialize_entry(e) for e in entries]
 
 
 @router.get("/created-by-me")
 async def list_created_by_me(
-    include_done: bool = Query(False),
     project_id: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user),
 ):
-    """Tasks where current user is creator. Optional ?project_id filter."""
+    """Tasks where current user is creator, status != done.
+    Optional ?project_id filter."""
     engine = get_engine_service()
     entries = await engine.task_service.list_tasks_created_by(
-        current_user["user_id"], include_done,
+        current_user["user_id"], include_done=False,
     )
     if project_id:
         try:
@@ -153,6 +173,7 @@ async def list_created_by_me(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid project_id")
         entries = [e for e in entries if e["task"].project_id == pid]
+    entries = await _hydrate_participants(engine, entries)
     return [_serialize_entry(e) for e in entries]
 
 
@@ -168,6 +189,36 @@ async def list_archive(
     entries = await engine.task_service.list_archived(
         current_user["user_id"], current_user["org_id"], limit,
     )
+    entries = await _hydrate_participants(engine, entries)
+    return [_serialize_entry(e) for e in entries]
+
+
+@router.get("/participating")
+async def list_participating(
+    project_id: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """Tasks where current user is in task_participants, status != done."""
+    engine = get_engine_service()
+    entries = await engine.task_service.list_participating(
+        current_user["user_id"], include_done=False,
+    )
+    if project_id:
+        try:
+            pid = UUID(project_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid project_id")
+        entries = [e for e in entries if e["task"].project_id == pid]
+    entries = await _hydrate_participants(engine, entries)
+    return [_serialize_entry(e) for e in entries]
+
+
+@router.get("/done")
+async def list_done(current_user: dict = Depends(get_current_user)):
+    """All status='done' tasks where user is creator OR assignee OR participant."""
+    engine = get_engine_service()
+    entries = await engine.task_service.list_done(current_user["user_id"])
+    entries = await _hydrate_participants(engine, entries)
     return [_serialize_entry(e) for e in entries]
 
 
@@ -207,6 +258,13 @@ async def create_task(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid project_id")
 
+    participant_uuids: Optional[list] = None
+    if request.participant_user_ids:
+        try:
+            participant_uuids = [UUID(p) for p in request.participant_user_ids]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid participant_user_ids")
+
     if request.priority is not None and request.priority not in (1, 2, 3):
         raise HTTPException(status_code=400, detail="priority must be 1, 2 or 3")
 
@@ -220,6 +278,7 @@ async def create_task(
             created_by_user_id=current_user["user_id"],
             project_id=project_uuid,
             priority=request.priority,
+            participant_user_ids=participant_uuids,
         )
         return task.to_dict()
     except ValueError as e:
@@ -228,7 +287,7 @@ async def create_task(
 
 @router.get("/{task_id}")
 async def get_task(task_id: str, current_user: dict = Depends(get_current_user)):
-    """Get a single task by ID"""
+    """Get a single task by ID. Visible to creator, assignee, participants, or admin."""
     engine = get_engine_service()
     try:
         task_uuid = UUID(task_id)
@@ -240,11 +299,17 @@ async def get_task(task_id: str, current_user: dict = Depends(get_current_user))
         raise HTTPException(status_code=404, detail="Task not found")
     if task.org_id != current_user["org_id"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    if not current_user.get("is_admin"):
-        if task.assignee_user_id != current_user["user_id"] and task.created_by_user_id != current_user["user_id"]:
-            raise HTTPException(status_code=403, detail="Access denied")
 
-    return task.to_dict()
+    user = await _load_user(engine, current_user["user_id"])
+    if user is None or not await _can_see_task_async(task, user, engine):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    out = task.to_dict()
+    out["participants"] = [
+        {"id": str(p["id"]), "name": p["name"]}
+        for p in await engine.task_participant_storage.list_active_user_dicts(task_uuid)
+    ]
+    return out
 
 
 @router.patch("/{task_id}")
@@ -562,8 +627,8 @@ async def reject_proposed_deadline(task_id: str, current_user: dict = Depends(ge
 # Task chat & events (item 11)
 # ============================================
 
-def _can_see_task(task, user) -> bool:
-    """Strict visibility: creator, current assignee, or admin of same org."""
+async def _can_see_task_async(task, user, engine) -> bool:
+    """Strict visibility: creator, current assignee, participant, or admin of same org."""
     if task.org_id != user.org_id and not user.is_admin:
         return False
     if user.id == task.created_by_user_id:
@@ -571,6 +636,9 @@ def _can_see_task(task, user) -> bool:
     if user.id == task.assignee_user_id:
         return True
     if user.is_admin and task.org_id == user.org_id:
+        return True
+    parts = await engine.task_participant_storage.list_user_ids(task.id)
+    if user.id in parts:
         return True
     return False
 
@@ -591,7 +659,7 @@ async def get_task_chat(task_id: str, current_user: dict = Depends(get_current_u
     user = await _load_user(engine, current_user["user_id"])
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
-    if not _can_see_task(task, user):
+    if not await _can_see_task_async(task, user, engine):
         raise HTTPException(status_code=404, detail="Task not found")
 
     chat = await engine.chat_service.get_task_chat(task_uuid)
@@ -620,8 +688,84 @@ async def list_task_events(
     user = await _load_user(engine, current_user["user_id"])
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
-    if not _can_see_task(task, user):
+    if not await _can_see_task_async(task, user, engine):
         raise HTTPException(status_code=404, detail="Task not found")
 
     events = await engine.task_event_service.list_for_task(task_uuid, limit)
     return [e.to_dict() for e in events]
+
+
+# ============================================
+# Participants
+# ============================================
+
+@router.post("/{task_id}/participants", status_code=201)
+async def add_participant(
+    task_id: str,
+    request: AddParticipantRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Add a participant. 201 + {id, name}. 409 on duplicate. 403 on perms."""
+    engine = get_engine_service()
+    try:
+        task_uuid = UUID(task_id)
+        user_uuid = UUID(request.user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid id")
+
+    task = await engine.task_service.get(task_uuid)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.org_id != current_user["org_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    actor = await _load_user(engine, current_user["user_id"])
+    if actor is None:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    try:
+        result = await engine.task_service.add_participant(task_uuid, user_uuid, actor)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ParticipantAlreadyExists as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"id": str(result["id"]), "name": result["name"]}
+
+
+@router.delete("/{task_id}/participants/{user_id}", status_code=204)
+async def remove_participant(
+    task_id: str,
+    user_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Remove a participant. 204 on success. 404 if not present. 403 on perms."""
+    engine = get_engine_service()
+    try:
+        task_uuid = UUID(task_id)
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid id")
+
+    task = await engine.task_service.get(task_uuid)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.org_id != current_user["org_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    actor = await _load_user(engine, current_user["user_id"])
+    if actor is None:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    try:
+        ok = await engine.task_service.remove_participant(task_uuid, user_uuid, actor)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not ok:
+        raise HTTPException(status_code=404, detail="Participant not found")
+    return None
