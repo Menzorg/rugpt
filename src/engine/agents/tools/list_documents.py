@@ -159,7 +159,7 @@ async def list_documents(
             footer_trunc = f"\nTOO MUCH DOCUMENTS. LIST IS TRUNCATED TO {_TRUNCATED_LIMIT} of {total}\n" if total > _TRUNCATED_LIMIT else ""
             omitted_fields = "created_at, rag_status, file_size, summary"
             footer = f"\n[FIELDS OMITTED TO REDUCE OUTPUT: {omitted_fields}. USE FILTERS TO GET FULL INFO ON SPECIFIC DOCS.]"
-            return f"Documents found ({len(truncated)}):\n" + "\n".join(lines) + footer + footer_trunc
+            return f"Documents found ({len(lines)}):\n" + "\n".join(lines) + footer + footer_trunc
 
         summary_max_chars = max(1, _SUMMARY_CHARS_BUDGET // len(visible))
         lines = [_format_user_file(f, summary_max_chars) for f in visible]
