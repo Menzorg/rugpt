@@ -24,8 +24,8 @@ logger = logging.getLogger("rugpt.agents.tools.document")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _TRUNCATED_LIMIT = 500
-_MAX_RESULTS = 100
-_SUMMARY_CHARS_BUDGET = 40000  # with 30 docs each gets at least 100 chars of summary
+_MAX_RESULTS = 70
+_SUMMARY_CHARS_BUDGET = 20000  # with 30 docs each gets at least 100 chars of summary
 
 _user_file_storage: Optional[UserFileStorage] = None
 _rag_service: Optional[RAGService] = None
