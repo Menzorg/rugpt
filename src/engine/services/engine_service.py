@@ -206,10 +206,10 @@ class EngineService:
         )
 
         # Initialize file service with StorageAdapter
-        storage_adapter = LocalStorageAdapter(base_dir=Config.STORAGE_LOCAL_DIR)
+        self.storage_adapter = LocalStorageAdapter(base_dir=Config.STORAGE_LOCAL_DIR)
         self.file_service = FileService(
             file_storage=self.user_file_storage,
-            storage_adapter=storage_adapter,
+            storage_adapter=self.storage_adapter,
             max_file_size=Config.FILE_MAX_SIZE_MB * 1024 * 1024,
             allowed_types=set(Config.FILE_ALLOWED_TYPES.split(",")),
         )
@@ -268,6 +268,7 @@ class EngineService:
         from ..agents.tools.role_call_tool import role_call
         from ..agents.tools.list_documents import list_documents
         from ..agents.tools.user_tool import create_user_tools
+        from ..agents.tools.analyze_image import create_analyze_image_tool
 
         # Create calendar tools wired to CalendarService
         cal_create_tool, cal_query_tool = create_calendar_tools(self.calendar_service)
@@ -275,6 +276,10 @@ class EngineService:
         # Create task tools wired to TaskService
         task_create_tool, task_query_tool, task_update_tool = create_task_tools(self.task_service)
         expand_chunk_tool = create_expand_chunk_tool(self.rag_service, self.user_file_storage)
+        analyze_image_tool = create_analyze_image_tool(
+            self.user_file_storage,
+            self.storage_adapter,
+        )
 
         # Initialize tool registry
         self.tool_registry = ToolRegistry()
@@ -289,6 +294,7 @@ class EngineService:
         self.tool_registry.register("web_search", web_search)
         self.tool_registry.register("role_call", role_call)
         self.tool_registry.register("list_documents", list_documents)
+        self.tool_registry.register("analyze_image", analyze_image_tool)
 
         (user_search_tool,) = create_user_tools(
             user_storage=self.user_storage,
