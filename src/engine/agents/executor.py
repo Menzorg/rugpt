@@ -76,8 +76,10 @@ class AgentExecutor:
         limit: int = 10,
     ) -> Optional[str]:
         """Build prompt context for recent chat attachments."""
-        attachment_ids = await engine.chat_storage.get_attachments(chat_id)
-        recent_attachment_ids = attachment_ids[-limit:]
+        recent_attachment_ids = await engine.chat_storage.get_attachments(
+            chat_id,
+            limit=limit,
+        )
         attachments_by_id = await engine.user_file_storage.get_many_by_ids(
             recent_attachment_ids,
         )

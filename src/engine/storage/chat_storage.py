@@ -71,16 +71,24 @@ class ChatStorage(BaseStorage):
         """
         return await self.fetchval(query, chat_id)
 
-    async def get_attachments(self, chat_id: UUID) -> List[UUID]:
-        """List file IDs attached to messages in a chat."""
+    async def get_attachments(self, chat_id: UUID, limit: Optional[int] = None) -> List[UUID]:
+        """List distinct file IDs attached to messages in a chat."""
         query = """
-            SELECT ma.file_id
-            FROM message_attachments ma
-            JOIN messages m ON m.id = ma.message_id
-            WHERE m.chat_id = $1
-            ORDER BY m.created_at, ma.position
+            SELECT file_id
+            FROM (
+                SELECT DISTINCT ON (ma.file_id)
+                    ma.file_id,
+                    m.created_at,
+                    ma.position
+                FROM message_attachments ma
+                JOIN messages m ON m.id = ma.message_id
+                WHERE m.chat_id = $1
+                ORDER BY ma.file_id, m.created_at DESC, ma.position DESC
+            ) latest
+            ORDER BY created_at DESC, position DESC
+            LIMIT $2
         """
-        rows = await self.fetch(query, chat_id)
+        rows = await self.fetch(query, chat_id, limit)
         return [row["file_id"] for row in rows]
 
     async def list_by_user(
