@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 
 from .auth import get_current_user
+from ..constants import RAG_COMPATIBLE_TYPES
 from ..services.engine_service import get_engine_service, EngineService
 
 router = APIRouter(prefix="/api/v1/chats", tags=["chats"])
@@ -266,7 +267,9 @@ async def send_message(
         and await engine.chat_storage.is_ai_direct_chat(chat_id)
     ):
         for fid in request.file_ids:
-            await engine.file_service.index_for_rag(fid, user_id)
+            file = await engine.file_service.get(fid)
+            if file is not None and file.file_type in RAG_COMPATIBLE_TYPES:
+                await engine.file_service.index_for_rag(fid, user_id)
 
     # Send user message
     message = await engine.chat_service.send_message(
