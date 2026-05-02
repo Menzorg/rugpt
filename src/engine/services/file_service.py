@@ -88,10 +88,12 @@ class FileService:
         # с идентичным содержимым (одинаковый content_hash).
         duplicate = await self.file_storage.find_duplicate(user_id, content_hash)
         if duplicate:
-            raise ValueError(
-                f"Duplicate file: identical content already exists as '{duplicate.original_filename}' "
-                f"(id={duplicate.id})"
+            logger.info(
+                f"Duplicate upload attempted for user {user_id}: "
+                f"'{filename}' matches '{duplicate.original_filename}' "
+                f"(id={duplicate.id}); returning existing file"
             )
+            return duplicate
 
         # Detect tabular content by file extension
         is_table = ext in TABLE_EXTENSIONS
@@ -148,7 +150,12 @@ class FileService:
             raise PermissionError("Only the file owner can index it for RAG")
         if file.file_type not in RAG_COMPATIBLE_TYPES:
             raise ValueError(f"File type '{file.file_type}' is not supported by RAG")
-        if file.rag_status in ("pending", "indexing", "indexed"):
+        if file.rag_status == "indexed":
+            logger.info(
+                f"File {file.id} already ingested for RAG; skipping enqueue"
+            )
+            return file
+        if file.rag_status in ("pending", "indexing"):
             return file  # idempotent — already in pipeline or done
 
         # Re-read bytes from storage to enqueue (upload didn't keep them in memory)
