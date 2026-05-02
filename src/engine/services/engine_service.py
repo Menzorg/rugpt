@@ -14,6 +14,7 @@ from ..storage.user_storage import UserStorage
 from ..storage.role_storage import RoleStorage
 from ..storage.chat_storage import ChatStorage
 from ..storage.message_storage import MessageStorage
+from ..storage.message_attachment_storage import MessageAttachmentStorage
 from ..storage.calendar_storage import CalendarStorage
 from ..storage.notification_channel_storage import NotificationChannelStorage
 from ..storage.notification_log_storage import NotificationLogStorage
@@ -87,6 +88,10 @@ class EngineService:
         self.role_storage = RoleStorage(self.postgres_dsn)
         self.chat_storage = ChatStorage(self.postgres_dsn)
         self.message_storage = MessageStorage(self.postgres_dsn)
+        self.message_attachment_storage = MessageAttachmentStorage(self.postgres_dsn)
+        # Wire attachment storage into message storage so list_by_chat / get_by_id
+        # auto-hydrate `Message.attachments` for callers (chat_service, routes).
+        self.message_storage.attachment_storage = self.message_attachment_storage
         self.calendar_storage = CalendarStorage(self.postgres_dsn)
         self.notification_channel_storage = NotificationChannelStorage(self.postgres_dsn)
         self.notification_log_storage = NotificationLogStorage(self.postgres_dsn)
@@ -127,7 +132,12 @@ class EngineService:
 
         # Initialize chat/task_event/project services (order matters):
         # ChatService -> TaskEventService -> ProjectService -> TaskService
-        self.chat_service = ChatService(self.chat_storage, self.message_storage)
+        self.chat_service = ChatService(
+            self.chat_storage,
+            self.message_storage,
+            user_file_storage=self.user_file_storage,
+            message_attachment_storage=self.message_attachment_storage,
+        )
 
         # Support ticket service — business logic for tech-support tickets.
         # Depends on chat_storage/message_storage/user_storage directly (not chat_service).
@@ -396,6 +406,7 @@ class EngineService:
         await self.role_storage.init()
         await self.chat_storage.init()
         await self.message_storage.init()
+        await self.message_attachment_storage.init()
         await self.calendar_storage.init()
         await self.notification_channel_storage.init()
         await self.notification_log_storage.init()
@@ -455,6 +466,7 @@ class EngineService:
         await self.role_storage.close()
         await self.chat_storage.close()
         await self.message_storage.close()
+        await self.message_attachment_storage.close()
         await self.calendar_storage.close()
         await self.notification_channel_storage.close()
         await self.notification_log_storage.close()

@@ -6,8 +6,11 @@ Represents a message in a chat, including mentions.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 from uuid import UUID, uuid4
+
+if TYPE_CHECKING:
+    from .message_attachment import MessageAttachment
 
 
 class SenderType(str, Enum):
@@ -78,6 +81,7 @@ class Message:
     ai_is_valid: Optional[bool] = None                 # None=pending, True=approved, False=rejected
     ai_edited: bool = False                           # AI response was edited by user
     is_deleted: bool = False                          # Soft delete flag
+    attachments: List["MessageAttachment"] = field(default_factory=list)
     mem_id: Optional[UUID] = None                    # FK memory_snapshots (copied from chat on insert)
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
@@ -98,6 +102,7 @@ class Message:
             "mem_id": str(self.mem_id) if self.mem_id else None,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
+            "attachments": [a.to_dict() for a in self.attachments],
         }
 
     @classmethod
@@ -121,4 +126,9 @@ class Message:
             mem_id=UUID(data["mem_id"]) if data.get("mem_id") and isinstance(data["mem_id"], str) else data.get("mem_id"),
             created_at=datetime.fromisoformat(data["created_at"]) if isinstance(data.get("created_at"), str) else data.get("created_at", datetime.utcnow()),
             updated_at=datetime.fromisoformat(data["updated_at"]) if isinstance(data.get("updated_at"), str) else data.get("updated_at", datetime.utcnow()),
+            # NOTE: attachments round-trips as raw dicts, not MessageAttachment objects.
+            # Storage layer hydrates real MessageAttachment instances from DB JOIN
+            # (see message_attachment_storage). from_dict path is only used for
+            # cached/serialized messages where UI-shape dicts are sufficient.
+            attachments=data.get("attachments", []),
         )

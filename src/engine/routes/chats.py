@@ -24,6 +24,7 @@ class CreateDirectChatRequest(BaseModel):
 class SendMessageRequest(BaseModel):
     content: str
     reply_to_id: Optional[UUID] = None
+    file_ids: Optional[List[UUID]] = None
 
 
 class ValidateMessageRequest(BaseModel):
@@ -67,6 +68,18 @@ class ReferenceResponse(BaseModel):
     position: int
 
 
+class AttachmentResponse(BaseModel):
+    id: str
+    position: int
+    original_filename: Optional[str]
+    file_size: Optional[int]
+    file_type: Optional[str]
+    is_deleted: bool
+
+    class Config:
+        from_attributes = True
+
+
 class MessageResponse(BaseModel):
     id: str
     chat_id: str
@@ -81,6 +94,7 @@ class MessageResponse(BaseModel):
     is_deleted: bool
     created_at: str
     updated_at: str
+    attachments: List[AttachmentResponse] = []
 
     class Config:
         from_attributes = True
@@ -253,6 +267,7 @@ async def send_message(
         content=request.content,
         mentions=mentions,
         reply_to_id=request.reply_to_id,
+        file_ids=request.file_ids,
     )
 
     # Process @@ mentions -> AI responses (sync path) OR enqueue (async path)

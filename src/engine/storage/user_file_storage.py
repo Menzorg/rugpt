@@ -23,8 +23,8 @@ class UserFileStorage(BaseStorage):
                 (id, user_id, org_id, uploaded_by_user_id,
                  storage_key, original_filename, file_type,
                  file_size, content_hash, summary, is_table, is_public, rag_status,
-                 is_active, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                 is_active, cloned_from_file_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             RETURNING *
         """
         row = await self.fetchrow(
@@ -32,9 +32,27 @@ class UserFileStorage(BaseStorage):
             file.id, file.user_id, file.org_id, file.uploaded_by_user_id,
             file.storage_key, file.original_filename, file.file_type,
             file.file_size, file.content_hash, file.summary, file.is_table, file.is_public, file.rag_status,
-            file.is_active, file.created_at, file.updated_at,
+            file.is_active, file.cloned_from_file_id, file.created_at, file.updated_at,
         )
         return self._row_to_file(row)
+
+    async def find_active_clone(self, user_id: UUID, source_file_id: UUID) -> Optional[UserFile]:
+        """Return existing active clone (same source) for this user, or None.
+
+        Used by FileService.clone for idempotency: don't create duplicate clones
+        when user clicks "Add to my files" twice.
+        """
+        row = await self.fetchrow(
+            """
+            SELECT * FROM user_files
+            WHERE user_id = $1
+              AND cloned_from_file_id = $2
+              AND is_active = true
+            LIMIT 1
+            """,
+            user_id, source_file_id,
+        )
+        return self._row_to_file(row) if row else None
 
     async def find_duplicate(self, user_id: UUID, content_hash: str) -> Optional[UserFile]:
         """
@@ -178,6 +196,7 @@ class UserFileStorage(BaseStorage):
 
     def _row_to_file(self, row) -> UserFile:
         """Map asyncpg Record to UserFile"""
+        keys = set(row.keys())
         return UserFile(
             id=row["id"],
             user_id=row["user_id"],
@@ -195,6 +214,7 @@ class UserFileStorage(BaseStorage):
             rag_error=row["rag_error"],
             indexed_at=row["indexed_at"],
             is_active=row["is_active"],
+            cloned_from_file_id=row["cloned_from_file_id"] if "cloned_from_file_id" in keys else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

@@ -18,7 +18,6 @@ from pydantic import BaseModel
 
 from ..services.engine_service import get_engine_service
 from ..constants import CONTENT_TYPES
-from ..tasks.ingest_queue import ingest_queue
 from .auth import get_current_user
 
 logger = logging.getLogger("rugpt.routes.files")
@@ -43,6 +42,7 @@ class FileResponse(BaseModel):
     is_active: bool
     created_at: str
     updated_at: str
+    cloned_from_file_id: Optional[str] = None
 
 
 @router.post("/upload", response_model=FileResponse)
@@ -75,13 +75,6 @@ async def upload_file(
             filename=file.filename or "unnamed",
             data=data,
             is_public=is_public,
-        )
-        ingest_queue.submit(
-            file_id=created.id,
-            org_id=str(created.org_id),
-            user_id=str(created.user_id),
-            filename=created.original_filename,
-            data=data,
         )
         return FileResponse(**created.to_dict())
     except ValueError as e:
@@ -174,6 +167,73 @@ async def delete_file(file_id: str, current_user: dict = Depends(get_current_use
 
     await engine.file_service.delete(file_uuid)
     return {"success": True, "message": "File deleted"}
+
+
+@router.post("/{file_id}/index", response_model=FileResponse)
+async def index_file_for_rag(
+    file_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Owner triggers RAG indexing for an already-uploaded file.
+
+    Idempotent: if file is already pending/indexing/indexed, returns its current state
+    without re-enqueuing.
+    """
+    engine = get_engine_service()
+    try:
+        file_uuid = UUID(file_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid file ID")
+
+    try:
+        updated = await engine.file_service.index_for_rag(
+            file_id=file_uuid,
+            requesting_user_id=current_user["user_id"],
+        )
+        return FileResponse(**updated.to_dict())
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{file_id}/clone", response_model=FileResponse)
+async def clone_file(
+    file_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """«Add to my files»: create a metadata-only clone of a chat-attached file.
+
+    Permission: requesting user must be a participant of at least one chat in
+    which this file appears as an attachment.
+    """
+    engine = get_engine_service()
+    try:
+        src_uuid = UUID(file_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid file ID")
+
+    has_access = await engine.chat_service.user_can_access_attached_file(
+        user_id=current_user["user_id"],
+        file_id=src_uuid,
+        org_id=current_user["org_id"],
+    )
+    if not has_access:
+        raise HTTPException(status_code=403, detail="No access to this file")
+
+    try:
+        cloned = await engine.file_service.clone(
+            source_file_id=src_uuid,
+            requesting_user_id=current_user["user_id"],
+            org_id=current_user["org_id"],
+        )
+        return FileResponse(**cloned.to_dict())
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/{file_id}/rag-status")

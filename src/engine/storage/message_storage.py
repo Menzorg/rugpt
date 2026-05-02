@@ -6,17 +6,37 @@ PostgreSQL storage for messages.
 import json
 import logging
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID
 
 from .base import BaseStorage
 from ..models.message import Message, Mention, SenderType, MentionType
+
+if TYPE_CHECKING:
+    from .message_attachment_storage import MessageAttachmentStorage
 
 logger = logging.getLogger("rugpt.storage.message")
 
 
 class MessageStorage(BaseStorage):
     """Storage for Message entities"""
+
+    def __init__(self, postgres_dsn: str = "postgresql://postgres@localhost/rugpt"):
+        super().__init__(postgres_dsn)
+        # Optional dependency wired by EngineService after construction.
+        # Used to bulk-hydrate attachments when reading messages.
+        self.attachment_storage: Optional["MessageAttachmentStorage"] = None
+
+    async def _hydrate_attachments(self, msgs: List[Message]) -> None:
+        """Bulk-fetch attachments for `msgs` and assign to `m.attachments`.
+
+        No-op if attachment_storage isn't wired (tests/legacy paths) or list is empty.
+        """
+        if not msgs or self.attachment_storage is None:
+            return
+        atts_by_msg = await self.attachment_storage.get_for_messages([m.id for m in msgs])
+        for m in msgs:
+            m.attachments = atts_by_msg.get(m.id, [])
 
     async def create(self, message: Message) -> Message:
         """Create a new message"""
@@ -43,7 +63,12 @@ class MessageStorage(BaseStorage):
         """Get message by ID"""
         query = "SELECT * FROM messages WHERE id = $1 AND is_deleted = false"
         row = await self.fetchrow(query, message_id)
-        return self._row_to_message(row) if row else None
+        if row is None:
+            return None
+        m = self._row_to_message(row)
+        if self.attachment_storage is not None:
+            m.attachments = await self.attachment_storage.get_for_message(m.id)
+        return m
 
     async def list_by_chat(
         self,
@@ -70,7 +95,9 @@ class MessageStorage(BaseStorage):
                 LIMIT $2
             """
             rows = await self.fetch(query, chat_id, limit)
-        return [self._row_to_message(row) for row in reversed(rows)]
+        msgs = [self._row_to_message(row) for row in reversed(rows)]
+        await self._hydrate_attachments(msgs)
+        return msgs
 
     async def list_pending_review(self, user_id: UUID) -> List[Message]:
         """List AI messages pending review by user (ai_is_valid IS NULL)"""

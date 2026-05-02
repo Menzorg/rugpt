@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from ..models.user import User
     from ..storage.task_storage import TaskStorage
     from ..storage.project_storage import ProjectStorage
+    from ..storage.user_file_storage import UserFileStorage
+    from ..storage.message_attachment_storage import MessageAttachmentStorage
 
 
 def _can_see_task(task: "Task", user: "User") -> bool:
@@ -78,9 +80,17 @@ logger = logging.getLogger("rugpt.services.chat")
 class ChatService:
     """Service for chat operations"""
 
-    def __init__(self, chat_storage: ChatStorage, message_storage: MessageStorage):
+    def __init__(
+        self,
+        chat_storage: ChatStorage,
+        message_storage: MessageStorage,
+        user_file_storage: Optional["UserFileStorage"] = None,
+        message_attachment_storage: Optional["MessageAttachmentStorage"] = None,
+    ):
         self.chat_storage = chat_storage
         self.message_storage = message_storage
+        self.user_file_storage = user_file_storage
+        self.message_attachment_storage = message_attachment_storage
 
     async def create_direct_chat(
         self,
@@ -345,8 +355,31 @@ class ChatService:
         sender_type: SenderType = SenderType.USER,
         mentions: Optional[List[Mention]] = None,
         reply_to_id: Optional[UUID] = None,
+        file_ids: Optional[List[UUID]] = None,
     ) -> Message:
-        """Send a message to chat"""
+        """Send a message to chat.
+
+        Args:
+            file_ids: optional list of UserFile ids to attach (max 5).
+                Each file must be owned by sender_id and active. Validation runs
+                BEFORE message persist so a rejected request never orphans a row.
+        """
+        # Validate attachments up-front (fail fast, no orphan message).
+        if file_ids:
+            if len(file_ids) > 5:
+                raise ValueError("Maximum 5 attachments per message")
+            if self.user_file_storage is None or self.message_attachment_storage is None:
+                raise RuntimeError(
+                    "ChatService missing user_file_storage/message_attachment_storage "
+                    "dependencies — cannot save messages with attachments"
+                )
+            for fid in file_ids:
+                file = await self.user_file_storage.get_by_id(fid)
+                if file is None or not file.is_active:
+                    raise ValueError(f"File {fid} not found or inactive")
+                if file.user_id != sender_id:
+                    raise PermissionError(f"File {fid} does not belong to sender")
+
         message = Message(
             id=uuid4(),
             chat_id=chat_id,
@@ -363,6 +396,21 @@ class ChatService:
         )
         created = await self.message_storage.create(message)
         await self.chat_storage.update_last_message(chat_id)
+
+        # Link attachments after persist (need created.id) and hydrate the
+        # returned message so the caller doesn't need a second round-trip.
+        # Non-transactional: if attach fails after the message is persisted, the
+        # message lives without attachments and the caller sees attachments=[].
+        # Acceptable for MVP — attach is idempotent (ON CONFLICT DO NOTHING in
+        # message_attachment_storage), so a manual retry path could re-link.
+        # If consistency becomes critical, wrap (create, attach) in a single
+        # transaction at the storage layer.
+        if file_ids:
+            await self.message_attachment_storage.attach(created.id, file_ids)
+            created.attachments = await self.message_attachment_storage.get_for_message(
+                created.id,
+            )
+
         logger.info(f"Message {created.id} sent to chat {chat_id}")
         return created
 
@@ -404,3 +452,17 @@ class ChatService:
     async def delete_message(self, message_id: UUID) -> bool:
         """Delete message"""
         return await self.message_storage.delete(message_id)
+
+    async def user_can_access_attached_file(
+        self, user_id: UUID, file_id: UUID, org_id: UUID,
+    ) -> bool:
+        """True if user_id is a participant of any chat where file_id is attached.
+
+        Used to gate POST /files/{id}/clone — caller must have seen the file in
+        a chat they participate in.
+        """
+        if self.message_attachment_storage is None:
+            return False
+        return await self.message_attachment_storage.is_file_visible_to_user(
+            file_id=file_id, user_id=user_id, org_id=org_id,
+        )

@@ -12,7 +12,13 @@ from uuid import UUID
 from ..models.user_file import UserFile
 from ..storage.user_file_storage import UserFileStorage
 from ..storage.storage_adapter import StorageAdapter
-from ..constants import ALLOWED_FILE_TYPES, CONTENT_TYPES, MAX_FILE_SIZE, TABLE_EXTENSIONS
+from ..constants import (
+    ALLOWED_FILE_TYPES,
+    CONTENT_TYPES,
+    MAX_FILE_SIZE,
+    RAG_COMPATIBLE_TYPES,
+    TABLE_EXTENSIONS,
+)
 
 logger = logging.getLogger("rugpt.services.file")
 
@@ -90,7 +96,9 @@ class FileService:
         # Detect tabular content by file extension
         is_table = ext in TABLE_EXTENSIONS
 
-        # Create metadata record
+        # Create metadata record.
+        # rag_status is explicitly "not_indexed": upload no longer auto-enqueues
+        # RAG indexing — owner must opt in via FileService.index_for_rag.
         file_record = UserFile(
             user_id=user_id,
             org_id=org_id,
@@ -101,6 +109,7 @@ class FileService:
             content_hash=content_hash,
             is_public=is_public,
             is_table=is_table,
+            rag_status="not_indexed",
         )
 
         # Generate storage key: {org_id}/{user_id}/{file_id}.{ext}
@@ -114,6 +123,149 @@ class FileService:
         logger.info(
             f"Uploaded file '{filename}' for user {user_id} "
             f"(key={created.storage_key}, size={len(data)})"
+        )
+        return created
+
+    async def index_for_rag(self, file_id: UUID, requesting_user_id: UUID) -> UserFile:
+        """Owner-initiated: enqueue file for RAG indexing.
+
+        Idempotent: if already pending/indexing/indexed, returns the file unchanged
+        without re-enqueuing.
+
+        Args:
+            file_id: file to index
+            requesting_user_id: must be the file owner
+
+        Raises:
+            FileNotFoundError: file does not exist or is inactive.
+            PermissionError: requesting_user_id is not the owner.
+            ValueError: file type is not RAG-compatible (e.g. image).
+        """
+        file = await self.file_storage.get_by_id(file_id)
+        if file is None or not file.is_active:
+            raise FileNotFoundError(f"File {file_id} not found")
+        if file.user_id != requesting_user_id:
+            raise PermissionError("Only the file owner can index it for RAG")
+        if file.file_type not in RAG_COMPATIBLE_TYPES:
+            raise ValueError(f"File type '{file.file_type}' is not supported by RAG")
+        if file.rag_status in ("pending", "indexing", "indexed"):
+            return file  # idempotent — already in pipeline or done
+
+        # Re-read bytes from storage to enqueue (upload didn't keep them in memory)
+        data = await self.adapter.read(file.storage_key)
+
+        # Persist status transition first so concurrent calls observe pending
+        # and short-circuit via the idempotency guard above.
+        updated = await self.file_storage.update_rag_status(
+            file_id=file.id,
+            rag_status="pending",
+            rag_error=None,
+            indexed_at=None,
+        )
+        if updated is not None:
+            file = updated
+
+        # Submit to ingest queue. Lazy import keeps the FileService unit-testable
+        # without spinning up the ThreadPoolExecutor at import time.
+        # If submit itself fails (e.g. event loop gone, executor shut down during
+        # app shutdown), revert status to 'failed' so the file isn't permanently
+        # stuck at 'pending' (idempotency guard would otherwise block retry).
+        from ..tasks.ingest_queue import ingest_queue
+        try:
+            ingest_queue.submit(
+                file_id=file.id,
+                org_id=str(file.org_id),
+                user_id=str(file.user_id),
+                filename=file.original_filename,
+                data=data,
+            )
+        except Exception as e:
+            logger.error(
+                f"ingest_queue.submit failed for file {file.id}: {e}",
+                exc_info=True,
+            )
+            await self.file_storage.update_rag_status(
+                file_id=file.id,
+                rag_status="failed",
+                rag_error=f"submit failed: {e}",
+                indexed_at=None,
+            )
+            raise
+        logger.info(
+            f"Enqueued file {file.id} for RAG indexing "
+            f"(owner={requesting_user_id}, type={file.file_type})"
+        )
+        return file
+
+    async def clone(
+        self,
+        source_file_id: UUID,
+        requesting_user_id: UUID,
+        org_id: UUID,
+    ) -> UserFile:
+        """«Add to my files»: create a metadata-only clone of source.
+
+        The clone shares the underlying storage_key (no byte copy) and points
+        back to the source via cloned_from_file_id. Each user owns their own
+        rag_status / summary / is_public flags independently.
+
+        Idempotent: if the requesting user already has an active clone of this
+        source, return it instead of creating a duplicate.
+
+        The caller MUST verify chat-access permission (i.e. that the requesting
+        user has seen this file in a chat they belong to) BEFORE calling — that
+        check is a route-layer concern.
+
+        Storage bytes are SHARED with source: clone copies storage_key verbatim,
+        no byte duplication. If source is hard-deleted from filesystem (out of
+        scope for MVP — soft-delete via is_active=false is the normal path), all
+        clones break: cloned_from_file_id ON DELETE SET NULL preserves the
+        metadata link's nullability but storage_key points to nothing.
+
+        Args:
+            source_file_id: file to clone
+            requesting_user_id: future owner of the clone
+            org_id: must match source.org_id (cross-org clones forbidden)
+
+        Raises:
+            FileNotFoundError: source does not exist or is inactive.
+            ValueError: source belongs to a different org.
+        """
+        source = await self.file_storage.get_by_id(source_file_id)
+        if source is None or not source.is_active:
+            raise FileNotFoundError(f"Source file {source_file_id} not found")
+        if source.org_id != org_id:
+            raise ValueError("Cross-org clone not permitted")
+
+        # Idempotency: existing active clone short-circuits.
+        existing = await self.file_storage.find_active_clone(
+            requesting_user_id, source_file_id
+        )
+        if existing is not None:
+            logger.info(
+                f"Clone of {source_file_id} for user {requesting_user_id} "
+                f"already exists ({existing.id}); returning existing"
+            )
+            return existing
+
+        clone = UserFile(
+            org_id=org_id,
+            user_id=requesting_user_id,
+            uploaded_by_user_id=requesting_user_id,
+            storage_key=source.storage_key,  # SHARED — no byte copy
+            original_filename=source.original_filename,
+            file_type=source.file_type,
+            file_size=source.file_size,
+            content_hash=source.content_hash,
+            summary="",                      # owner-specific; reset on clone
+            is_table=source.is_table,
+            is_public=False,                 # clones are never re-shared by default
+            rag_status="not_indexed",        # owner opts in separately
+            cloned_from_file_id=source.id,
+        )
+        created = await self.file_storage.create(clone)
+        logger.info(
+            f"Cloned file {source.id} -> {created.id} for user {requesting_user_id}"
         )
         return created
 
