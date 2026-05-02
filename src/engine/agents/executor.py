@@ -87,10 +87,12 @@ class AgentExecutor:
             file = attachments_by_id.get(file_id)
             if file is None:
                 continue
-            summary_text = file.summary.strip() if file.summary else "нет сводки"
-            attachment_lines.append(
-                f"- {file.original_filename} (id: {file.id}, summary: {summary_text})"
-            )
+            if file.rag_status == "indexed":
+                summary_text = file.summary.strip() if file.summary else "нет сводки"
+                detail = f"summary: {summary_text}"
+            else:
+                detail = f"status: {file.rag_status}"
+            attachment_lines.append(f"- {file.original_filename} (id: {file.id}, {detail})")
 
         if not attachment_lines:
             return None
