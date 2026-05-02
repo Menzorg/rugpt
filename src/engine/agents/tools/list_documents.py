@@ -15,6 +15,7 @@ from uuid import UUID
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool, InjectedToolArg
 
+from ...constants import IMAGE_TYPES
 from ...models.rag import RelatedDoc
 from ...models.user_file import UserFile
 from ...services.rag_service import RAGService
@@ -56,6 +57,13 @@ def _format_user_file(f: UserFile, summary_max_chars: int) -> str:
     )
 
 
+def _is_image_file(f: UserFile) -> bool:
+    file_type = (f.file_type or "").lower()
+    if file_type in IMAGE_TYPES:
+        return True
+    filename = (f.original_filename or "").lower()
+    return any(filename.endswith(f".{ext}") for ext in IMAGE_TYPES)
+
 
 @tool(response_format="content")
 async def list_documents(
@@ -94,7 +102,8 @@ async def list_documents(
         all_files = await _user_file_storage.list_by_org(org_id)
         visible: list[UserFile] = [
             f for f in all_files
-            if f.uploaded_by_user_id == user_id or f.is_public
+            if (f.uploaded_by_user_id == user_id or f.is_public)
+            and not _is_image_file(f)
         ]
 
         if not visible:

@@ -91,7 +91,7 @@ class AgentExecutor:
                 continue
             if file.rag_status == "indexed":
                 summary_text = file.summary.strip() if file.summary else "нет сводки"
-                detail = f"summary: {summary_text}"
+                detail = f"summary: {summary_text[:100]}..."
             else:
                 detail = f"status: {file.rag_status}"
             attachment_lines.append(f"- {file.original_filename} (id: {file.id}, {detail})")
