@@ -147,12 +147,15 @@ class AgentExecutor:
         tools, tools_doc = self.tool_registry.resolve(role.tools) if role.tools else ([], "")
         system_prompt = system_prompt.replace("{tools}", tools_doc)
         llm = self._create_llm(model, temperature)
+        
         runtime_context = RuntimeContext()
 
         # RunnableConfig carries initiator's org_id/user_id for tools.
-        config = RunnableConfig(configurable={
-            "org_id": str(scope_org_id) if scope_org_id else "",
-            "user_id": str(user_id) if user_id else "",
+        config = RunnableConfig(
+            max_concurrency=3,
+            configurable={
+                "org_id": str(scope_org_id) if scope_org_id else "",
+                "user_id": str(user_id) if user_id else "",
         })
 
         # --- Retrieval phase ---

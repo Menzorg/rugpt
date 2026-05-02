@@ -2,22 +2,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .tools.list_documents import ListDocumentsToolRuntime
 
 
-def _list_documents_toolruntime_factory() -> ListDocumentsToolRuntime:
-    from .tools.list_documents import ListDocumentsToolRuntime
+@dataclass
+class ListDocumentsRuntimeData:
+    seen_ids: set[str] = field(default_factory=set)
 
-    return ListDocumentsToolRuntime()
+
+@dataclass
+class RagSearchRuntimeData:
+    chunk_ids: set[str] = field(default_factory=set)
 
 
 @dataclass
 class RuntimeContext:
     """Mutable scratch state scoped to a single agent execution."""
 
-    list_documents_toolruntime: ListDocumentsToolRuntime = field(
-        default_factory=_list_documents_toolruntime_factory,
+    list_documents_runtime_data: ListDocumentsRuntimeData = field(
+        default_factory=ListDocumentsRuntimeData,
+    )
+    rag_search_runtime_data: RagSearchRuntimeData = field(
+        default_factory=RagSearchRuntimeData,
     )

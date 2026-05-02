@@ -14,12 +14,15 @@ from uuid import UUID
 
 from langchain_core.tools import tool, InjectedToolArg
 from langchain_core.runnables import RunnableConfig
+from langgraph.prebuilt import ToolRuntime
 
+from ..runtime import RagSearchRuntimeData, RuntimeContext
 from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
 
 logger = logging.getLogger("rugpt.agents.tools.rag")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
+_DEFAULT_TOP_K = 4
 
 _rag_service: Optional[RAGService] = None
 _user_file_storage: Optional[UserFileStorage] = None
@@ -53,11 +56,25 @@ async def _can_access_file(file_id: str, org_id: str, user_id: str) -> bool:
     )
 
 
+def _top_k_for_seen_chunks(seen_count: int) -> int:
+    if seen_count > 30:
+        return 2
+    if seen_count > 15:
+        return 3
+    return _DEFAULT_TOP_K
+
+
+def _remember_seen_chunks(runtime_data: object, chunks: list) -> None:
+    if isinstance(runtime_data, RagSearchRuntimeData):
+        runtime_data.chunk_ids.update(str(chunk.chunk_id) for chunk in chunks)
+
+
 @tool(response_format="content")
 async def rag_search(
     file_id: str,
     query: str,
     config: Annotated[RunnableConfig, InjectedToolArg],
+    runtime: ToolRuntime[RuntimeContext],
 ) -> str:
     """Search for relevant chunks within a specific document.
     Use list_documents first to find the document ID, then call this tool.
@@ -94,21 +111,37 @@ async def rag_search(
         if file_status != "indexed":
             return f"FILE IS NOT INDEXED. CURRENT STATUS: {file_status}"
 
+        runtime_data = runtime.context.rag_search_runtime_data
+        seen_count = (
+            len(runtime_data.chunk_ids)
+            if isinstance(runtime_data, RagSearchRuntimeData)
+            else 0
+        )
+        top_k = _top_k_for_seen_chunks(seen_count)
+
         chunks = await _rag_service.search_concrete_in_doc(
             file_id=file_id,
             query=query,
-            top_k=5,
+            top_k=top_k,
         )
 
         if not chunks:
             return f"No relevant content found in '{doc.original_filename or file_id}'."
+
+        _remember_seen_chunks(runtime_data, chunks)
 
         lines = [f"## {doc.original_filename or file_id}"]
         for chunk in chunks:
             idx = f"chunk_index={chunk.chunk_index}" if chunk.chunk_index else ""
             lines.append(f"\n[{chunk.source_type}, {idx}] {chunk.chunk_text}")
 
-        logger.info(f"rag_search: returned {len(chunks)} chunks for file_id={file_id}")
+        logger.info(
+            "rag_search: returned %d chunks for file_id=%s (seen_chunks=%d, top_k=%d)",
+            len(chunks),
+            file_id,
+            seen_count,
+            top_k,
+        )
         return "\n".join(lines)
     except Exception as e:
         logger.error(f"rag_search failed: {e}", exc_info=True)
