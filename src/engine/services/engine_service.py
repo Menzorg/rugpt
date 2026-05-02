@@ -20,6 +20,7 @@ from ..storage.notification_channel_storage import NotificationChannelStorage
 from ..storage.notification_log_storage import NotificationLogStorage
 from ..storage.in_app_notification_storage import InAppNotificationStorage
 from ..storage.task_storage import TaskStorage
+from ..storage.task_participant_storage import TaskParticipantStorage
 from ..storage.task_poll_storage import TaskPollStorage
 from ..storage.task_report_storage import TaskReportStorage
 from ..storage.user_file_storage import UserFileStorage
@@ -97,6 +98,7 @@ class EngineService:
         self.notification_log_storage = NotificationLogStorage(self.postgres_dsn)
         self.in_app_notification_storage = InAppNotificationStorage(self.postgres_dsn)
         self.task_storage = TaskStorage(self.postgres_dsn)
+        self.task_participant_storage = TaskParticipantStorage(self.postgres_dsn)
         self.task_poll_storage = TaskPollStorage(self.postgres_dsn)
         self.task_report_storage = TaskReportStorage(self.postgres_dsn)
         self.user_file_storage = UserFileStorage(self.postgres_dsn)
@@ -164,6 +166,7 @@ class EngineService:
             message_storage=self.message_storage,
             user_storage=self.user_storage,
             kafka_producer=self.kafka_producer,
+            task_participant_storage=self.task_participant_storage,
         )
 
         # Initialize task service with chat/event/project/notification integration
@@ -175,6 +178,7 @@ class EngineService:
             project_service=self.project_service,
             task_notification_service=self.task_notification_service,
             user_storage=self.user_storage,
+            task_participant_storage=self.task_participant_storage,
         )
 
         # Reference service (parallel to mentions, resolves !<uuid>/!!<uuid> in messages)
@@ -412,6 +416,7 @@ class EngineService:
         await self.notification_log_storage.init()
         await self.in_app_notification_storage.init()
         await self.task_storage.init()
+        await self.task_participant_storage.init()
         await self.task_poll_storage.init()
         await self.task_report_storage.init()
         await self.user_file_storage.init()
@@ -472,6 +477,7 @@ class EngineService:
         await self.notification_log_storage.close()
         await self.in_app_notification_storage.close()
         await self.task_storage.close()
+        await self.task_participant_storage.close()
         await self.task_poll_storage.close()
         await self.task_report_storage.close()
         await self.user_file_storage.close()
