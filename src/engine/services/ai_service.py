@@ -427,15 +427,25 @@ class AIService:
             if msg.id == message.id:
                 continue
             role_name = "assistant" if msg.sender_type == SenderType.AI_ROLE else "user"
-            messages.append({"role": role_name, "content": msg.content})
+            messages.append({"role": role_name, "content": self._with_attachment_ids(msg)})
 
         # Current message
         content = message.content
         if strip_username:
             content = self._strip_mention(content, strip_username)
+        content = self._with_attachment_ids(message, content)
         messages.append({"role": "user", "content": content})
 
         return messages
+
+    def _with_attachment_ids(self, message: Message, content: Optional[str] = None) -> str:
+        """Append attached file IDs to message content for agent context."""
+        result = message.content if content is None else content
+        if not message.attachments:
+            return result
+
+        file_ids = [str(att.file_id) for att in message.attachments]
+        return f"{result}\n\nAttached file ids: {', '.join(file_ids)}"
 
     def _strip_mention(self, content: str, username: str) -> str:
         """Remove @@username from message content."""
