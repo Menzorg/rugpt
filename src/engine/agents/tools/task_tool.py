@@ -22,6 +22,7 @@ from ...config import Config
 from ...services.task_service import TaskService
 
 logger = logging.getLogger("rugpt.agents.tools.task")
+_TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 
 # ============================================
@@ -126,8 +127,8 @@ def create_task_tools(
             )
             return f"Task '{title}' created (id={task.id})"
         except Exception as e:
-            logger.error(f"task_create failed: {e}")
-            return f"Failed to create task: {e}"
+            logger.error(f"task_create failed: {e}", exc_info=True)
+            return _TOOL_ERROR_RESULT
 
     async def _task_query_async(
         assignee_user_id: Optional[str] = "",
@@ -276,8 +277,8 @@ def create_task_tools(
             )
             return header + "\n" + "\n".join(lines) + footer
         except Exception as e:
-            logger.error(f"task_query failed: {e}")
-            return f"Failed to query tasks: {e}"
+            logger.error(f"task_query failed: {e}", exc_info=True)
+            return _TOOL_ERROR_RESULT
 
     async def _task_update_async(
         task_id: str,
@@ -314,12 +315,9 @@ def create_task_tools(
             if updated is None:
                 return "Nothing to update: no status, title, or description provided"
             return f"Task '{updated.title}' updated (status={updated.status}, description={updated.description})"
-        except ValueError as e:
-            logger.error(f"task_update validation failed: {e}")
-            return f"Invalid input: {e}"
         except Exception as e:
-            logger.error(f"task_update failed: {e}")
-            return f"Failed to update task: {e}"
+            logger.error(f"task_update failed: {e}", exc_info=True)
+            return _TOOL_ERROR_RESULT
 
     create_tool = StructuredTool.from_function(
         coroutine=_task_create_async,

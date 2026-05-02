@@ -21,6 +21,7 @@ from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
 
 logger = logging.getLogger("rugpt.agents.tools.document")
+_TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _TRUNCATED_LIMIT = 500
 _MAX_RESULTS = 100
@@ -160,5 +161,5 @@ async def list_documents(
         return f"Documents ({total} total):\n" + "\n".join(lines)
 
     except Exception as e:
-        logger.error(f"list_documents failed: {e}")
-        return f"Failed to list documents: {e}"
+        logger.error(f"list_documents failed: {e}", exc_info=True)
+        return _TOOL_ERROR_RESULT

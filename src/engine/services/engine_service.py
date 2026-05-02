@@ -258,6 +258,7 @@ class EngineService:
         from ..agents.tools.calendar_tool import create_calendar_tools
         from ..agents.tools.task_tool import create_task_tools
         from ..agents.tools.rag_tool import rag_search
+        from ..agents.tools.expand_chunk_tool import create_expand_chunk_tool
         from ..agents.tools.table_rows_tool import table_rows_search
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
@@ -269,6 +270,7 @@ class EngineService:
 
         # Create task tools wired to TaskService
         task_create_tool, task_query_tool, task_update_tool = create_task_tools(self.task_service)
+        expand_chunk_tool = create_expand_chunk_tool(self.rag_service, self.user_file_storage)
 
         # Initialize tool registry
         self.tool_registry = ToolRegistry()
@@ -278,6 +280,7 @@ class EngineService:
         self.tool_registry.register("task_query", task_query_tool)
         self.tool_registry.register("task_update", task_update_tool)
         self.tool_registry.register("rag_search", rag_search)
+        self.tool_registry.register("expand_chunk", expand_chunk_tool)
         self.tool_registry.register("table_rows_search", table_rows_search)
         self.tool_registry.register("web_search", web_search)
         self.tool_registry.register("role_call", role_call)

@@ -12,7 +12,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from tika import parser
 
 from ..config import Config
-from ..models.rag import ChunkSearchResult, RelatedDoc
+from ..models.rag import ChunkRow, ChunkSearchResult, RelatedDoc
 from ..storage.rag_store import RAG_store
 from ..storage.user_file_storage import UserFileStorage
 
@@ -292,6 +292,7 @@ class RAGService:
             stage = "text_extraction"
             logger.info(f"[{fid}] stage={stage}")
             full_text = self._extract_text_with_tika(data, filename or "uploaded_file")
+            full_text.replace("....", "") # Remove noise like .... in ToC
             if not full_text:
                 raise ValueError("No text content extracted from file.")
             logger.info(f"[{fid}] extracted {len(full_text)} chars")
@@ -439,6 +440,19 @@ class RAGService:
             query_embedding=query_embedding,
             top_k=top_k,
             tsv_weight=tsv_weight,
+        )
+
+    async def get_expanded_context_by_index(
+        self,
+        file_id: str,
+        chunk_index: int,
+        distance: int = 1,
+    ) -> list[ChunkRow]:
+        """Return chunks around the selected chunk_index within a file."""
+        return await self._store.get_expanded_context_by_index(
+            file_id=file_id,
+            chunk_index=chunk_index,
+            distance=distance,
         )
 
     async def get_table_rows_by_range(

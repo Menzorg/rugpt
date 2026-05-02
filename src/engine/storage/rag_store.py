@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from .base import BaseStorage
-from ..models.rag import ChunkSearchResult, RelatedDoc
+from ..models.rag import ChunkRow, ChunkSearchResult, RelatedDoc
 
 
 def _to_pgvector(values: list[float]) -> str:
@@ -286,6 +286,7 @@ class RAG_store(BaseStorage):
                 item_id::text  AS chunk_id,
                 doc_id::text   AS file_id,
                 text_content   AS chunk_text,
+                chunk_index,
                 vec_dist,
                 tsv_score,
                 NULL::int      AS r_vec,
@@ -306,12 +307,50 @@ class RAG_store(BaseStorage):
                 chunk_id=row["chunk_id"],
                 file_id=row["file_id"],
                 chunk_text=row["chunk_text"],
+                chunk_index=row["chunk_index"],
                 vec_dist=row["vec_dist"],
                 tsv_score=row["tsv_score"],
                 r_vec=row["r_vec"],
                 r_tsv=row["r_tsv"],
                 final_rank=row["final_rank"],
                 source_type=row["source_type"],
+            )
+            for row in rows
+        ]
+
+    async def get_expanded_context_by_index(
+        self,
+        file_id: str,
+        chunk_index: int,
+        distance: int = 1,
+    ) -> list[ChunkRow]:
+        """Return neighboring chunks around a file_id + chunk_index anchor."""
+        await self.init()
+        rows = await self.fetch(
+            """
+            SELECT
+                id::text AS id,
+                file_id::text AS file_id,
+                chunk_text,
+                metadata,
+                chunk_index
+            FROM get_expanded_context_by_index(
+                $1::uuid,
+                $2,
+                $3
+            )
+            """,
+            file_id,
+            chunk_index,
+            distance,
+        )
+        return [
+            ChunkRow(
+                id=row["id"],
+                file_id=row["file_id"],
+                chunk_text=row["chunk_text"],
+                metadata=row["metadata"] or {},
+                chunk_index=row["chunk_index"],
             )
             for row in rows
         ]
@@ -345,6 +384,7 @@ class RAG_store(BaseStorage):
                 chunk_id=row["chunk_id"],
                 file_id=row["file_id"],
                 chunk_text=row["chunk_text"],
+                chunk_index=None,
                 vec_dist=None,
                 tsv_score=None,
                 r_vec=None,
@@ -371,6 +411,7 @@ class RAG_store(BaseStorage):
                 item_id::text  AS chunk_id,
                 doc_id::text   AS file_id,
                 text_content   AS chunk_text,
+                chunk_index,
                 vec_dist,
                 tsv_score,
                 NULL::int      AS r_vec,
@@ -397,6 +438,7 @@ class RAG_store(BaseStorage):
                 chunk_id=row["chunk_id"],
                 file_id=row["file_id"],
                 chunk_text=row["chunk_text"],
+                chunk_index=row["chunk_index"],
                 vec_dist=row["vec_dist"],
                 tsv_score=row["tsv_score"],
                 r_vec=row["r_vec"],
