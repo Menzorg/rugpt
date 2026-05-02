@@ -11,7 +11,7 @@ errors that the sync-wrapper approach produced under langchain-openai.
 """
 import logging
 from datetime import date, datetime
-from typing import Annotated, Literal, Optional
+from typing import Annotated, List, Literal, Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
@@ -34,6 +34,7 @@ class TaskCreateInput(BaseModel):
     description: str = Field(default="", description="Task description")
     assignee_user_id: str = Field(description="UUID of the employee to assign the task to")
     deadline: str = Field(default="", description="Deadline in ISO format (e.g. 2025-03-15T18:00:00)")
+    participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of additional task participants")
 
 
 class TaskQueryInput(BaseModel):
@@ -52,6 +53,8 @@ class TaskUpdateInput(BaseModel):
     status: str = Field(default="", description="New status: created, in_progress, done")
     title: str = Field(default="", description="New title (empty = keep current)")
     description: str = Field(default="", description="New description (empty = keep current)")
+    new_participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of task participants to add")
+    delete_participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of task participants to remove")
 
 
 # ============================================
@@ -67,11 +70,18 @@ def create_task_tools(
     Returns (task_create_tool, task_query_tool, task_update_tool).
     """
 
+    def _parse_uuid_list(values: Optional[List[str]]) -> List[UUID]:
+        """Parse optional UUID list args from LangChain/Pydantic."""
+        if values is None:
+            return []
+        return [UUID(v) for v in values if v]
+
     async def _task_create_async(
         title: str,
         assignee_user_id: str,
         deadline: Optional[str] = "",
         description: Optional[str] = "",
+        participant_user_ids: Optional[List[str]] = None,
         priority: Optional[int] = None,
         config: Annotated[RunnableConfig, InjectedToolArg] = None,
     ) -> str:
@@ -84,10 +94,11 @@ def create_task_tools(
             priority: Task priority — 1 (Обычно), 2 (Важно), 3 (Срочно).
                 ALWAYS ask the user which priority they want before creating the task.
                 Do not guess. If the user has not specified, ask explicitly.
+            participant_user_ids: Optional UUIDs of additional task participants.
         """
         logger.info(
             f"tool task_create: title={title!r} assignee={assignee_user_id} "
-            f"deadline={deadline!r} priority={priority}"
+            f"deadline={deadline!r} priority={priority} participants={participant_user_ids}"
         )
         try:
             configurable = (config or {}).get("configurable", {})
@@ -95,6 +106,7 @@ def create_task_tools(
             org_id = configurable.get("org_id", "")
 
             assignee_uuid = UUID(assignee_user_id)
+            participant_uuids = _parse_uuid_list(participant_user_ids)
             dl = datetime.fromisoformat(deadline) if deadline else None
 
             # org_id is injected by the executor from the caller's context; absent means
@@ -112,6 +124,12 @@ def create_task_tools(
                 )
                 if not visible:
                     return "Cannot assign task: user not visible to you."
+                for participant_uuid in participant_uuids:
+                    participant_visible = await engine.department_service.check_visible(
+                        UUID(user_id), participant_uuid, UUID(org_id),
+                    )
+                    if not participant_visible:
+                        return "Cannot add task participant: user not visible to you."
 
             if priority is not None and priority not in (1, 2, 3):
                 return "priority must be 1 (Обычно), 2 (Важно) or 3 (Срочно)"
@@ -124,6 +142,7 @@ def create_task_tools(
                 deadline=dl,
                 created_by_user_id=UUID(user_id) if user_id else None,
                 priority=priority,
+                participant_user_ids=participant_uuids,
             )
             return f"Task '{title}' created (id={task.id})"
         except Exception as e:
@@ -257,16 +276,26 @@ def create_task_tools(
             user_ids |= {t.created_by_user_id for t in shown if t.created_by_user_id}
             users = await engine.user_storage.get_certain_users(list(user_ids))
             name_map = {u.id: u.name for u in users}
+            participants_by_task = await engine.task_participant_storage.get_for_tasks(
+                [t.id for t in shown],
+            )
 
             lines = []
             for t in shown:
                 dl = f", deadline: {t.deadline.isoformat()}" if t.deadline else ""
                 assignee = name_map.get(t.assignee_user_id, str(t.assignee_user_id))
                 creator = name_map.get(t.created_by_user_id, str(t.created_by_user_id)) if t.created_by_user_id else ""
+                participant_names = [
+                    p["name"] for p in participants_by_task.get(t.id, [])
+                ]
+                participants = (
+                    f", participants={', '.join(participant_names)}"
+                    if participant_names else ""
+                )
                 desc = f", description={t.description!r}" if (t.description and include_descriptions) else ""
                 lines.append(
                     f"- [{t.status}] {t.title}{dl}"
-                    f" (id={t.id}, assignee={assignee}{f', creator={creator}' if creator else ''}{desc})"
+                    f" (id={t.id}, assignee={assignee}{f', creator={creator}' if creator else ''}{participants}{desc})"
                 )
 
             header = f"Tasks ({total} total{f', LIMITED TO {Config.TASKS_QUERY_LIMIT}' if limited else ''}):"
@@ -285,6 +314,9 @@ def create_task_tools(
         status: Literal["done", "created", "in_progress"] = "",
         title: Optional[str] = "",
         description: Optional[str] = "",
+        new_participant_user_ids: Optional[List[str]] = None,
+        delete_participant_user_ids: Optional[List[str]] = None,
+        config: Annotated[RunnableConfig, InjectedToolArg] = None,
     ) -> str:
         """Modify an existing task. Use this when changing an already-created task — do NOT call task_create for edits.
         Args:
@@ -292,13 +324,20 @@ def create_task_tools(
             status: New status (created, in_progress, done)
             title: New title (empty = keep current)
             description: New description (empty = keep current)
+            new_participant_user_ids: Optional UUIDs of task participants to add.
+            delete_participant_user_ids: Optional UUIDs of task participants to remove.
         """
         logger.info(
-            f"tool task_update: task={task_id} status={status!r} title_set={bool(title)}"
+            f"tool task_update: task={task_id} status={status!r} title_set={bool(title)} "
+            f"add_participants={new_participant_user_ids} remove_participants={delete_participant_user_ids}"
         )
         try:
             task_uuid = UUID(task_id)
+            add_participant_uuids = _parse_uuid_list(new_participant_user_ids)
+            remove_participant_uuids = _parse_uuid_list(delete_participant_user_ids)
             updated = None
+            participant_changes = []
+
             # Apply field updates before status so the final state reflects both changes.
             if title or description:
                 updated = await task_service.update(
@@ -312,9 +351,53 @@ def create_task_tools(
                 updated = await task_service.update_status(task_uuid, status)
                 if not updated:
                     return f"Task {task_id} not found"
+
+            if add_participant_uuids or remove_participant_uuids:
+                configurable = (config or {}).get("configurable", {})
+                user_id = configurable.get("user_id", "")
+                if not user_id:
+                    return "System can't see current user id"
+
+                from ...services.engine_service import get_engine_service
+                engine = get_engine_service()
+                actor = await engine.user_storage.get_by_id(UUID(user_id))
+                if actor is None:
+                    return "Current user not found"
+
+                for participant_uuid in add_participant_uuids:
+                    await task_service.add_participant(
+                        task_uuid, participant_uuid, actor,
+                    )
+                    participant_changes.append(f"added participant {participant_uuid}")
+
+                for participant_uuid in remove_participant_uuids:
+                    removed = await task_service.remove_participant(
+                        task_uuid, participant_uuid, actor,
+                    )
+                    if removed:
+                        participant_changes.append(f"removed participant {participant_uuid}")
+                    else:
+                        participant_changes.append(f"participant {participant_uuid} was not present")
+
+            if updated is None and participant_changes:
+                updated = await task_service.get(task_uuid)
+                if not updated:
+                    return f"Task {task_id} not found"
+
             if updated is None:
-                return "Nothing to update: no status, title, or description provided"
-            return f"Task '{updated.title}' updated (status={updated.status}, description={updated.description})"
+                return (
+                    "Nothing to update: no status, title, description, "
+                    "participants to add, or participants to remove provided"
+                )
+
+            participant_suffix = (
+                f", participants: {'; '.join(participant_changes)}"
+                if participant_changes else ""
+            )
+            return (
+                f"Task '{updated.title}' updated "
+                f"(status={updated.status}, description={updated.description}{participant_suffix})"
+            )
         except Exception as e:
             logger.error(f"task_update failed: {e}", exc_info=True)
             return _TOOL_ERROR_RESULT
