@@ -26,8 +26,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("rugpt.agents.executor")
 
-_MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. 
-Пользователь о ней не знает и говорить о ней пользователю не надо. 
+_MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. В квадратных скобках единицы информации пронумерованы согласно их давности (номер меньше = информация свежее) 
+Не говори пользователю о существовании сводки. 
 История чата актуальнее сводки"""
 
 class AgentExecutor:
@@ -120,7 +120,7 @@ class AgentExecutor:
         """
         model = role.model_name or self.default_model
 
-        # Fetch org_context for injection into system prompt
+        # Fetch org_context for message injection
         from ..services.engine_service import get_engine_service
         engine = get_engine_service()
 
@@ -130,6 +130,7 @@ class AgentExecutor:
         # place (no real users / files there). Fall back to role.org_id only
         # when there is no initiator (e.g. scheduler-driven calls).
         scope_org_id = role.org_id
+        initiator = None
         if user_id is not None:
             initiator = await engine.user_storage.get_by_id(user_id)
             if initiator and initiator.org_id:
@@ -137,7 +138,7 @@ class AgentExecutor:
 
         org = await engine.org_storage.get_by_id(scope_org_id)
         org_context = org.org_context if org else ""
-        system_prompt = self.prompt_cache.get_prompt(role, org_context=org_context)
+        system_prompt = self.prompt_cache.get_prompt(role)
         tools, tools_doc = self.tool_registry.resolve(role.tools) if role.tools else ([], "")
         system_prompt = system_prompt.replace("{tools}", tools_doc)
         llm = self._create_llm(model, temperature)
@@ -204,11 +205,20 @@ class AgentExecutor:
             user_block += "\nНе раскрывать пользователю его ID."
             system_prompt += f"\n\n{user_block}"
 
+        injected_messages: list[dict] = []
+        if org_context:
+            org_context_message = {"role": "user", "content": f"Контекст организации:\n{org_context}"}
+            injected_messages.append(org_context_message)
+            logger.info("org_context: prepared injected message for org=%s", scope_org_id)
+
         if summary:
             summary_message = {"role": "user", "content": f"Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n{summary}"}
-            messages = [summary_message] + messages
-            logger.info("memory: summary injected as first message for chat=%s", chat_id)
+            injected_messages.append(summary_message)
+            logger.info("memory: prepared summary injected message for chat=%s", chat_id)
             system_prompt += _MEMORY_PROMPT_BLOCK
+
+        if injected_messages:
+            messages = injected_messages + messages
 
         if lessons:
             # Inject corrections 
