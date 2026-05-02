@@ -25,7 +25,7 @@ logger = logging.getLogger("rugpt.agents.tools.document")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _TRUNCATED_LIMIT = 500
-_MAX_RESULTS = 70
+_MAX_RESULTS = 30
 _SUMMARY_CHARS_BUDGET = 20000  # with 30 docs each gets at least 100 chars of summary
 
 _user_file_storage: Optional[UserFileStorage] = None
@@ -156,18 +156,14 @@ async def list_documents(
                 f"- {f.original_filename} (id={f.id}, is_table={f.is_table})"
                 for f in truncated
             ]
-            footer_trunc = (
-                f"\n\nTOTAL COUNT OF DOCUMENTS IN ORGANIZATION IS {total}"
-                f" BUT OUTPUT IS TRUNCATED TO {_TRUNCATED_LIMIT}."
-                f" USE FILTERS IF REQUIRED DOCUMENTS ARE NOT IN LIST"
-            )
+            footer_trunc = f"\nTOO MUCH DOCUMENTS. LIST IS TRUNCATED TO {_TRUNCATED_LIMIT} of {total}\n" if total > _TRUNCATED_LIMIT else ""
             omitted_fields = "created_at, rag_status, file_size, summary"
-            footer = f"\n[Fields omitted to reduce output: {omitted_fields}. Use filters to get full info on specific docs.]"
-            return "\n".join(lines) + footer + footer_trunc
+            footer = f"\n[FIELDS OMITTED TO REDUCE OUTPUT: {omitted_fields}. USE FILTERS TO GET FULL INFO ON SPECIFIC DOCS.]"
+            return f"Documents found ({truncated}):\n" + "\n".join(lines) + footer + footer_trunc
 
         summary_max_chars = max(1, _SUMMARY_CHARS_BUDGET // len(visible))
         lines = [_format_user_file(f, summary_max_chars) for f in visible]
-        return f"Documents ({total} total):\n" + "\n".join(lines)
+        return f"Documents found ({total} total):\n" + "\n".join(lines)
 
     except Exception as e:
         logger.error(f"list_documents failed: {e}", exc_info=True)
