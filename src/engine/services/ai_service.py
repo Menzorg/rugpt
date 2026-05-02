@@ -470,15 +470,23 @@ class AIService:
             file = attachment.file
             if file is None:
                 continue
-            if (file.file_type or "").lower() not in IMAGE_TYPES:
+            file_type = (file.file_type or "").lower()
+            if file_type not in IMAGE_TYPES:
                 continue
             try:
                 data = await self.storage_adapter.read(file.storage_key)
+                payload_type = "video_url" if file_type == "gif" else "image_url"
                 parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": image_bytes_to_data_url(data)},
+                    "type": payload_type,
+                    payload_type: {"url": image_bytes_to_data_url(data, file_type=file_type)},
                 })
             except Exception as e:
+                fallback_text = (
+                    f"(tried to attach image {attachment.file_id}. Appears to be too big and will not be attached)"
+                    if isinstance(e, ValueError) and "too big" in str(e).lower()
+                    else f"(tried to attach image {attachment.file_id}. Faced errors in process)"
+                )
+                parts.append({"type": "text", "text": fallback_text})
                 logger.warning(
                     "Failed to attach image %s to AI conversation: %s",
                     attachment.file_id,

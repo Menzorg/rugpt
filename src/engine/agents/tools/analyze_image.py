@@ -33,8 +33,8 @@ def create_analyze_image_tool(
 ):
     """Create analyze_image tool wired to file metadata and binary storage."""
 
-    async def _read_image_data_url(file_id: str) -> str:
-        """Fetch uploaded image and format it as a JPEG data URL."""
+    async def _read_image_payload(file_id: str) -> dict | str:
+        """Fetch uploaded image and format it for a multimodal message."""
         file_uuid = UUID(file_id)
         file = await file_storage.get_by_id(file_uuid)
         if file is None:
@@ -50,7 +50,13 @@ def create_analyze_image_tool(
         data = await storage_adapter.read(file.storage_key)
         if not data:
             return "Image file is empty."
-        return image_bytes_to_data_url(data)
+        payload_type = "video_url" if file_type == "gif" else "image_url"
+        return {
+            "type": payload_type,
+            payload_type: {
+                "url": image_bytes_to_data_url(data, file_type=file_type),
+            },
+        }
 
     async def _analyze_image_async(query: str, file_id: str) -> str:
         """Analyze an uploaded image with an LLM.
@@ -61,9 +67,9 @@ def create_analyze_image_tool(
         """
         logger.info("tool analyze_image: file_id=%s query=%r", file_id, query)
         try:
-            image_url = await _read_image_data_url(file_id)
-            if not image_url.startswith("data:image/jpeg;base64,"):
-                return image_url
+            media_payload = await _read_image_payload(file_id)
+            if isinstance(media_payload, str):
+                return media_payload
 
             llm = ChatOpenAI(
                 base_url=Config.LLM_BASE_URL,
@@ -75,12 +81,7 @@ def create_analyze_image_tool(
             result = await llm.ainvoke([
                 HumanMessage(content=[
                     {"type": "text", "text": query},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": image_url,
-                        },
-                    },
+                    media_payload,
                 ])
             ])
             return str(result.content).strip()
