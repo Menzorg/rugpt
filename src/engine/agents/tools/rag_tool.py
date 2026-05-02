@@ -83,10 +83,16 @@ async def rag_search(
         if not await _can_access_file(file_id, org_id, user_id):
             return "You don't have access to that document."
 
-        doc = await _rag_service.get_doc_by_id(file_id)
+
+        file_uuid = UUID(file_id)
+        doc = await _user_file_storage.get_by_id(file_uuid)
         if doc is None:
             logger.info(f"rag_search: document not found for file_id='{file_id}'")
             return "Document not found."
+        
+        file_status = await _user_file_storage.get_status(file_uuid)
+        if file_status != "indexed":
+            return f"FILE IS NOT INDEXED. CURRENT STATUS: {file_status}"
 
         chunks = await _rag_service.search_concrete_in_doc(
             file_id=file_id,
@@ -95,9 +101,9 @@ async def rag_search(
         )
 
         if not chunks:
-            return f"No relevant content found in '{doc.doc_title or file_id}'."
+            return f"No relevant content found in '{doc.original_filename or file_id}'."
 
-        lines = [f"## {doc.doc_title or file_id}"]
+        lines = [f"## {doc.original_filename or file_id}"]
         for chunk in chunks:
             idx = f"chunk_index={chunk.chunk_index}" if chunk.chunk_index else ""
             lines.append(f"\n[{chunk.source_type}, {idx}] {chunk.chunk_text}")

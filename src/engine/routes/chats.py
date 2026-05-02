@@ -260,6 +260,14 @@ async def send_message(
     # Parse mentions
     mentions = await engine.mention_service.resolve_mentions(request.content, org_id, sender_id=user_id)
 
+    if (
+        request.file_ids
+        and len(request.file_ids) <= 5
+        and await engine.chat_storage.is_ai_direct_chat(chat_id)
+    ):
+        for fid in request.file_ids:
+            await engine.file_service.index_for_rag(fid, user_id)
+
     # Send user message
     message = await engine.chat_service.send_message(
         chat_id=chat_id,

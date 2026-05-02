@@ -5,7 +5,7 @@ Main router: dispatches execution to the right graph based on role.agent_type.
 """
 import asyncio
 import logging
-from typing import List, Optional, TYPE_CHECKING
+from typing import Any, List, Optional, TYPE_CHECKING
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
@@ -68,6 +68,33 @@ class AgentExecutor:
             temperature=temperature,
             timeout=self.timeout,
         )
+
+    async def _build_chat_attachments_block(
+        self,
+        engine: Any,
+        chat_id: UUID,
+        limit: int = 10,
+    ) -> Optional[str]:
+        """Build prompt context for recent chat attachments."""
+        attachment_ids = await engine.chat_storage.get_attachments(chat_id)
+        recent_attachment_ids = attachment_ids[-limit:]
+        attachments_by_id = await engine.user_file_storage.get_many_by_ids(
+            recent_attachment_ids,
+        )
+
+        attachment_lines = []
+        for file_id in recent_attachment_ids:
+            file = attachments_by_id.get(file_id)
+            if file is None:
+                continue
+            summary_text = file.summary.strip() if file.summary else "нет сводки"
+            attachment_lines.append(
+                f"- {file.original_filename} (id: {file.id}, summary: {summary_text})"
+            )
+
+        if not attachment_lines:
+            return None
+        return f"Вложения чата (последние {limit}):\n" + "\n".join(attachment_lines)
 
     async def execute(
         self,
@@ -169,6 +196,10 @@ class AgentExecutor:
                 if dept:
                     user_lines.append(f"Отдел: {dept.name}")
                     user_lines.append(f"Руководитель отдела: {'да' if initiator.is_head else 'нет'}")
+            if chat_id is not None:
+                attachments_block = await self._build_chat_attachments_block(engine, chat_id)
+                if attachments_block:
+                    user_lines.append(attachments_block)
             user_block = "Информация о пользователе:\n" + "\n".join(l for l in user_lines if l)
             user_block += "\nНе раскрывать пользователю его ID."
             system_prompt += f"\n\n{user_block}"
