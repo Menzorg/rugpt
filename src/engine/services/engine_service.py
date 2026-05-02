@@ -356,6 +356,7 @@ class EngineService:
             support_ticket_event_storage=self.support_ticket_event_storage,
             task_poll_storage=self.task_poll_storage,
             task_storage=self.task_storage,
+            storage_adapter=self.storage_adapter,
         )
 
         # Wire poll-chat + AI deps into TaskPollService (post-construction —

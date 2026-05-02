@@ -12,6 +12,7 @@ from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from ..config import Config
+from ..constants import IMAGE_TYPES
 from ..models.agent_run import AgentRun
 from ..models.chat import ChatType
 from ..models.message import Message, Mention, MentionType, SenderType
@@ -26,6 +27,7 @@ from ..storage.user_storage import UserStorage
 from ..storage.message_storage import MessageStorage
 from ..storage.chat_storage import ChatStorage
 from ..storage.agent_run_storage import AgentRunStorage
+from ..utils.imageparser import image_bytes_to_data_url
 from .prompt_cache import PromptCache
 
 # Avoid circular import: agents.executor -> services -> ai_service -> agents.executor
@@ -36,6 +38,7 @@ if TYPE_CHECKING:
     from ..storage.support_ticket_event_storage import SupportTicketEventStorage
     from ..storage.task_poll_storage import TaskPollStorage
     from ..storage.task_storage import TaskStorage
+    from ..storage.storage_adapter import StorageAdapter
 
 logger = logging.getLogger("rugpt.services.ai")
 
@@ -63,6 +66,7 @@ class AIService:
         support_ticket_event_storage: Optional["SupportTicketEventStorage"] = None,
         task_poll_storage: Optional["TaskPollStorage"] = None,
         task_storage: Optional["TaskStorage"] = None,
+        storage_adapter: Optional["StorageAdapter"] = None,
     ):
         self.role_storage = role_storage
         self.user_storage = user_storage
@@ -84,6 +88,7 @@ class AIService:
         # without these wired).
         self.task_poll_storage = task_poll_storage
         self.task_storage = task_storage
+        self.storage_adapter = storage_adapter
 
     def _is_support_aware(self) -> bool:
         """True iff both support storages are wired. Gates the support hook so
@@ -434,18 +439,54 @@ class AIService:
         if strip_username:
             content = self._strip_mention(content, strip_username)
         content = self._with_attachment_ids(message, content)
+        content = await self._with_image_attachments(message, content)
         messages.append({"role": "user", "content": content})
 
         return messages
 
     def _with_attachment_ids(self, message: Message, content: Optional[str] = None) -> str:
-        """Append attached file IDs to message content for agent context."""
+        """Append non-image attached file IDs to message content for agent context."""
         result = message.content if content is None else content
         if not message.attachments:
             return result
 
-        file_ids = [str(att.file_id) for att in message.attachments]
+        file_ids = []
+        for attachment in message.attachments:
+            file = attachment.file
+            if file is not None and (file.file_type or "").lower() in IMAGE_TYPES:
+                continue
+            file_ids.append(str(attachment.file_id))
+        if not file_ids:
+            return result
         return f"{result}\n\nAttached file ids: {', '.join(file_ids)}"
+
+    async def _with_image_attachments(self, message: Message, content: str):
+        """Format current message as multimodal content when image attachments exist."""
+        if not message.attachments or self.storage_adapter is None:
+            return content
+
+        parts = [{"type": "text", "text": content}]
+        for attachment in message.attachments:
+            file = attachment.file
+            if file is None:
+                continue
+            if (file.file_type or "").lower() not in IMAGE_TYPES:
+                continue
+            try:
+                data = await self.storage_adapter.read(file.storage_key)
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": image_bytes_to_data_url(data)},
+                })
+            except Exception as e:
+                logger.warning(
+                    "Failed to attach image %s to AI conversation: %s",
+                    attachment.file_id,
+                    e,
+                    exc_info=True,
+                )
+
+        return parts if len(parts) > 1 else content
 
     def _strip_mention(self, content: str, username: str) -> str:
         """Remove @@username from message content."""

@@ -3,8 +3,6 @@ Analyze Image Tool
 
 LangChain tool for asking the LLM about an uploaded image attachment.
 """
-import base64
-from io import BytesIO
 import logging
 from typing import Optional
 from uuid import UUID
@@ -12,18 +10,16 @@ from uuid import UUID
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import StructuredTool
 from langchain_openai import ChatOpenAI
-from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from ...config import Config
 from ...constants import IMAGE_TYPES
 from ...storage.storage_adapter import StorageAdapter
 from ...storage.user_file_storage import UserFileStorage
+from ...utils.imageparser import image_bytes_to_data_url
 
 logger = logging.getLogger("rugpt.agents.tools.analyze_image")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
-_MAX_IMAGE_SIDE = 2048
-_JPEG_QUALITY = 85
 
 
 class AnalyzeImageInput(BaseModel):
@@ -37,8 +33,8 @@ def create_analyze_image_tool(
 ):
     """Create analyze_image tool wired to file metadata and binary storage."""
 
-    async def _read_normalized_image_jpeg(file_id: str) -> bytes | str:
-        """Fetch uploaded image and normalize it to bounded JPEG bytes."""
+    async def _read_image_data_url(file_id: str) -> str:
+        """Fetch uploaded image and format it as a JPEG data URL."""
         file_uuid = UUID(file_id)
         file = await file_storage.get_by_id(file_uuid)
         if file is None:
@@ -54,19 +50,7 @@ def create_analyze_image_tool(
         data = await storage_adapter.read(file.storage_key)
         if not data:
             return "Image file is empty."
-        with Image.open(BytesIO(data)) as image:
-            image = ImageOps.exif_transpose(image)
-            image.thumbnail((_MAX_IMAGE_SIDE, _MAX_IMAGE_SIDE))
-            if image.mode not in ("RGB", "L"):
-                image = image.convert("RGBA")
-                background = Image.new("RGBA", image.size, (255, 255, 255, 255))
-                image = Image.alpha_composite(background, image).convert("RGB")
-            else:
-                image = image.convert("RGB")
-
-            out = BytesIO()
-            image.save(out, format="JPEG", quality=_JPEG_QUALITY, optimize=True)
-            return out.getvalue()
+        return image_bytes_to_data_url(data)
 
     async def _analyze_image_async(query: str, file_id: str) -> str:
         """Analyze an uploaded image with an LLM.
@@ -77,10 +61,9 @@ def create_analyze_image_tool(
         """
         logger.info("tool analyze_image: file_id=%s query=%r", file_id, query)
         try:
-            jpeg_or_error = await _read_normalized_image_jpeg(file_id)
-            if isinstance(jpeg_or_error, str):
-                return jpeg_or_error
-            b64 = base64.b64encode(jpeg_or_error).decode("ascii")
+            image_url = await _read_image_data_url(file_id)
+            if not image_url.startswith("data:image/jpeg;base64,"):
+                return image_url
 
             llm = ChatOpenAI(
                 base_url=Config.LLM_BASE_URL,
@@ -95,7 +78,7 @@ def create_analyze_image_tool(
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/jpeg;base64,{b64}",
+                            "url": image_url,
                         },
                     },
                 ])
