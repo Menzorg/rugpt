@@ -16,7 +16,7 @@ from ...config import Config
 from ...constants import IMAGE_TYPES
 from ...storage.storage_adapter import StorageAdapter
 from ...storage.user_file_storage import UserFileStorage
-from ...utils.imageparser import image_bytes_to_data_url
+from ...utils.image_parser import image_bytes_to_data_url
 
 logger = logging.getLogger("rugpt.agents.tools.analyze_image")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"

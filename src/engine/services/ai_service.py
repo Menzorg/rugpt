@@ -27,7 +27,7 @@ from ..storage.user_storage import UserStorage
 from ..storage.message_storage import MessageStorage
 from ..storage.chat_storage import ChatStorage
 from ..storage.agent_run_storage import AgentRunStorage
-from ..utils.imageparser import image_bytes_to_data_url
+from ..utils.image_parser import image_bytes_to_data_url
 from .prompt_cache import PromptCache
 
 # Avoid circular import: agents.executor -> services -> ai_service -> agents.executor
