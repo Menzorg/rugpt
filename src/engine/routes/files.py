@@ -84,21 +84,14 @@ async def upload_file(
 
 @router.get("", response_model=List[FileResponse])
 async def list_files(
-    user_id: Optional[str] = Query(None, description="Filter by employee UUID"),
     current_user: dict = Depends(get_current_user),
 ):
-    """List files. Filter by user_id or get all org files (admin)."""
+    """List files. Admin видит весь орг, обычный юзер — только свои."""
     engine = get_engine_service()
-
-    if user_id:
-        try:
-            user_uuid = UUID(user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid user_id")
-        files = await engine.file_service.list_by_user(user_uuid)
-    else:
+    if current_user.get("is_admin"):
         files = await engine.file_service.list_by_org(current_user["org_id"])
-
+    else:
+        files = await engine.file_service.list_by_user(current_user["user_id"])
     return [FileResponse(**f.to_dict()) for f in files]
 
 

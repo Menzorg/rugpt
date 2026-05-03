@@ -5,7 +5,7 @@ Business logic for employee task management.
 Creates in-app notifications on task events.
 """
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID
 
@@ -896,7 +896,8 @@ class TaskService:
 
     async def check_overdue(self) -> List[Task]:
         """Check for overdue tasks and update their status. Called by scheduler."""
-        now = datetime.utcnow()
+        # task.deadline приходит из timestamptz (aware), поэтому сравниваем aware-aware.
+        now = datetime.now(timezone.utc)
         tasks = await self.storage.list_active_with_deadline()
         logger.info(f"check_overdue: scanning {len(tasks)} tasks with deadline")
         overdue_tasks = []
