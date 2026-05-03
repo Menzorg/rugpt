@@ -145,6 +145,31 @@ async def create_direct_chat(
     return ChatResponse(**chat.to_dict())
 
 
+@router.get("/pending-review", response_model=List[MessageResponse])
+async def get_pending_review_messages(
+    user_id: UUID,  # In real app, get from JWT
+    engine: EngineService = Depends(get_engine),
+):
+    """Get AI messages pending review by user (ai_is_valid IS NULL).
+
+    NB: должен быть объявлен ДО `/{chat_id}` — иначе FastAPI сматчит
+    'pending-review' как chat_id и упадёт на UUID-валидации (422).
+    """
+    messages = await engine.chat_service.get_pending_review_messages(user_id)
+    return [MessageResponse(**msg.to_dict()) for msg in messages]
+
+
+# Keep old endpoint for backward compatibility (та же причина с порядком).
+@router.get("/unvalidated", response_model=List[MessageResponse])
+async def get_unvalidated_messages(
+    user_id: UUID,
+    engine: EngineService = Depends(get_engine),
+):
+    """Deprecated: use /pending-review instead"""
+    messages = await engine.chat_service.get_pending_review_messages(user_id)
+    return [MessageResponse(**msg.to_dict()) for msg in messages]
+
+
 @router.get("/{chat_id}", response_model=ChatResponse)
 async def get_chat(
     chat_id: UUID,
@@ -375,27 +400,6 @@ async def delete_message(
     if not success:
         raise HTTPException(status_code=400, detail="Could not delete message")
     return {"success": True}
-
-
-@router.get("/pending-review", response_model=List[MessageResponse])
-async def get_pending_review_messages(
-    user_id: UUID,  # In real app, get from JWT
-    engine: EngineService = Depends(get_engine)
-):
-    """Get AI messages pending review by user (ai_is_valid IS NULL)"""
-    messages = await engine.chat_service.get_pending_review_messages(user_id)
-    return [MessageResponse(**msg.to_dict()) for msg in messages]
-
-
-# Keep old endpoint for backward compatibility
-@router.get("/unvalidated", response_model=List[MessageResponse])
-async def get_unvalidated_messages(
-    user_id: UUID,
-    engine: EngineService = Depends(get_engine)
-):
-    """Deprecated: use /pending-review instead"""
-    messages = await engine.chat_service.get_pending_review_messages(user_id)
-    return [MessageResponse(**msg.to_dict()) for msg in messages]
 
 
 class CorrectionRuleResponse(BaseModel):
