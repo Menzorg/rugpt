@@ -42,6 +42,13 @@ rsync -avz --progress \
   --exclude 'uploads' \
   ./ ${SERVER}:${REMOTE_PATH}/
 
+# === 1b. Mirror migrations exactly (--delete) ===
+# Без этого переименование миграции оставляет на проде осиротевший файл,
+# который migrate.sh потом накатит как «новый».
+rsync -avz --progress --delete \
+  -e "ssh" \
+  ./src/engine/migrations/ ${SERVER}:${REMOTE_PATH}/src/engine/migrations/
+
 if [ "$MODE" = "sync" ]; then
   echo "Sync завершён (pip install и restart пропущены)."
   exit 0
