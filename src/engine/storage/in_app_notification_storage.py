@@ -51,26 +51,28 @@ class InAppNotificationStorage(BaseStorage):
     async def list_by_user(
         self,
         user_id: UUID,
+        type: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
         unread_only: bool = False,
     ) -> List[InAppNotification]:
-        """List notifications for a user, newest first"""
+        """List notifications for a user. `type` опциональный фильтр (None = все)."""
+        clauses = ["user_id = $1"]
+        params: list = [user_id]
         if unread_only:
-            query = """
-                SELECT * FROM in_app_notifications
-                WHERE user_id = $1 AND is_read = false
-                ORDER BY created_at DESC
-                LIMIT $2 OFFSET $3
-            """
-        else:
-            query = """
-                SELECT * FROM in_app_notifications
-                WHERE user_id = $1
-                ORDER BY is_read ASC, created_at DESC
-                LIMIT $2 OFFSET $3
-            """
-        rows = await self.fetch(query, user_id, limit, offset)
+            clauses.append("is_read = FALSE")
+        if type:  # truthy: пустая строка от фронта (?type=) трактуется как «фильтр не задан»
+            params.append(type)
+            clauses.append(f"type = ${len(params)}")
+        params.append(limit)
+        params.append(offset)
+        query = (
+            f"SELECT * FROM in_app_notifications "
+            f"WHERE {' AND '.join(clauses)} "
+            f"ORDER BY is_read ASC, created_at DESC "
+            f"LIMIT ${len(params) - 1} OFFSET ${len(params)}"
+        )
+        rows = await self.fetch(query, *params)
         return [self._row_to_notification(r) for r in rows]
 
     async def count_unread(self, user_id: UUID) -> int:

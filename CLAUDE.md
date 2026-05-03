@@ -10,7 +10,7 @@
 - LangChain + LangGraph (агентный фреймворк)
 - JWT (PyJWT), bcrypt для паролей
 - croniter (рекуррентные события)
-- aiosmtplib (email-уведомления)
+- aiosmtplib (email-уведомления — код есть, в проде НЕ настроено, на будущее)
 
 ## Структура проекта
 
@@ -52,7 +52,7 @@ src/engine/
 │   ├── ai_service.py                 # + async mode (Kafka publish to agent.requests)
 │   ├── prompt_cache.py
 │   ├── calendar_service.py, scheduler_service.py
-│   ├── notification_service.py       # Telegram/Email
+│   ├── notification_service.py       # Telegram/Email (код есть, в проде не настроено)
 │   ├── task_notification_service.py  # item 10: PM-агент уведомления
 │   ├── task_service.py               # + hook'и PM notify + events
 │   ├── task_event_service.py         # item 11: audit trail
@@ -80,7 +80,7 @@ src/engine/
 │   ├── graphs/ (simple, chain, multi_agent, rule_generator)
 │   └── tools/ (registry, calendar_tool, task_tool, rag_tool, web_tool, role_call_tool)
 │
-├── notifications/      # Каналы доставки: telegram_sender, email_sender
+├── notifications/      # Каналы доставки: telegram_sender, email_sender (опционально, в проде не активны)
 │
 ├── prompts/            # Системные промпты
 │   ├── lawyer.md, accountant.md, hr.md, chu.md
@@ -161,8 +161,8 @@ Base URL: `http://127.0.0.1:8100/api/v1`
 
 ### Уведомления
 
-- **NotificationService**: оркестрация Telegram/Email по каналам (priority desc) + notification_log
-- **InAppNotificationService**: колокольчик, типы `new_task | poll | report | mention | task_status_change`
+- **NotificationService**: оркестрация внешних каналов (Telegram/Email). Код есть, в текущем проде НЕ активирован — на будущее. Сейчас всё уведомление = колокольчик.
+- **InAppNotificationService**: колокольчик, типы `new_task | poll | report | mention | task_status_change | system`
 - **TaskNotificationService** (item 10): PM-агент автоматически пишет в личные direct-чаты юзеров при изменениях задач. Сообщения публикуются в Kafka `chat.events` → NestJS broadcast через WS
 
 ### Проекты и чаты задач (item 11)

@@ -36,6 +36,10 @@ class RejectMessageRequest(BaseModel):
     correction_text: str
 
 
+class ReplyToMentionRequest(BaseModel):
+    content: str
+
+
 class ChatResponse(BaseModel):
     id: str
     org_id: str
@@ -281,6 +285,22 @@ async def send_message(
         file_ids=request.file_ids,
     )
 
+    # In-app notifications для @user-упоминаний (без self-mention).
+    # @@-mentions идут отдельным путём ниже через process_ai_mentions.
+    sender = await engine.user_storage.get_by_id(user_id)
+    sender_label = f"@{sender.username}" if sender else "пользователь"
+    for m in mentions:
+        if m.type.value == "user" and m.user_id != user_id:
+            await engine.in_app_notification_service.create(
+                user_id=m.user_id,
+                org_id=org_id,
+                type="mention",
+                title=f"Вас упомянул {sender_label}",
+                content=request.content[:200],
+                reference_type="message",
+                reference_id=message.id,
+            )
+
     # Process @@ mentions -> AI responses (sync path) OR enqueue (async path)
     ai_responses = []
     ai_mentions = [m for m in mentions if m.type.value == "ai_role"]
@@ -416,3 +436,54 @@ async def reject_message(
         correction_text=request.correction_text,
     )
     return CorrectionRuleResponse(**rule.to_dict())
+
+
+def _is_mentioned(original, sender) -> bool:
+    """True if sender appears in original.mentions, regardless of mention type.
+
+    `mention_service.resolve_mentions` пишет реальный user_id владельца
+    и для @user, и для @@user (когда @@ резолвится к человеку, а не к
+    системнику). Поэтому хватает простого сравнения user_id, без role_id-логики
+    и без обращений к user_storage за дополнительными данными.
+
+    Системные AI-роли типа @@pm резолвятся к system user'ам — их user_id
+    не совпадёт с sender.id (который всегда обычный человек), так что
+    случай отсекается естественным образом.
+    """
+    return any(m.user_id == sender.id for m in (original.mentions or []))
+
+
+@router.post("/messages/{message_id}/reply", response_model=MessageResponse)
+async def reply_to_mention(
+    message_id: UUID,
+    request: ReplyToMentionRequest,
+    user_id: UUID,
+    org_id: UUID,
+    engine: EngineService = Depends(get_engine),
+):
+    """Reply to a mentioning message without joining the chat as participant.
+
+    Гейт прав: sender должен быть упомянут в `original.mentions`.
+    Single-use: один реплай на одну (mentioning_message, sender) пару.
+    """
+    original = await engine.chat_service.get_message(message_id)
+    if not original:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    sender = await engine.user_storage.get_by_id(user_id)
+    if not sender:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not _is_mentioned(original, sender):
+        raise HTTPException(status_code=403, detail="Not mentioned in this message")
+
+    if await engine.message_storage.find_reply(message_id, sender.id):
+        raise HTTPException(status_code=409, detail="Already replied to this mention")
+
+    reply = await engine.chat_service.send_message(
+        chat_id=original.chat_id,
+        sender_id=sender.id,
+        content=request.content,
+        reply_to_id=message_id,
+    )
+    return MessageResponse(**reply.to_dict())

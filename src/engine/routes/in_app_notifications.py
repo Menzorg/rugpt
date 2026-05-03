@@ -43,12 +43,14 @@ async def list_notifications(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     unread_only: bool = Query(False),
+    type: Optional[str] = Query(None, description="Filter by notification type (e.g. 'mention')"),
     current_user: dict = Depends(get_current_user),
 ):
-    """List notifications for the current user"""
+    """List notifications for the current user. Optional `type` filter (e.g. 'mention')."""
     engine = get_engine_service()
     notifications = await engine.in_app_notification_service.list_for_user(
         user_id=current_user["user_id"],
+        type=type,
         limit=limit,
         offset=offset,
         unread_only=unread_only,

@@ -191,6 +191,23 @@ class MessageStorage(BaseStorage):
         row = await self.fetchrow(query, chat_id, sender_id)
         return row is not None
 
+    async def find_reply(self, reply_to_id: UUID, sender_id: UUID) -> Optional[Message]:
+        """Find an existing reply by sender to a specific message.
+
+        Used by the reply-to-mention endpoint to enforce single-use semantics:
+        a user may reply to a given mentioning message at most once via this path.
+
+        Намеренно НЕ фильтруем `is_deleted` — single-use значит single-use.
+        Если reply был отправлен и потом soft-deleted (например, модератором),
+        второй reply всё равно запрещён. Если в будущем продукт решит «удалённое
+        не считается» — снять оговорку и добавить `AND is_deleted = false`.
+        """
+        row = await self.fetchrow(
+            "SELECT * FROM messages WHERE reply_to_id = $1 AND sender_id = $2 LIMIT 1",
+            reply_to_id, sender_id,
+        )
+        return self._row_to_message(row) if row else None
+
     def _row_to_message(self, row) -> Message:
         """Convert database row to Message"""
         mentions_data = row["mentions"]
