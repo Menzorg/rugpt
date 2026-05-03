@@ -56,6 +56,41 @@ class ChatStorage(BaseStorage):
         row = await self.fetchrow(query, str(user1_id), str(user2_id))
         return self._row_to_chat(row) if row else None
 
+    async def is_ai_direct_chat(self, chat_id: UUID) -> bool:
+        """Check whether chat is a 2-person direct chat with a system user."""
+        query = """
+            SELECT EXISTS (
+                SELECT c.id
+                FROM chats c
+                JOIN users u ON u.id = ANY(c.participants::uuid[])
+                WHERE c.id = $1
+                GROUP BY c.id
+                HAVING COUNT(u.id) = 2
+                   AND SUM(u.is_system::int) > 0
+            )
+        """
+        return await self.fetchval(query, chat_id)
+
+    async def get_attachments(self, chat_id: UUID, limit: Optional[int] = None) -> List[UUID]:
+        """List distinct file IDs attached to messages in a chat."""
+        query = """
+            SELECT file_id
+            FROM (
+                SELECT DISTINCT ON (ma.file_id)
+                    ma.file_id,
+                    m.created_at,
+                    ma.position
+                FROM message_attachments ma
+                JOIN messages m ON m.id = ma.message_id
+                WHERE m.chat_id = $1
+                ORDER BY ma.file_id, m.created_at DESC, ma.position DESC
+            ) latest
+            ORDER BY created_at DESC, position DESC
+            LIMIT $2
+        """
+        rows = await self.fetch(query, chat_id, limit)
+        return [row["file_id"] for row in rows]
+
     async def list_by_user(
         self,
         user_id: UUID,

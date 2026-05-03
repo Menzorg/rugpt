@@ -84,6 +84,7 @@ class Config:
     LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://192.168.1.80:4000/v1")
     LLM_API_KEY = os.getenv("LLM_API_KEY", "sk-dummy")
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "google/gemma-4-31B-it")
+    IMAGE_ANALYSIS_MODEL = os.getenv("IMAGE_ANALYSIS_MODEL", DEFAULT_MODEL)
 
     # Legacy OpenAI fields kept as aliases — some older code paths may still
     # read them, but new code should use LLM_* above.

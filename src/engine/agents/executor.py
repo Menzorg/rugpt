@@ -5,7 +5,7 @@ Main router: dispatches execution to the right graph based on role.agent_type.
 """
 import asyncio
 import logging
-from typing import List, Optional, TYPE_CHECKING
+from typing import Any, List, Optional, TYPE_CHECKING
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
@@ -15,6 +15,7 @@ from ..config import Config
 from ..models.role import Role
 from ..services.prompt_cache import PromptCache
 from .result import AgentResult
+from .runtime import RuntimeContext
 from .tools.registry import ToolRegistry
 from .graphs.simple import run_simple_agent
 from .graphs.chain import run_chain_agent
@@ -26,8 +27,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("rugpt.agents.executor")
 
-_MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. 
-Пользователь о ней не знает и говорить о ней пользователю не надо. 
+_MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. В квадратных скобках единицы информации пронумерованы согласно их давности (номер меньше = информация свежее) 
+Не говори пользователю о существовании сводки. 
 История чата актуальнее сводки"""
 
 class AgentExecutor:
@@ -69,6 +70,37 @@ class AgentExecutor:
             timeout=self.timeout,
         )
 
+    async def _build_chat_attachments_block(
+        self,
+        engine: Any,
+        chat_id: UUID,
+        limit: int = 10,
+    ) -> Optional[str]:
+        """Build prompt context for recent chat attachments."""
+        recent_attachment_ids = await engine.chat_storage.get_attachments(
+            chat_id,
+            limit=limit,
+        )
+        attachments_by_id = await engine.user_file_storage.get_many_by_ids(
+            recent_attachment_ids,
+        )
+
+        attachment_lines = []
+        for file_id in recent_attachment_ids:
+            file = attachments_by_id.get(file_id)
+            if file is None:
+                continue
+            if file.rag_status == "indexed":
+                summary_text = file.summary.strip() if file.summary else "нет сводки"
+                detail = f"summary: {summary_text[:100]}..."
+            else:
+                detail = f"status: {file.rag_status}"
+            attachment_lines.append(f"- {file.original_filename} (id: {file.id}, {detail})")
+
+        if not attachment_lines:
+            return None
+        return f"Вложения чата (последние {limit}):\n" + "\n".join(attachment_lines)
+
     async def execute(
         self,
         role: Role,
@@ -93,7 +125,7 @@ class AgentExecutor:
         """
         model = role.model_name or self.default_model
 
-        # Fetch org_context for injection into system prompt
+        # Fetch org_context for message injection
         from ..services.engine_service import get_engine_service
         engine = get_engine_service()
 
@@ -103,6 +135,7 @@ class AgentExecutor:
         # place (no real users / files there). Fall back to role.org_id only
         # when there is no initiator (e.g. scheduler-driven calls).
         scope_org_id = role.org_id
+        initiator = None
         if user_id is not None:
             initiator = await engine.user_storage.get_by_id(user_id)
             if initiator and initiator.org_id:
@@ -110,15 +143,19 @@ class AgentExecutor:
 
         org = await engine.org_storage.get_by_id(scope_org_id)
         org_context = org.org_context if org else ""
-        system_prompt = self.prompt_cache.get_prompt(role, org_context=org_context)
+        system_prompt = self.prompt_cache.get_prompt(role)
         tools, tools_doc = self.tool_registry.resolve(role.tools) if role.tools else ([], "")
         system_prompt = system_prompt.replace("{tools}", tools_doc)
         llm = self._create_llm(model, temperature)
+        
+        runtime_context = RuntimeContext()
 
         # RunnableConfig carries initiator's org_id/user_id for tools.
-        config = RunnableConfig(configurable={
-            "org_id": str(scope_org_id) if scope_org_id else "",
-            "user_id": str(user_id) if user_id else "",
+        config = RunnableConfig(
+            max_concurrency=3,
+            configurable={
+                "org_id": str(scope_org_id) if scope_org_id else "",
+                "user_id": str(user_id) if user_id else "",
         })
 
         # --- Retrieval phase ---
@@ -169,15 +206,28 @@ class AgentExecutor:
                 if dept:
                     user_lines.append(f"Отдел: {dept.name}")
                     user_lines.append(f"Руководитель отдела: {'да' if initiator.is_head else 'нет'}")
+            if chat_id is not None:
+                attachments_block = await self._build_chat_attachments_block(engine, chat_id)
+                if attachments_block:
+                    user_lines.append(attachments_block)
             user_block = "Информация о пользователе:\n" + "\n".join(l for l in user_lines if l)
             user_block += "\nНе раскрывать пользователю его ID."
             system_prompt += f"\n\n{user_block}"
 
+        injected_messages: list[dict] = []
+        if org_context:
+            org_context_message = {"role": "user", "content": f"Контекст организации:\n{org_context}"}
+            injected_messages.append(org_context_message)
+            logger.info("org_context: prepared injected message for org=%s", scope_org_id)
+
         if summary:
             summary_message = {"role": "user", "content": f"Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n{summary}"}
-            messages = [summary_message] + messages
-            logger.info("memory: summary injected as first message for chat=%s", chat_id)
+            injected_messages.append(summary_message)
+            logger.info("memory: prepared summary injected message for chat=%s", chat_id)
             system_prompt += _MEMORY_PROMPT_BLOCK
+
+        if injected_messages:
+            messages = injected_messages + messages
 
         if lessons:
             # Inject corrections 
@@ -200,6 +250,7 @@ class AgentExecutor:
                     max_tokens=max_tokens,
                     temperature=temperature,
                     config=config,
+                    context_schema=runtime_context,
                 )
 
             elif role.agent_type == "chain":
@@ -231,6 +282,7 @@ class AgentExecutor:
                     max_tokens=max_tokens,
                     temperature=temperature,
                     config=config,
+                    context_schema=runtime_context,
                 )
 
         except Exception as e:

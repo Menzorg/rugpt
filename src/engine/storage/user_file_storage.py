@@ -5,7 +5,7 @@ PostgreSQL CRUD for user_files table (metadata only).
 """
 import logging
 from datetime import datetime
-from typing import Optional, List
+from typing import Dict, Optional, List
 from uuid import UUID
 
 from .base import BaseStorage
@@ -88,6 +88,27 @@ class UserFileStorage(BaseStorage):
             file_id,
         )
         return self._row_to_file(row) if row else None
+
+    async def get_status(self, file_id: UUID) -> Optional[str]:
+        """Get RAG status for an active file."""
+        return await self.fetchval(
+            "SELECT rag_status FROM user_files WHERE id = $1 AND is_active = true",
+            file_id,
+        )
+
+    async def get_many_by_ids(self, ids: List[UUID]) -> Dict[UUID, UserFile]:
+        """Get active files by IDs."""
+        if not ids:
+            return {}
+        rows = await self.fetch(
+            """
+            SELECT * FROM user_files
+            WHERE id = ANY($1::uuid[]) AND is_active = true
+            """,
+            list(ids),
+        )
+        files = [self._row_to_file(r) for r in rows]
+        return {f.id: f for f in files}
 
     async def list_by_user(self, user_id: UUID) -> List[UserFile]:
         """List files belonging to an employee"""

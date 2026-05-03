@@ -14,9 +14,12 @@ from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool, InjectedToolArg
+from langgraph.prebuilt import ToolRuntime
 
+from ...constants import IMAGE_TYPES
 from ...models.rag import RelatedDoc
 from ...models.user_file import UserFile
+from ..runtime import ListDocumentsRuntimeData, RuntimeContext
 from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
 
@@ -24,8 +27,8 @@ logger = logging.getLogger("rugpt.agents.tools.document")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _TRUNCATED_LIMIT = 500
-_MAX_RESULTS = 100
-_SUMMARY_CHARS_BUDGET = 40000  # with 30 docs each gets at least 100 chars of summary
+_MAX_RESULTS = 30
+_SUMMARY_CHARS_BUDGET = 20000
 
 _user_file_storage: Optional[UserFileStorage] = None
 _rag_service: Optional[RAGService] = None
@@ -56,10 +59,29 @@ def _format_user_file(f: UserFile, summary_max_chars: int) -> str:
     )
 
 
+def _is_image_file(f: UserFile) -> bool:
+    file_type = (f.file_type or "").lower()
+    if file_type in IMAGE_TYPES:
+        return True
+    filename = (f.original_filename or "").lower()
+    return any(filename.endswith(f".{ext}") for ext in IMAGE_TYPES)
+
+
+def _with_dedup_header(deduplicated_across_runs: bool, result: str) -> str:
+    if not deduplicated_across_runs:
+        return result
+    return "DOCS FOUND IN PREVIOUS TOOL CALLS WERE DEDUPLICATED\n" + result
+
+
+def _remember_seen_documents(runsession: object, files: list[UserFile]) -> None:
+    if isinstance(runsession, ListDocumentsRuntimeData):
+        runsession.seen_ids.update(str(f.id) for f in files)
+
 
 @tool(response_format="content")
 async def list_documents(
     config: Annotated[RunnableConfig, InjectedToolArg],
+    runtime: ToolRuntime[RuntimeContext],
     name_query: Optional[str] = None,
     summary_query: Optional[str] = None,
 ) -> str:
@@ -94,16 +116,34 @@ async def list_documents(
         all_files = await _user_file_storage.list_by_org(org_id)
         visible: list[UserFile] = [
             f for f in all_files
-            if f.uploaded_by_user_id == user_id or f.is_public
+            if (f.uploaded_by_user_id == user_id or f.is_public)
+            and not _is_image_file(f)
         ]
+        
+        # --- deduplication across whole run ---
+        runtimedata = runtime.context.list_documents_runtime_data
+        seen_ids = (
+            runtimedata.seen_ids
+            if isinstance(runtimedata, ListDocumentsRuntimeData)
+            else set()
+        )
+        deduplicated_across_runs = bool(seen_ids)
+        if deduplicated_across_runs:
+            visible = [f for f in visible if str(f.id) not in seen_ids]
 
         if not visible:
-            return "No documents in your scope."
+            return _with_dedup_header(
+                deduplicated_across_runs,
+                "No documents in your scope.",
+            )
 
         # --- Search mode: one or both queries provided ---
         if has_name_query or has_summary_query:
             if _rag_service is None:
-                return "list_documents: search unavailable (RAG service not initialized)."
+                return _with_dedup_header(
+                    deduplicated_across_runs,
+                    "list_documents: search unavailable (RAG service not initialized).",
+                )
 
             matched_ids: set[str] = set()
 
@@ -127,14 +167,24 @@ async def list_documents(
                 for d in docs:
                     matched_ids.add(d.file_id)
 
-            results: list[UserFile] = [f for f in visible if str(f.id) in matched_ids][:_MAX_RESULTS]
+            results: list[UserFile] = [
+                f for f in visible
+                if str(f.id) in matched_ids
+            ][:_MAX_RESULTS]
 
             if not results:
-                return "No documents matched your query."
+                return _with_dedup_header(
+                    deduplicated_across_runs,
+                    "No documents matched your query.",
+                )
 
             summary_max_chars = max(1, _SUMMARY_CHARS_BUDGET // len(results))
             lines = [_format_user_file(f, summary_max_chars) for f in results]
-            return f"Documents found ({len(lines)}):\n" + "\n".join(lines)
+            _remember_seen_documents(runtimedata, results)
+            return _with_dedup_header(
+                deduplicated_across_runs,
+                f"Documents found ({len(lines)}):\n" + "\n".join(lines),
+            )
 
         # --- List mode: no queries ---
         total = len(visible)
@@ -147,18 +197,22 @@ async def list_documents(
                 f"- {f.original_filename} (id={f.id}, is_table={f.is_table})"
                 for f in truncated
             ]
-            footer_trunc = (
-                f"\n\nTOTAL COUNT OF DOCUMENTS IN ORGANIZATION IS {total}"
-                f" BUT OUTPUT IS TRUNCATED TO {_TRUNCATED_LIMIT}."
-                f" USE FILTERS IF REQUIRED DOCUMENTS ARE NOT IN LIST"
-            )
+            footer_trunc = f"\nTOO MUCH DOCUMENTS. LIST IS TRUNCATED TO {_TRUNCATED_LIMIT} of {total}\n" if total > _TRUNCATED_LIMIT else ""
             omitted_fields = "created_at, rag_status, file_size, summary"
-            footer = f"\n[Fields omitted to reduce output: {omitted_fields}. Use filters to get full info on specific docs.]"
-            return "\n".join(lines) + footer + footer_trunc
+            footer = f"\n[FIELDS OMITTED TO REDUCE OUTPUT: {omitted_fields}. USE FILTERS TO GET FULL INFO ON SPECIFIC DOCS.]"
+            _remember_seen_documents(runtimedata, truncated)
+            return _with_dedup_header(
+                deduplicated_across_runs,
+                f"Documents found ({len(lines)}):\n" + "\n".join(lines) + footer + footer_trunc,
+            )
 
         summary_max_chars = max(1, _SUMMARY_CHARS_BUDGET // len(visible))
         lines = [_format_user_file(f, summary_max_chars) for f in visible]
-        return f"Documents ({total} total):\n" + "\n".join(lines)
+        _remember_seen_documents(runtimedata, visible)
+        return _with_dedup_header(
+            deduplicated_across_runs,
+            f"Documents found ({total} total):\n" + "\n".join(lines),
+        )
 
     except Exception as e:
         logger.error(f"list_documents failed: {e}", exc_info=True)
