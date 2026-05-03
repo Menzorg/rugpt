@@ -28,6 +28,9 @@ class InAppNotification:
     reference_id: Optional[UUID] = None
     is_read: bool = False
     created_at: datetime = field(default_factory=datetime.utcnow)
+    # Computed at read time (см. InAppNotificationStorage.list_by_user).
+    # True если на mention уже отвечали через reply-to-mention.
+    replied: bool = False
 
     def to_dict(self) -> dict:
         """Convert to dictionary for API response"""
@@ -42,4 +45,5 @@ class InAppNotification:
             "reference_id": str(self.reference_id) if self.reference_id else None,
             "is_read": self.is_read,
             "created_at": self.created_at.isoformat(),
+            "replied": self.replied,
         }

@@ -159,6 +159,21 @@ async def get_pending_review_messages(
     return [MessageResponse(**msg.to_dict()) for msg in messages]
 
 
+@router.get("/reviewed", response_model=List[MessageResponse])
+async def get_reviewed_messages(
+    user_id: UUID,
+    limit: int = 50,
+    engine: EngineService = Depends(get_engine),
+):
+    """Get AI messages already validated/rejected by user (ai_is_valid IS NOT NULL).
+
+    Парный к /pending-review для UI таба «Моя роль → Проверенные».
+    Тоже должен быть ДО `/{chat_id}` (см. комментарий выше).
+    """
+    messages = await engine.chat_service.get_reviewed_messages(user_id, limit)
+    return [MessageResponse(**msg.to_dict()) for msg in messages]
+
+
 # Keep old endpoint for backward compatibility (та же причина с порядком).
 @router.get("/unvalidated", response_model=List[MessageResponse])
 async def get_unvalidated_messages(
@@ -462,13 +477,14 @@ async def reply_to_mention(
     message_id: UUID,
     request: ReplyToMentionRequest,
     user_id: UUID,
-    org_id: UUID,
     engine: EngineService = Depends(get_engine),
 ):
     """Reply to a mentioning message without joining the chat as participant.
 
     Гейт прав: sender должен быть упомянут в `original.mentions`.
     Single-use: один реплай на одну (mentioning_message, sender) пару.
+
+    org_id не нужен — извлекается из sender.org_id при необходимости.
     """
     original = await engine.chat_service.get_message(message_id)
     if not original:
@@ -490,4 +506,19 @@ async def reply_to_mention(
         content=request.content,
         reply_to_id=message_id,
     )
+
+    # Publish to chat.events for real-time WS delivery via NestJS consumer.
+    # Same pattern as task_notification_service / agent_handler — engine
+    # является единственным источником истины для broadcast'а.
+    if engine.kafka_producer is not None:
+        try:
+            from ..config import Config
+            await engine.kafka_producer.send(
+                Config.KAFKA_TOPIC_CHAT_EVENTS,
+                {"chat_id": str(reply.chat_id), "message": reply.to_dict()},
+                key=str(reply.chat_id),
+            )
+        except Exception as e:
+            logger.error(f"Failed to publish reply-to-mention to Kafka: {e}")
+
     return MessageResponse(**reply.to_dict())

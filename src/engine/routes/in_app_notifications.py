@@ -32,6 +32,7 @@ class NotificationResponse(BaseModel):
     reference_id: Optional[str]
     is_read: bool
     created_at: str
+    replied: bool = False
 
 
 class UnreadCountResponse(BaseModel):
@@ -44,9 +45,10 @@ async def list_notifications(
     offset: int = Query(0, ge=0),
     unread_only: bool = Query(False),
     type: Optional[str] = Query(None, description="Filter by notification type (e.g. 'mention')"),
+    replied: Optional[bool] = Query(None, description="Filter mentions: True=отвеченные, False=неотвеченные, не задан=все"),
     current_user: dict = Depends(get_current_user),
 ):
-    """List notifications for the current user. Optional `type` filter (e.g. 'mention')."""
+    """List notifications for the current user. Optional filters: `type`, `replied`."""
     engine = get_engine_service()
     notifications = await engine.in_app_notification_service.list_for_user(
         user_id=current_user["user_id"],
@@ -54,6 +56,7 @@ async def list_notifications(
         limit=limit,
         offset=offset,
         unread_only=unread_only,
+        replied=replied,
     )
     return [NotificationResponse(**n.to_dict()) for n in notifications]
 

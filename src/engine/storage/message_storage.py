@@ -112,6 +112,23 @@ class MessageStorage(BaseStorage):
         rows = await self.fetch(query, user_id)
         return [self._row_to_message(row) for row in rows]
 
+    async def list_reviewed(self, user_id: UUID, limit: int = 50) -> List[Message]:
+        """List AI messages already validated/rejected by user (ai_is_valid IS NOT NULL).
+
+        Парный к list_pending_review для UI таба «Моя роль → Проверенные».
+        """
+        query = """
+            SELECT * FROM messages
+            WHERE sender_type = 'ai_role'
+              AND sender_id = $1
+              AND ai_is_valid IS NOT NULL
+              AND is_deleted = false
+            ORDER BY updated_at DESC
+            LIMIT $2
+        """
+        rows = await self.fetch(query, user_id, limit)
+        return [self._row_to_message(row) for row in rows]
+
     async def update(self, message: Message) -> Message:
         """Update message"""
         message.updated_at = datetime.utcnow()

@@ -61,14 +61,16 @@ class InAppNotificationService:
         limit: int = 50,
         offset: int = 0,
         unread_only: bool = False,
+        replied: Optional[bool] = None,
     ) -> List[InAppNotification]:
-        """List notifications for a user. `type` опциональный фильтр (None = все типы)."""
+        """List notifications for a user. `type` и `replied` опциональные фильтры."""
         return await self.storage.list_by_user(
             user_id=user_id,
             type=type,
             limit=limit,
             offset=offset,
             unread_only=unread_only,
+            replied=replied,
         )
 
     async def count_unread(self, user_id: UUID) -> int:

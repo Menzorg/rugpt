@@ -55,21 +55,42 @@ class InAppNotificationStorage(BaseStorage):
         limit: int = 50,
         offset: int = 0,
         unread_only: bool = False,
+        replied: Optional[bool] = None,
     ) -> List[InAppNotification]:
-        """List notifications for a user. `type` опциональный фильтр (None = все)."""
-        clauses = ["user_id = $1"]
+        """List notifications for a user.
+
+        `type` опциональный фильтр по типу нотификации (None = все).
+        `replied` опциональный фильтр по факту ответа на mentioning-сообщение:
+            None → не фильтруем (все),
+            True → только те, на которые юзер уже отвечал,
+            False → только неотвеченные.
+
+        Также возвращается computed-флаг `replied` per row (для UI-отображения).
+        """
+        replied_subquery = (
+            "EXISTS(SELECT 1 FROM messages m "
+            "       WHERE m.reply_to_id = n.reference_id "
+            "         AND m.sender_id = n.user_id)"
+        )
+
+        clauses = ["n.user_id = $1"]
         params: list = [user_id]
         if unread_only:
-            clauses.append("is_read = FALSE")
-        if type:  # truthy: пустая строка от фронта (?type=) трактуется как «фильтр не задан»
+            clauses.append("n.is_read = FALSE")
+        if type:  # truthy: пустая строка от фронта (?type=) = «фильтр не задан»
             params.append(type)
-            clauses.append(f"type = ${len(params)}")
+            clauses.append(f"n.type = ${len(params)}")
+        if replied is True:
+            clauses.append(replied_subquery)
+        elif replied is False:
+            clauses.append(f"NOT {replied_subquery}")
         params.append(limit)
         params.append(offset)
         query = (
-            f"SELECT * FROM in_app_notifications "
+            f"SELECT n.*, {replied_subquery} AS replied "
+            f"FROM in_app_notifications n "
             f"WHERE {' AND '.join(clauses)} "
-            f"ORDER BY is_read ASC, created_at DESC "
+            f"ORDER BY n.is_read ASC, n.created_at DESC "
             f"LIMIT ${len(params) - 1} OFFSET ${len(params)}"
         )
         rows = await self.fetch(query, *params)
@@ -116,4 +137,7 @@ class InAppNotificationStorage(BaseStorage):
             reference_id=row["reference_id"],
             is_read=row["is_read"],
             created_at=row["created_at"],
+            # `replied` присутствует только в SELECT'е list_by_user (computed
+            # column); в create/get_by_id row такой колонки нет — fallback False.
+            replied=bool(row["replied"]) if "replied" in row.keys() else False,
         )

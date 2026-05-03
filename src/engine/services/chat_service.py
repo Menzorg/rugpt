@@ -445,6 +445,10 @@ class ChatService:
             logger.info(f"AI message {message_id} rejected")
         return message
 
+    async def get_reviewed_messages(self, user_id: UUID, limit: int = 50) -> List[Message]:
+        """List AI messages already validated/rejected by user."""
+        return await self.message_storage.list_reviewed(user_id, limit)
+
     async def get_pending_review_messages(self, user_id: UUID) -> List[Message]:
         """Get AI messages pending review by user"""
         return await self.message_storage.list_pending_review(user_id)
