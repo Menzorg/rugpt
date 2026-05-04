@@ -337,6 +337,43 @@ def create_task_tools(
             remove_participant_uuids = _parse_uuid_list(delete_participant_user_ids)
             updated = None
             participant_changes = []
+            has_status_update = bool(status)
+            has_field_update = bool(
+                title
+                or description
+                or add_participant_uuids
+                or remove_participant_uuids
+            )
+            
+            user_id = configurable.get("user_id", "")
+            if not user_id:
+                return "SYSTEM CAN'T SEE CURRENT USER ID"
+
+            existing_task = await task_service.get(task_uuid)
+            if not existing_task:
+                return f"Task {task_id} not found"
+
+            initiator = None
+            if has_status_update or has_field_update:
+                configurable = (config or {}).get("configurable", {})
+                
+
+                caller_uuid = UUID(user_id)
+                is_admin = configurable.get("is_admin", False)
+
+                if (
+                    has_status_update
+                    and not is_admin
+                    and existing_task.assignee_user_id != caller_uuid
+                ):
+                    return "USER HAS NOT ALLOWED TO UPDATE OTHER USER TASK STATUS BECAUSE HE IS NO ASSIGNEE NOR CREATOR"
+
+                if (
+                    has_field_update
+                    and not is_admin
+                    and existing_task.created_by_user_id != caller_uuid
+                ):
+                    return "USER HAS NOT ALLOWED TO UPDATE TASK FIELDS BECAUSE HE IS NO ADMIN NOR CREATOR"
 
             # Apply field updates before status so the final state reflects both changes.
             if title or description:
@@ -354,25 +391,22 @@ def create_task_tools(
 
             if add_participant_uuids or remove_participant_uuids:
                 configurable = (config or {}).get("configurable", {})
-                user_id = configurable.get("user_id", "")
-                if not user_id:
-                    return "System can't see current user id"
 
                 from ...services.engine_service import get_engine_service
                 engine = get_engine_service()
-                actor = await engine.user_storage.get_by_id(UUID(user_id))
-                if actor is None:
-                    return "Current user not found"
+                initiator = await engine.user_storage.get_by_id(UUID(user_id))
+                if initiator is None:
+                    return "CURRENT USER NOT FOUND"
 
                 for participant_uuid in add_participant_uuids:
                     await task_service.add_participant(
-                        task_uuid, participant_uuid, actor,
+                        task_uuid, participant_uuid, initiator,
                     )
                     participant_changes.append(f"added participant {participant_uuid}")
 
                 for participant_uuid in remove_participant_uuids:
                     removed = await task_service.remove_participant(
-                        task_uuid, participant_uuid, actor,
+                        task_uuid, participant_uuid, initiator,
                     )
                     if removed:
                         participant_changes.append(f"removed participant {participant_uuid}")
