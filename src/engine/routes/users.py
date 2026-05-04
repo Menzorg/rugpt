@@ -67,6 +67,7 @@ class UserResponse(BaseModel):
     is_admin: bool
     is_system: bool = False  # Is system user (AI assistant for admins)
     department_id: Optional[str] = None
+    department_name: Optional[str] = None
     is_head: bool = False
     is_active: bool
     avatar_url: Optional[str]

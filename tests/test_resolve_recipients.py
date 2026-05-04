@@ -53,7 +53,7 @@ async def env():
 @pytest.mark.asyncio
 async def test_resolve_recipients_unions_creator_assignee_participants(env):
     svc = env["engine"].task_service
-    tns = env["engine"].task_notification_service
+    tns = env["engine"].task_service
     task = await svc.create(
         org_id=env["org"], title="T",
         assignee_user_id=env["assignee"],
@@ -69,7 +69,7 @@ async def test_resolve_recipients_unions_creator_assignee_participants(env):
 @pytest.mark.asyncio
 async def test_resolve_recipients_excludes_actor(env):
     svc = env["engine"].task_service
-    tns = env["engine"].task_notification_service
+    tns = env["engine"].task_service
     task = await svc.create(
         org_id=env["org"], title="T",
         assignee_user_id=env["assignee"],
@@ -87,7 +87,7 @@ async def test_resolve_recipients_excludes_actor(env):
 async def test_resolve_recipients_filters_inactive(env):
     """Inactive user must be filtered out even if listed in task_participants."""
     svc = env["engine"].task_service
-    tns = env["engine"].task_notification_service
+    tns = env["engine"].task_service
     task = await svc.create(
         org_id=env["org"], title="T",
         assignee_user_id=env["assignee"],

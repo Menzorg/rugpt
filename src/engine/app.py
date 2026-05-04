@@ -10,8 +10,9 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .config import Config
 from .logging_context import (
@@ -80,6 +81,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Глобальный exception handler — uvicorn по дефолту пишет traceback только в stderr,
+# наш DailyDirJsonlHandler этого не видит. Здесь явно прогоняем через `rugpt`-логгер
+# с exc_info=True → traceback попадает в logs/<date>/engine.jsonl.
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception(
+        "unhandled %s %s -> %s: %s",
+        request.method, request.url.path, type(exc).__name__, exc,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal error: {type(exc).__name__}: {exc}"},
+    )
 
 
 @app.on_event("startup")

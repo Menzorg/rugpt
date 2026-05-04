@@ -336,16 +336,28 @@ class AIService:
         # Find responder
         responder = await self.user_storage.get_by_id(responder_id)
         if not responder:
-            logger.warning(f"Responder {responder_id} not found")
+            logger.warning(
+                f"Responder {responder_id} not found in DB "
+                f"(message={message.id} chat={message.chat_id})"
+            )
             return None
 
         # Determine role
         role = await self._resolve_role(responder, message.sender_id)
         if not role:
+            # Конкретная причина уже залогирована _resolve_role'ом строкой выше.
+            # Здесь — просто добавляем message/chat-контекст для grep'а по chat_id.
+            logger.warning(
+                f"generate_response aborted: role unresolved for @{getattr(responder, 'username', responder.id)} "
+                f"(message={message.id} chat={message.chat_id})"
+            )
             return None
 
         if not role.is_active:
-            logger.warning(f"Role {role.id} is inactive")
+            logger.warning(
+                f"Role {role.code or role.id} is inactive "
+                f"(responder=@{getattr(responder, 'username', responder.id)} chat={message.chat_id})"
+            )
             return None
 
         # Build conversation context
@@ -379,24 +391,29 @@ class AIService:
         Resolve which role to use for response.
         Mirror (is_system + no role) → sender's role.
         """
+        # username нужен в warning'ах чтобы grep по логу сразу указывал на юзера
+        # без необходимости отдельного psql-запроса по UUID.
+        responder_label = f"@{responder.username} ({responder.id})" if getattr(responder, 'username', None) else str(responder.id)
+
         if responder.role_id:
             role = await self.role_storage.get_by_id(responder.role_id)
             if not role:
-                logger.warning(f"Role {responder.role_id} not found")
+                logger.warning(f"Role {responder.role_id} not found (responder={responder_label})")
             return role
 
         if responder.is_system:
             # Mirror: use sender's role
             sender = await self.user_storage.get_by_id(sender_id)
             if not sender or not sender.role_id:
-                logger.warning(f"Mirror: sender {sender_id} has no role")
+                sender_label = f"@{sender.username}" if sender and getattr(sender, 'username', None) else str(sender_id)
+                logger.warning(f"Mirror: sender {sender_label} has no role (responder={responder_label})")
                 return None
             role = await self.role_storage.get_by_id(sender.role_id)
             if not role:
-                logger.warning(f"Role {sender.role_id} not found")
+                logger.warning(f"Mirror: role {sender.role_id} of sender @{sender.username} not found")
             return role
 
-        logger.warning(f"User {responder.id} has no role")
+        logger.warning(f"User {responder_label} has no role assigned — @@-mention silently dropped")
         return None
 
     async def _call_llm(self, role: Role, conv_messages: List[dict], user_id: Optional[UUID] = None, chat_id: Optional[UUID] = None) -> Optional[str]:

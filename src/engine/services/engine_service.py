@@ -38,7 +38,6 @@ from .chat_service import ChatService
 from .project_service import ProjectService
 from .task_event_service import TaskEventService
 from .reference_service import ReferenceService
-from .task_notification_service import TaskNotificationService
 from ..kafka.producer import KafkaProducerService
 from ..kafka.consumer import KafkaConsumerLoop
 from ..kafka.agent_handler import AgentRequestHandler
@@ -159,16 +158,6 @@ class EngineService:
         # No-op when Config.KAFKA_ENABLED=false, so tests without Kafka keep working.
         self.kafka_producer = KafkaProducerService()
 
-        # TaskNotificationService — PM agent posts notifications to direct chats
-        # via chat_service + message_storage, publishes to chat.events for live WS delivery.
-        self.task_notification_service = TaskNotificationService(
-            chat_service=self.chat_service,
-            message_storage=self.message_storage,
-            user_storage=self.user_storage,
-            kafka_producer=self.kafka_producer,
-            task_participant_storage=self.task_participant_storage,
-        )
-
         # Initialize task service with chat/event/project/notification integration
         self.task_service = TaskService(
             self.task_storage,
@@ -176,7 +165,6 @@ class EngineService:
             chat_service=self.chat_service,
             task_event_service=self.task_event_service,
             project_service=self.project_service,
-            task_notification_service=self.task_notification_service,
             user_storage=self.user_storage,
             task_participant_storage=self.task_participant_storage,
         )
@@ -400,6 +388,7 @@ class EngineService:
             embedding_model=Config.EMBEDDING_MODEL,
             llm_base_url=Config.LLM_BASE_URL,
             llm_api_key=Config.LLM_API_KEY,
+            kafka_producer=self.kafka_producer,
         )
         self.agent_executor.correction_rule_service = self.correction_rule_service
 

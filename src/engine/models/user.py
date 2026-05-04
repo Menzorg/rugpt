@@ -35,6 +35,7 @@ class User:
     is_admin: bool = False                           # Is organization admin
     is_system: bool = False                          # Is system user (AI assistant for admins)
     department_id: Optional[UUID] = None             # Department this user belongs to
+    department_name: Optional[str] = None            # Department name (joined from departments table on read)
     is_head: bool = False                            # Is department head
     is_active: bool = True                           # Active/inactive status
     avatar_url: Optional[str] = None                 # Profile picture URL
@@ -54,6 +55,7 @@ class User:
             "is_admin": self.is_admin,
             "is_system": self.is_system,
             "department_id": str(self.department_id) if self.department_id else None,
+            "department_name": self.department_name,
             "is_head": self.is_head,
             "is_active": self.is_active,
             "avatar_url": self.avatar_url,

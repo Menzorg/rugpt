@@ -132,11 +132,16 @@ class AgentRequestHandler:
                 raise RuntimeError(f"unreachable kind={kind}")
 
             if ai_message is None:
+                # ai_service уже залогировал WARNING с конкретной причиной
+                # (нет роли / роль неактивна / mirror без sender'а / LLM None / итд)
+                # — ищи `rugpt.services.ai` warning'и непосредственно перед этой строкой
+                # по chat={chat_id} или responder=@username.
                 await self.agent_run_storage.mark_failed(
-                    request_id, f"{kind}: returned None",
+                    request_id, f"{kind}: ai_service returned None — see ai_service warnings",
                 )
                 logger.warning(
-                    f"agent_run {request_id} kind={kind}: returned None"
+                    f"agent_run {request_id} kind={kind} chat={chat_id} responder={responder_id}: "
+                    f"ai_service returned None — see preceding rugpt.services.ai WARNINGs for cause"
                 )
                 return
 
