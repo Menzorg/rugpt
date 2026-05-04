@@ -156,7 +156,9 @@ class AgentExecutor:
             configurable={
                 "org_id": str(scope_org_id) if scope_org_id else "",
                 "user_id": str(user_id) if user_id else "",
-        })
+                "is_admin": bool(initiator.is_admin) if initiator else False,
+            },
+        )
 
         # --- Retrieval phase ---
 

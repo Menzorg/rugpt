@@ -34,7 +34,7 @@ def init_token_counter() -> None:
     _encoder = tiktoken.get_encoding(_TIKTOKEN_FALLBACK)
 
 
-def count_tokens(_model: str, text: str) -> int:
+def count_tokens(text: str) -> int:
     """Return the token count for *text*. *_model* is accepted but ignored."""
     global _encoder
     if _encoder is None:

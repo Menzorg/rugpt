@@ -37,7 +37,6 @@ from langchain_core.tools import tool, InjectedToolArg
 from langgraph.prebuilt import ToolRuntime
 
 from ...constants import IMAGE_TYPES
-from ...config import Config
 from ...models.rag import RelatedDoc
 from ...models.user_file import UserFile
 from ..runtime import ListDocumentsRuntimeData, RuntimeContext
@@ -119,7 +118,6 @@ def _format_full_batch(
     remaining = _SUMMARY_TOKENS_BUDGET - runtimedata.spent_summary_tokens
     single_item_token_limit = int(_SUMMARY_TOKENS_BUDGET * _SUMMARY_SINGLE_ITEM_MAX_FRACTION)
     median_chars = _median_summary_chars(files)
-    model = Config.DEFAULT_MODEL
 
     lines = []
     total_tokens_spent = 0
@@ -130,11 +128,11 @@ def _format_full_batch(
 
             # Cut oversized summaries to median chars so one doc cannot monopolise budget.
             if median_chars is not None:
-                raw_tokens = count_tokens(model, summary_text)
+                raw_tokens = count_tokens(summary_text)
                 if raw_tokens > single_item_token_limit:
                     summary_text = summary_text[:median_chars]
 
-            tokens_for_this = count_tokens(model, summary_text)
+            tokens_for_this = count_tokens(summary_text)
 
             if remaining <= 0:
                 # Budget already exhausted from earlier items or previous calls.

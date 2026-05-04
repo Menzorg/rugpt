@@ -394,8 +394,11 @@ class RAGService:
         logger.info(
             f"rag find_docs: query={query!r} top_k={top_k} org={org_id} user={user_id}"
         )
-        qwen_query = ("Given a search query, retrieve relevant document summaries that best match the user's intent\n"
-                    f"Query: {query}")
+        SUMMARY_SEARCH_INSTRUCT = (
+    "Instruct: Retrieve document summaries that are semantically relevant to the user's need, "
+    "including the topic, purpose, task, or problem described, even without exact keyword overlap.\n"
+)
+        qwen_query = (SUMMARY_SEARCH_INSTRUCT + f"Query: {query}")
         
         query_embedding = self._embed_query(qwen_query)
         docs = await self._store.call_search_related_docs(

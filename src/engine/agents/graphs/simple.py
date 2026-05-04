@@ -8,12 +8,13 @@ Two modes:
 import logging
 from typing import Any, List, Optional
 
+from langchain.agents import create_agent
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
 
+from ..middleware import TokenBudgetMiddleware
 from ..result import AgentResult, ToolCall
 
 logger = logging.getLogger("rugpt.agents.graphs.simple")
@@ -127,13 +128,27 @@ async def _react_agent_call(
             if context_schema is None or isinstance(context_schema, type)
             else type(context_schema)
         )
-        agent = create_react_agent(llm, tools, prompt=system_prompt, context_schema=schema)
+        agent = create_agent(
+            llm,
+            tools=tools,
+            system_prompt=system_prompt,
+            middleware=[TokenBudgetMiddleware()],
+            context_schema=schema,
+        )
+
+        # create_agent receives system_prompt separately; keep the runtime
+        # message state free of the duplicated SystemMessage built above.
+        input_messages = (
+            messages[1:]
+            if messages and isinstance(messages[0], SystemMessage)
+            else messages
+        )
 
         # The last message should be the user input
         # ReAct agent expects {"messages": [...]}
         # config carries org_id/user_id for tools like rag_search
         result = await agent.ainvoke(
-            {"messages": messages},
+            {"messages": input_messages},
             config={**(config or {}), "recursion_limit": 20},
             context=context,
         )
