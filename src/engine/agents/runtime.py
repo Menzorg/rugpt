@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 @dataclass
 class ListDocumentsRuntimeData:
     seen_ids: set[str] = field(default_factory=set)
+    # Tokens already spent on summaries in previous list_documents calls this run.
+    # Only untruncated summaries that were actually shown to the model count.
+    spent_summary_tokens: int = 0
 
 
 @dataclass

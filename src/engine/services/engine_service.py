@@ -442,6 +442,10 @@ class EngineService:
 
         await self.rag_store.init()
 
+        # Load local tokenizer files; tiktoken fallback requires no init
+        from ..utils.token_counter import init_token_counter
+        init_token_counter()
+
         # Wire the shared RAGService into the RAG tool
         from ..agents.tools.rag_tool import init_rag_service
         init_rag_service(self.rag_service, self.user_file_storage)

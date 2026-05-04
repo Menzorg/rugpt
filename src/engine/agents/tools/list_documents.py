@@ -7,8 +7,28 @@ Visibility model mirrors RAG / /files endpoint: caller sees their own files
 plus `is_public` files within the same org.
 
 Service lifecycle: call init_document_service(storage) once during engine startup.
+
+Summary budget system
+---------------------
+Each list_documents call may display document summaries.  To prevent the model
+context from being overwhelmed we maintain a per-run token budget tracked in
+ListDocumentsRuntimeData.spent_summary_tokens.
+
+How it works:
+1. Before formatting a batch we check the remaining budget
+   (SUMMARY_TOKENS_BUDGET - spent_so_far).  If it is already exhausted the
+   whole batch switches to compact mode (id + name + is_table only).
+2. Within a batch that fits the budget: if any single summary would consume
+   more than 5 % of the total budget on its own, it is cut to the median
+   character length of all summaries in the batch.  This prevents one huge
+   document from starving the rest.
+3. After formatting we count the tokens of every summary that was displayed
+   untruncated (i.e. not cut by the budget check) and add them to
+   spent_summary_tokens.  Summaries replaced by [BUDGET EXHAUSTED] are not
+   counted — they did not consume budget.
 """
 import logging
+import statistics
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -17,18 +37,24 @@ from langchain_core.tools import tool, InjectedToolArg
 from langgraph.prebuilt import ToolRuntime
 
 from ...constants import IMAGE_TYPES
+from ...config import Config
 from ...models.rag import RelatedDoc
 from ...models.user_file import UserFile
 from ..runtime import ListDocumentsRuntimeData, RuntimeContext
 from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
+from ...utils.token_counter import count_tokens
 
 logger = logging.getLogger("rugpt.agents.tools.document")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _TRUNCATED_LIMIT = 500
 _MAX_RESULTS = 30
-_SUMMARY_CHARS_BUDGET = 20000
+
+# Total token budget for document summaries across the whole agent run.
+_SUMMARY_TOKENS_BUDGET = 8000
+# A single summary may not exceed this fraction of the total budget.
+_SUMMARY_SINGLE_ITEM_MAX_FRACTION = 0.05
 
 _user_file_storage: Optional[UserFileStorage] = None
 _rag_service: Optional[RAGService] = None
@@ -43,20 +69,6 @@ def init_document_service(
     _user_file_storage = storage
     _rag_service = rag_service
     logger.info("Document tool storage initialized")
-
-
-def _format_user_file(f: UserFile, summary_max_chars: int) -> str:
-    if f.rag_status == "indexed" and f.summary:
-        s = f.summary[:summary_max_chars]
-        if len(f.summary) > summary_max_chars:
-            s += "..."
-        summary_part = f'summary: "{s}"'
-    else:
-        summary_part = "summary: —"
-    return (
-        f"- {f.original_filename} (id={f.id}, created_at={f.created_at}, rag={f.rag_status}, "
-        f"is_table={f.is_table}, size={f.file_size / 1_000_000:.2f}MB, {summary_part})"
-    )
 
 
 def _is_image_file(f: UserFile) -> bool:
@@ -76,6 +88,82 @@ def _with_dedup_header(deduplicated_across_runs: bool, result: str) -> str:
 def _remember_seen_documents(runsession: object, files: list[UserFile]) -> None:
     if isinstance(runsession, ListDocumentsRuntimeData):
         runsession.seen_ids.update(str(f.id) for f in files)
+
+
+def _median_summary_chars(files: list[UserFile]) -> Optional[int]:
+    """Median character length of non-empty summaries in *files*, or None."""
+    lengths = [len(f.summary) for f in files if f.rag_status == "indexed" and f.summary]
+    if not lengths:
+        return None
+    return int(statistics.median(lengths))
+
+
+def _format_full_batch(
+    files: list[UserFile],
+    runtimedata: ListDocumentsRuntimeData,
+) -> tuple[list[str], int]:
+    """
+    Format *files* with full detail (including summaries) while respecting the
+    token budget stored in *runtimedata*.
+
+    Returns (lines, tokens_spent_this_batch).
+
+    Per-item cap: if a summary would by itself exceed
+    _SUMMARY_SINGLE_ITEM_MAX_FRACTION of the total budget, it is cut to the
+    median summary length of the batch before token-counting.
+
+    Budget tracking: only summaries that were shown without being cut by the
+    budget check are added to tokens_spent_this_batch — those are the ones
+    that actually consumed budget.
+    """
+    remaining = _SUMMARY_TOKENS_BUDGET - runtimedata.spent_summary_tokens
+    single_item_token_limit = int(_SUMMARY_TOKENS_BUDGET * _SUMMARY_SINGLE_ITEM_MAX_FRACTION)
+    median_chars = _median_summary_chars(files)
+    model = Config.DEFAULT_MODEL
+
+    lines = []
+    total_tokens_spent = 0
+
+    for f in files:
+        if f.rag_status == "indexed" and f.summary:
+            summary_text = f.summary
+
+            # Cut oversized summaries to median chars so one doc cannot monopolise budget.
+            if median_chars is not None:
+                raw_tokens = count_tokens(model, summary_text)
+                if raw_tokens > single_item_token_limit:
+                    summary_text = summary_text[:median_chars]
+
+            tokens_for_this = count_tokens(model, summary_text)
+
+            if remaining <= 0:
+                # Budget already exhausted from earlier items or previous calls.
+                summary_part = "summary: [BUDGET EXHAUSTED]"
+            elif tokens_for_this <= remaining:
+                summary_part = f'summary: "{summary_text}"'
+                # Track only summaries actually displayed — they consumed budget.
+                total_tokens_spent += tokens_for_this
+                remaining -= tokens_for_this
+            else:
+                summary_part = "summary: [BUDGET EXHAUSTED]"
+        else:
+            summary_part = "summary: —"
+
+        lines.append(
+            f"- {f.original_filename} (id={f.id}, created_at={f.created_at}, "
+            f"rag={f.rag_status}, is_table={f.is_table}, "
+            f"size={f.file_size / 1_000_000:.2f}MB, {summary_part})"
+        )
+
+    return lines, total_tokens_spent
+
+
+def _format_compact_batch(files: list[UserFile]) -> list[str]:
+    """Format *files* without heavy fields (no summary, size, or dates)."""
+    return [
+        f"- {f.original_filename} (id={f.id}, is_table={f.is_table})"
+        for f in files
+    ]
 
 
 @tool(response_format="content")
@@ -119,8 +207,8 @@ async def list_documents(
             if (f.uploaded_by_user_id == user_id or f.is_public)
             and not _is_image_file(f)
         ]
-        
-        # --- deduplication across whole run ---
+
+        # --- Deduplication across the whole agent run ---
         runtimedata = runtime.context.list_documents_runtime_data
         seen_ids = (
             runtimedata.seen_ids
@@ -178,8 +266,8 @@ async def list_documents(
                     "No documents matched your query.",
                 )
 
-            summary_max_chars = max(1, _SUMMARY_CHARS_BUDGET // len(results))
-            lines = [_format_user_file(f, summary_max_chars) for f in results]
+            lines, tokens_spent = _format_full_batch(results, runtimedata)
+            runtimedata.spent_summary_tokens += tokens_spent
             _remember_seen_documents(runtimedata, results)
             return _with_dedup_header(
                 deduplicated_across_runs,
@@ -189,25 +277,28 @@ async def list_documents(
         # --- List mode: no queries ---
         total = len(visible)
 
-        if total > _MAX_RESULTS:
-            # Too many results — drop all heavy fields and cap at 100 to avoid flooding.
-            
+        # Switch to compact when the summary token budget for this run is used up.
+        budget_exhausted = runtimedata.spent_summary_tokens >= _SUMMARY_TOKENS_BUDGET
+
+        if total > _TRUNCATED_LIMIT or budget_exhausted:
+            # Compact mode: minimal fields, list capped at _TRUNCATED_LIMIT.
             truncated = visible[:_TRUNCATED_LIMIT]
-            lines = [
-                f"- {f.original_filename} (id={f.id}, is_table={f.is_table})"
-                for f in truncated
-            ]
-            footer_trunc = f"\nTOO MUCH DOCUMENTS. LIST IS TRUNCATED TO {_TRUNCATED_LIMIT} of {total}\n" if total > _TRUNCATED_LIMIT else ""
+            lines = _format_compact_batch(truncated)
             omitted_fields = "created_at, rag_status, file_size, summary"
             footer = f"\n[FIELDS OMITTED TO REDUCE OUTPUT: {omitted_fields}. USE FILTERS TO GET FULL INFO ON SPECIFIC DOCS.]"
+            if total > _TRUNCATED_LIMIT:
+                footer += f"\nTOTAL COUNT OF DOCUMENTS IN ORGANIZATION IS {total} BUT OUTPUT IS TRUNCATED TO {_TRUNCATED_LIMIT}. USE FILTERS IF REQUIRED DOCUMENTS ARE NOT IN LIST"
+            if budget_exhausted:
+                footer += "\n[SUMMARY BUDGET EXHAUSTED FROM PREVIOUS CALLS. USE FILTERS TO NARROW RESULTS AND SEE SUMMARIES.]"
             _remember_seen_documents(runtimedata, truncated)
             return _with_dedup_header(
                 deduplicated_across_runs,
-                f"Documents found ({len(lines)}):\n" + "\n".join(lines) + footer + footer_trunc,
+                f"Documents found ({len(lines)}):\n" + "\n".join(lines) + footer,
             )
 
-        summary_max_chars = max(1, _SUMMARY_CHARS_BUDGET // len(visible))
-        lines = [_format_user_file(f, summary_max_chars) for f in visible]
+        # Full mode: summaries included, per-item cap and budget enforced inside helper.
+        lines, tokens_spent = _format_full_batch(visible, runtimedata)
+        runtimedata.spent_summary_tokens += tokens_spent
         _remember_seen_documents(runtimedata, visible)
         return _with_dedup_header(
             deduplicated_across_runs,
