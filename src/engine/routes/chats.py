@@ -40,6 +40,10 @@ class ReplyToMentionRequest(BaseModel):
     content: str
 
 
+class MarkReadRequest(BaseModel):
+    message_id: UUID
+
+
 class ChatResponse(BaseModel):
     id: str
     org_id: str
@@ -130,6 +134,21 @@ async def list_my_chats(
         raise HTTPException(status_code=400, detail="Invalid chat type")
     chats = await engine.chat_service.list_user_chats(user_id, chat_type=type)
     return [ChatResponse(**chat.to_dict()) for chat in chats]
+
+
+@router.get("/unread-counts")
+async def get_unread_counts(
+    user_id: UUID = Query(..., description="In real app, get from JWT"),
+    engine: EngineService = Depends(get_engine),
+):
+    """Bulk: return {chat_id: count} for all chats of the user (count > 0 only)."""
+    user = await engine.user_storage.get_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    counts = await engine.chat_service.list_unread_counts(
+        user_id=user_id, org_id=user.org_id,
+    )
+    return {str(chat_id): count for chat_id, count in counts.items()}
 
 
 @router.post("/direct", response_model=ChatResponse)
@@ -407,6 +426,25 @@ async def send_message(
         ai_responses=ai_responses,
         agent_pending=agent_pending,
     )
+
+
+@router.post("/{chat_id}/read", status_code=204)
+async def mark_chat_read(
+    chat_id: UUID,
+    body: MarkReadRequest,
+    user_id: UUID = Query(..., description="In real app, get from JWT"),
+    engine: EngineService = Depends(get_engine),
+):
+    """Mark messages in chat as read up to and including message_id."""
+    try:
+        await engine.chat_service.mark_chat_read(
+            chat_id=chat_id, user_id=user_id, message_id=body.message_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return None
 
 
 @router.get("/messages/{message_id}", response_model=MessageResponse)

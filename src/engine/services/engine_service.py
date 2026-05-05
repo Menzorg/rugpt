@@ -15,6 +15,7 @@ from ..storage.role_storage import RoleStorage
 from ..storage.chat_storage import ChatStorage
 from ..storage.message_storage import MessageStorage
 from ..storage.message_attachment_storage import MessageAttachmentStorage
+from ..storage.chat_read_state_storage import ChatReadStateStorage
 from ..storage.calendar_storage import CalendarStorage
 from ..storage.notification_channel_storage import NotificationChannelStorage
 from ..storage.notification_log_storage import NotificationLogStorage
@@ -89,6 +90,7 @@ class EngineService:
         self.chat_storage = ChatStorage(self.postgres_dsn)
         self.message_storage = MessageStorage(self.postgres_dsn)
         self.message_attachment_storage = MessageAttachmentStorage(self.postgres_dsn)
+        self.chat_read_state_storage = ChatReadStateStorage(self.postgres_dsn)
         # Wire attachment storage into message storage so list_by_chat / get_by_id
         # auto-hydrate `Message.attachments` for callers (chat_service, routes).
         self.message_storage.attachment_storage = self.message_attachment_storage
@@ -136,6 +138,7 @@ class EngineService:
         self.chat_service = ChatService(
             self.chat_storage,
             self.message_storage,
+            chat_read_state_storage=self.chat_read_state_storage,
             user_file_storage=self.user_file_storage,
             message_attachment_storage=self.message_attachment_storage,
         )
@@ -410,6 +413,7 @@ class EngineService:
         await self.chat_storage.init()
         await self.message_storage.init()
         await self.message_attachment_storage.init()
+        await self.chat_read_state_storage.init()
         await self.calendar_storage.init()
         await self.notification_channel_storage.init()
         await self.notification_log_storage.init()
