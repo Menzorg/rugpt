@@ -154,7 +154,7 @@ class AgentExecutor:
 
         # RunnableConfig carries initiator's org_id/user_id for tools.
         config = RunnableConfig(
-            max_concurrency=5,
+            max_concurrency=2,
             configurable={
                 "org_id": str(scope_org_id) if scope_org_id else "",
                 "user_id": str(user_id) if user_id else "",

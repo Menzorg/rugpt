@@ -19,6 +19,7 @@ from langgraph.prebuilt import ToolRuntime
 from ..runtime import RagSearchRuntimeData, RuntimeContext
 from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
+from ...utils.token_counter import count_tokens
 
 logger = logging.getLogger("rugpt.agents.tools.rag")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
@@ -36,8 +37,11 @@ def init_rag_service(service: RAGService, file_storage: Optional[UserFileStorage
     logger.info("RAG tool service initialized")
 
 
-async def _can_access_file(file_id: str, org_id: str, user_id: str) -> bool:
-    """Return True when the caller can see file_id in their org."""
+async def _can_access_file(file_id: str, org_id: str, user_id: str, is_admin: bool = False) -> bool:
+    """Return True when the caller can see file_id in their org.
+
+    Admins bypass ownership and public-flag checks — they can access any file in the org.
+    """
     if _user_file_storage is None:
         logger.error("rag_search: file storage not initialized for access check")
         return False
@@ -51,7 +55,7 @@ async def _can_access_file(file_id: str, org_id: str, user_id: str) -> bool:
 
     all_files = await _user_file_storage.list_by_org(org_uuid)
     return any(
-        f.id == file_uuid and (f.uploaded_by_user_id == user_uuid or f.is_public)
+        f.id == file_uuid and (is_admin or f.uploaded_by_user_id == user_uuid or f.is_public)
         for f in all_files
     )
 
@@ -117,6 +121,19 @@ async def rag_search(
             if isinstance(runtime_data, RagSearchRuntimeData)
             else 0
         )
+
+        # Block search if the cumulative RAG token budget is exhausted.
+        if runtime.context.rag_spent_tokens >= 25000:
+            logger.info(
+                "rag_search: blocked for file_id=%s — rag_spent_tokens=%d >= 25000",
+                file_id, runtime.context.rag_spent_tokens,
+            )
+            doc_name = doc.original_filename or file_id
+            return (
+                f"[RAG SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+                f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]"
+            )
+
         top_k = _top_k_for_seen_chunks(seen_count)
 
         chunks = await _rag_service.search_concrete_in_doc(
@@ -135,14 +152,14 @@ async def rag_search(
             idx = f"chunk_index={chunk.chunk_index}" if chunk.chunk_index else ""
             lines.append(f"\n[{chunk.source_type}, {idx}] {chunk.chunk_text}")
 
+        result = "\n".join(lines)
+        spent = count_tokens(result)
+        runtime.context.rag_spent_tokens += spent
         logger.info(
-            "rag_search: returned %d chunks for file_id=%s (seen_chunks=%d, top_k=%d)",
-            len(chunks),
-            file_id,
-            seen_count,
-            top_k,
+            "rag_search: returned %d chunks for file_id=%s (seen_chunks=%d, top_k=%d, tokens=%d, rag_spent_tokens=%d)",
+            len(chunks), file_id, seen_count, top_k, spent, runtime.context.rag_spent_tokens,
         )
-        return "\n".join(lines)
+        return result
     except Exception as e:
         logger.error(f"rag_search failed: {e}", exc_info=True)
         return _TOOL_ERROR_RESULT

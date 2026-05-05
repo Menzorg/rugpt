@@ -49,12 +49,12 @@ logger = logging.getLogger("rugpt.agents.tools.document")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _TRUNCATED_LIMIT = 500
-_MAX_RESULTS = 30
+_MAX_RESULTS = 500
 
 # Total token budget for document summaries across the whole agent run.
-_SUMMARY_TOKENS_BUDGET = 8000
+_SUMMARY_TOKENS_BUDGET = 4000
 # A single summary may not exceed this fraction of the total budget.
-_SUMMARY_SINGLE_ITEM_MAX_FRACTION = 0.05
+_SUMMARY_SINGLE_ITEM_MAX_FRACTION = 0.025
 
 _user_file_storage: Optional[UserFileStorage] = None
 _rag_service: Optional[RAGService] = None
@@ -64,7 +64,7 @@ class ListDocumentsInput(BaseModel):
     name_query: Optional[str] = Field(
         default=None,
         description=(
-            "Vector search query on document filenames. "
+            "Keyword search query on document filenames and keywords in summaries. "
             "Use keywords from the expected filename. Omit to skip."
         ),
     )
@@ -72,7 +72,7 @@ class ListDocumentsInput(BaseModel):
         default=None,
         description=(
             "Vector search query on document summaries. "
-            "Write a detailed description of the document content (3+ sentences). "
+            "Write a description of the document content. "
             "Omit to skip."
         ),
     )
@@ -255,6 +255,17 @@ async def _list_documents_async(
                 "No documents in your scope.",
             )
 
+        # --- RAG budget guard ---
+        if runtime.context.rag_spent_tokens >= 25000:
+            logger.info(
+                "list_documents: blocked — rag_spent_tokens=%d >= 25000",
+                runtime.context.rag_spent_tokens,
+            )
+            return (
+                "[RAG SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+                "USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO LIST DOCUMENTS]"
+            )
+
         # --- Search mode: one or both queries provided ---
         if has_name_query or has_summary_query:
             if _rag_service is None:
@@ -299,10 +310,14 @@ async def _list_documents_async(
             lines, tokens_spent = _format_full_batch(results, runtimedata)
             runtimedata.spent_summary_tokens += tokens_spent
             _remember_seen_documents(runtimedata, results)
-            return _with_dedup_header(
+            result = _with_dedup_header(
                 deduplicated_across_runs,
                 f"Documents found ({len(lines)}):\n" + "\n".join(lines),
             )
+            rag_tokens = count_tokens(result)
+            runtime.context.rag_spent_tokens += rag_tokens
+            logger.info("list_documents search: tokens=%d, rag_spent_tokens=%d", rag_tokens, runtime.context.rag_spent_tokens)
+            return result
 
         # --- List mode: no queries ---
         total = len(visible)
@@ -321,19 +336,27 @@ async def _list_documents_async(
             if budget_exhausted:
                 footer += "\n[SUMMARY BUDGET EXHAUSTED FROM PREVIOUS CALLS. USE FILTERS TO NARROW RESULTS AND SEE SUMMARIES.]"
             _remember_seen_documents(runtimedata, truncated)
-            return _with_dedup_header(
+            result = _with_dedup_header(
                 deduplicated_across_runs,
                 f"Documents found ({len(lines)}):\n" + "\n".join(lines) + footer,
             )
+            rag_tokens = count_tokens(result)
+            runtime.context.rag_spent_tokens += rag_tokens
+            logger.info("list_documents compact: tokens=%d, rag_spent_tokens=%d", rag_tokens, runtime.context.rag_spent_tokens)
+            return result
 
         # Full mode: summaries included, per-item cap and budget enforced inside helper.
         lines, tokens_spent = _format_full_batch(visible, runtimedata)
         runtimedata.spent_summary_tokens += tokens_spent
         _remember_seen_documents(runtimedata, visible)
-        return _with_dedup_header(
+        result = _with_dedup_header(
             deduplicated_across_runs,
             f"Documents found ({total} total):\n" + "\n".join(lines),
         )
+        rag_tokens = count_tokens(result)
+        runtime.context.rag_spent_tokens += rag_tokens
+        logger.info("list_documents full: tokens=%d, rag_spent_tokens=%d", rag_tokens, runtime.context.rag_spent_tokens)
+        return result
 
     except Exception as e:
         logger.error(f"list_documents failed: {e}", exc_info=True)

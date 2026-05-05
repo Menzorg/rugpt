@@ -30,3 +30,6 @@ class RuntimeContext:
     # Number of tools available to this agent; used by token counter to account
     # for tool schema overhead in the context window estimate.
     available_tools_count: int = 0
+    # Cumulative tokens spent on RAG retrieval output (chunks + doc listings) this run.
+    # Checked before each rag_search / list_documents call to prevent context overflow.
+    rag_spent_tokens: int = 0
