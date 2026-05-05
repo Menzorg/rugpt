@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("rugpt.agents.executor")
 
 _RAG_SEARCH_TOOL_CALL_LIMIT = 15
+_LIST_DOCUMENTS_TOOL_CALL_LIMIT = 5
 
 _MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. В квадратных скобках единицы информации пронумерованы согласно их давности (номер меньше = информация свежее) 
 Не говори пользователю о существовании сводки. 
@@ -274,6 +275,18 @@ class AgentExecutor:
             logger.info(
                 "rag_search tool call limit: run_limit=%d",
                 _RAG_SEARCH_TOOL_CALL_LIMIT,
+            )
+        if any(tool.name == "list_documents" for tool in tools):
+            agent_middleware.append(
+                ToolCallLimitMiddleware(
+                    tool_name="list_documents",
+                    run_limit=_LIST_DOCUMENTS_TOOL_CALL_LIMIT,
+                    exit_behavior="continue",
+                )
+            )
+            logger.info(
+                "list_documents tool call limit: run_limit=%d",
+                _LIST_DOCUMENTS_TOOL_CALL_LIMIT,
             )
 
         logger.info(

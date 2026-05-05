@@ -129,7 +129,7 @@ class Config:
     RAG_VECTOR_DIM = int(os.getenv("RAG_VECTOR_DIM", "1024"))
     RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1000"))
     RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "200"))
-    RAG_SUMMARY_INPUT_MAX_TOKENS = int(os.getenv("RAG_SUMMARY_INPUT_MAX_TOKENS", "4000"))
+    RAG_SUMMARY_INPUT_MAX_TOKENS = int(os.getenv("RAG_SUMMARY_INPUT_MAX_TOKENS", "6000"))
 
     @staticmethod
     def get_postgres_dsn() -> str:
