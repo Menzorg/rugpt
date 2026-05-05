@@ -156,7 +156,7 @@ def _format_full_batch(
             if median_chars is not None:
                 raw_tokens = count_tokens(summary_text)
                 if raw_tokens > single_item_token_limit:
-                    summary_text = summary_text[:single_item_token_limit]
+                    summary_text = summary_text[:single_item_token_limit] + "..."
 
             tokens_for_this = count_tokens(summary_text)
 
@@ -256,10 +256,10 @@ async def _list_documents_async(
             )
 
         # --- RAG budget guard ---
-        if runtime.context.rag_spent_tokens >= 25000:
+        if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
             logger.info(
-                "list_documents: blocked — rag_spent_tokens=%d >= 25000",
-                runtime.context.rag_spent_tokens,
+                "list_documents: blocked — total_tokens_spent=%d >= %d",
+                runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
             )
             return (
                 "[RAG SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
@@ -315,8 +315,8 @@ async def _list_documents_async(
                 f"Documents found ({len(lines)}):\n" + "\n".join(lines),
             )
             rag_tokens = count_tokens(result)
-            runtime.context.rag_spent_tokens += rag_tokens
-            logger.info("list_documents search: tokens=%d, rag_spent_tokens=%d", rag_tokens, runtime.context.rag_spent_tokens)
+            runtime.context.total_tokens_spent += rag_tokens
+            logger.info("list_documents search: tokens=%d, total_tokens_spent=%d", rag_tokens, runtime.context.total_tokens_spent)
             return result
 
         # --- List mode: no queries ---
@@ -341,8 +341,8 @@ async def _list_documents_async(
                 f"Documents found ({len(lines)}):\n" + "\n".join(lines) + footer,
             )
             rag_tokens = count_tokens(result)
-            runtime.context.rag_spent_tokens += rag_tokens
-            logger.info("list_documents compact: tokens=%d, rag_spent_tokens=%d", rag_tokens, runtime.context.rag_spent_tokens)
+            runtime.context.total_tokens_spent += rag_tokens
+            logger.info("list_documents compact: tokens=%d, total_tokens_spent=%d", rag_tokens, runtime.context.total_tokens_spent)
             return result
 
         # Full mode: summaries included, per-item cap and budget enforced inside helper.
@@ -354,8 +354,8 @@ async def _list_documents_async(
             f"Documents found ({total} total):\n" + "\n".join(lines),
         )
         rag_tokens = count_tokens(result)
-        runtime.context.rag_spent_tokens += rag_tokens
-        logger.info("list_documents full: tokens=%d, rag_spent_tokens=%d", rag_tokens, runtime.context.rag_spent_tokens)
+        runtime.context.total_tokens_spent += rag_tokens
+        logger.info("list_documents full: tokens=%d, total_tokens_spent=%d", rag_tokens, runtime.context.total_tokens_spent)
         return result
 
     except Exception as e:

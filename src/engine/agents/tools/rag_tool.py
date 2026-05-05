@@ -124,10 +124,10 @@ async def rag_search(
         )
 
         # Block search if the cumulative RAG token budget is exhausted.
-        if runtime.context.rag_spent_tokens >= 25000:
+        if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
             logger.info(
-                "rag_search: blocked for file_id=%s — rag_spent_tokens=%d >= 25000",
-                file_id, runtime.context.rag_spent_tokens,
+                "rag_search: blocked for file_id=%s — total_tokens_spent=%d >= %d",
+                file_id, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
             )
             doc_name = doc.original_filename or file_id
             return (
@@ -155,10 +155,10 @@ async def rag_search(
 
         result = "\n".join(lines)
         spent = count_tokens(result)
-        runtime.context.rag_spent_tokens += spent
+        runtime.context.total_tokens_spent += spent
         logger.info(
-            "rag_search: returned %d chunks for file_id=%s (seen_chunks=%d, top_k=%d, tokens=%d, rag_spent_tokens=%d)",
-            len(chunks), file_id, seen_count, top_k, spent, runtime.context.rag_spent_tokens,
+            "rag_search: returned %d chunks for file_id=%s (seen_chunks=%d, top_k=%d, tokens=%d, total_tokens_spent=%d)",
+            len(chunks), file_id, seen_count, top_k, spent, runtime.context.total_tokens_spent,
         )
         return result
     except Exception as e:

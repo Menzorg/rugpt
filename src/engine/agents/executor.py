@@ -14,6 +14,7 @@ from langchain_openai import ChatOpenAI
 from ..config import Config
 from ..models.role import Role
 from ..services.prompt_cache import PromptCache
+from ..utils.token_counter import count_tokens
 from .result import AgentResult
 from .runtime import RuntimeContext
 from .tools.registry import ToolRegistry
@@ -238,6 +239,15 @@ class AgentExecutor:
             rules_block = "\n".join(f"- {lesson}" for lesson in lessons)
             system_prompt += f"\n\n## Инструкции в частных случаях:\n{rules_block}"
             logger.info("corrections: injected %d lessons for chat=%s", len(lessons), chat_id)
+
+        # Track tokens spent by the full message list sent to the agent.
+        messages_blob = "\n".join(
+            f"{msg.get('role', '')}: {msg.get('content', '')}"
+            for msg in messages
+        )
+        
+        # Save number of tokens spent on the prompt + injected context, so that tools can check against the critical cap before running expensive retrievals.
+        runtime_context.total_tokens_spent += count_tokens(messages_blob)
 
         logger.info(
             f"Executing agent: role={role.code}, type={role.agent_type}, "

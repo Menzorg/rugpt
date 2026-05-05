@@ -1,13 +1,19 @@
 """Custom LangChain agent middleware."""
 
 import logging
+import uuid
+from pathlib import Path
 from typing import Any, Sequence
 
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
+from langchain.agents.middleware.summarization import REMOVE_ALL_MESSAGES, RemoveMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
 
-from ..utils.token_counter import count_tokens
+from ..utils.token_counter import count_tokens, count_tokens_messages
 from .runtime import RuntimeContext
+
+_COMPACTION_PROMPT = (Path(__file__).parent.parent / "prompts" / "agent_compaction_summary.md").read_text(encoding="utf-8")
 
 logger = logging.getLogger("rugpt.agents.middleware")
 
@@ -140,3 +146,87 @@ class TokenBudgetToolBlockMiddleware(AgentMiddleware):
             )
             return make_blocked_tool_message(request.tool_call)
         return await handler(request)
+
+
+class HistoryCompactionMiddleware(AgentMiddleware):
+    """
+    Summarise old messages when the context grows too large.
+
+    When token count of state["messages"] exceeds *trigger_tokens*, keeps the
+    last *keep_last* messages intact and replaces everything before them with a
+    single HumanMessage containing a structured LLM-generated summary (user
+    intent, facts, constraints, output format, all document IDs found).
+
+    If total messages <= keep_last, keeps floor(keep_last / 2) so compaction
+    always has something to summarise.
+    """
+
+    def __init__(
+        self,
+        llm: ChatOpenAI,
+        trigger_tokens: int = 20_000,
+        keep_last: int = 8,
+    ) -> None:
+        self._llm = llm
+        self._trigger_tokens = trigger_tokens
+        self._keep_last = keep_last
+
+    def _ensure_ids(self, messages: list) -> None:
+        for m in messages:
+            if getattr(m, "id", None) is None:
+                m.id = str(uuid.uuid4())
+
+    def _format_for_summary(self, messages: list[BaseMessage]) -> str:
+        parts = []
+        for m in messages:
+            role = getattr(m, "type", "message")
+            content = _content_text(m.content)
+            parts.append(f"{role}: {content}")
+        return _COMPACTION_PROMPT.replace("{messages}", "\n\n".join(parts))
+
+    async def _acreate_summary(self, messages: list[BaseMessage]) -> str:
+        prompt = self._format_for_summary(messages)
+        result = await self._llm.ainvoke(prompt)
+        return str(result.content).strip()
+
+    async def abefore_model(self, state, runtime) -> dict[str, Any] | None:
+        messages: list = state["messages"]
+        loop_messages = [m for m in messages if not isinstance(m, SystemMessage)]
+
+        token_count = count_tokens_messages(loop_messages)
+        if token_count < self._trigger_tokens:
+            return None
+
+        keep = self._keep_last
+        to_summarise = loop_messages[:-keep]
+        to_keep = loop_messages[-keep:]
+
+        if not to_summarise:
+            return None
+
+        self._ensure_ids(messages)
+
+        logger.info(
+            "compaction middleware: %d tokens >= %d, summarising %d messages, keeping %d",
+            token_count, self._trigger_tokens, len(to_summarise), keep,
+        )
+        try:
+            summary_text = await self._acreate_summary(to_summarise)
+            summary_msg = HumanMessage(
+                content=f"[CONVERSATION SUMMARY]\n{summary_text}",
+                id=str(uuid.uuid4()),
+            )
+            logger.info(
+                "compaction middleware: compacted %d → %d messages (%d chars summary)",
+                len(loop_messages), 1 + keep, len(summary_text),
+            )
+            return {
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    summary_msg,
+                    *to_keep,
+                ]
+            }
+        except Exception:
+            logger.exception("compaction middleware: summarisation failed, skipping compaction")
+            return None

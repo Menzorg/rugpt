@@ -30,6 +30,9 @@ class RuntimeContext:
     # Number of tools available to this agent; used by token counter to account
     # for tool schema overhead in the context window estimate.
     available_tools_count: int = 0
-    # Cumulative tokens spent on RAG retrieval output (chunks + doc listings) this run.
+    # Cumulative tokens spent this run (prompt messages + RAG retrieval output).
     # Checked before each rag_search / list_documents call to prevent context overflow.
-    rag_spent_tokens: int = 0
+    total_tokens_spent: int = 0
+    # Critical token budget cap for this run. Once reached, RAG tools are blocked
+    # and summarization middleware starts compacting conversation state.
+    critical_tokens_cap: int = 20_000
