@@ -147,7 +147,7 @@ class AgentExecutor:
         system_prompt = self.prompt_cache.get_prompt(role)
         tools, tools_doc = self.tool_registry.resolve(role.tools) if role.tools else ([], "")
         system_prompt = system_prompt.replace("{tools}", tools_doc)
-        llm = self._create_llm(model, temperature, max_tokens)
+        llm = self._create_llm(model, temperature)
         
         runtime_context = RuntimeContext()
         runtime_context.available_tools_count = len(tools)
