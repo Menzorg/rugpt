@@ -152,11 +152,11 @@ def _format_full_batch(
         if f.rag_status == "indexed" and f.summary:
             summary_text = f.summary
 
-            # Cut oversized summaries to median chars so one doc cannot monopolise budget.
+            # Cut oversized summaries to median chars so one doc cannot monopolize budget.
             if median_chars is not None:
                 raw_tokens = count_tokens(summary_text)
                 if raw_tokens > single_item_token_limit:
-                    summary_text = summary_text[:median_chars]
+                    summary_text = summary_text[:single_item_token_limit]
 
             tokens_for_this = count_tokens(summary_text)
 

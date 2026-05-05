@@ -61,8 +61,8 @@ async def _can_access_file(file_id: str, org_id: str, user_id: str, is_admin: bo
 
 
 def _top_k_for_seen_chunks(seen_count: int) -> int:
-    if seen_count > 30:
-        return 2
+    #if seen_count > 30:
+    #    return 3
     if seen_count > 15:
         return 3
     return _DEFAULT_TOP_K
