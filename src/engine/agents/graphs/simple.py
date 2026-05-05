@@ -14,8 +14,11 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
-from ..middleware import TokenBudgetMiddleware
+from ..middleware import TokenBudgetToolBlockMiddleware, TokenBudgetSummaryMiddleware
 from ..result import AgentResult, ToolCall
+from ..runtime import RuntimeContext
+
+_TOOL_BLOCK_TOOL_NAMES = {"list_documents", "rag_search"}
 
 logger = logging.getLogger("rugpt.agents.graphs.simple")
 
@@ -25,8 +28,6 @@ async def run_simple_agent(
     system_prompt: str,
     messages: List[dict],
     tools: Optional[List[BaseTool]] = None,
-    max_tokens: int = 2048,
-    temperature: float = 0.7,
     config: Optional[RunnableConfig] = None,
     context_schema: Optional[Any] = None,
 ) -> AgentResult:
@@ -35,17 +36,7 @@ async def run_simple_agent(
 
     Without tools: direct LLM call.
     With tools: LangGraph ReAct agent that can call tools.
-
-    Args:
-        llm: ChatOpenAI instance
-        system_prompt: System prompt text
-        messages: Conversation history as list of {"role": str, "content": str}
-        tools: Optional list of LangChain tools
-        max_tokens: Max tokens in response
-        temperature: Sampling temperature
-
-    Returns:
-        AgentResult with response content
+    max_tokens is set on the llm instance by the caller (AgentExecutor._create_llm).
     """
     # Build LangChain message objects
     lc_messages = []
@@ -128,11 +119,17 @@ async def _react_agent_call(
             if context_schema is None or isinstance(context_schema, type)
             else type(context_schema)
         )
+        runtime_ctx = context if isinstance(context, RuntimeContext) else None
+        tool_names = {t.name for t in tools}
+        if tool_names & _TOOL_BLOCK_TOOL_NAMES:
+            middleware = [TokenBudgetToolBlockMiddleware(runtime_context=runtime_ctx)]
+        else:
+            middleware = [TokenBudgetSummaryMiddleware()]
         agent = create_agent(
             llm,
             tools=tools,
             system_prompt=system_prompt,
-            middleware=[TokenBudgetMiddleware()],
+            middleware=middleware,
             context_schema=schema,
         )
 

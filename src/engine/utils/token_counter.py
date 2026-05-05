@@ -6,7 +6,9 @@ models.  Falls back to tiktoken cl100k_base if the file is absent.
 """
 import logging
 from pathlib import Path
-from typing import Union
+from typing import Iterable, Union
+
+from langchain_core.messages import BaseMessage
 
 import tiktoken
 from tokenizers import Tokenizer
@@ -34,13 +36,59 @@ def init_token_counter() -> None:
     _encoder = tiktoken.get_encoding(_TIKTOKEN_FALLBACK)
 
 
-def count_tokens(text: str) -> int:
-    """Return the token count for *text*. *_model* is accepted but ignored."""
+def count_tokens(text: str, tool_count: int = 0) -> int:
+    """Return the token count for *text* plus an estimate for tool schemas.
+
+    Each tool schema adds ~150 tokens of overhead to the context window.
+    Pass tool_count to include that overhead in the estimate.
+    """
     global _encoder
     if _encoder is None:
         init_token_counter()
 
     if isinstance(_encoder, Tokenizer):
-        return len(_encoder.encode(text).ids)
-    # tiktoken vocabularies differ from local tokenizers — multiply to compensate
-    return int(len(_encoder.encode(text)) * 1.4)
+        text_tokens = len(_encoder.encode(text).ids)
+    else:
+        # tiktoken vocabularies differ from local tokenizers — multiply to compensate
+        text_tokens = int(len(_encoder.encode(text)) * 0.8)
+
+    return text_tokens + tool_count * 150
+
+
+def cut_text_by_token_count(text: str, limit: int) -> str:
+    """Return *text* truncated to at most *limit* tokens.
+
+    Strategy:
+    1. Pre-slice to limit * 10 characters to avoid encoding a huge string.
+    2. Encode the pre-sliced text with the loaded tokenizer.
+    3. Decode only the first *limit* token IDs back to a string.
+    """
+    global _encoder
+    if _encoder is None:
+        init_token_counter()
+
+    # Pre-slice: one token is rarely longer than 10 chars, so this is a safe upper bound.
+    candidate = text[: limit * 10]
+
+    if isinstance(_encoder, Tokenizer):
+        ids = _encoder.encode(candidate).ids[:limit]
+        return _encoder.decode(ids)
+    else:
+        # tiktoken: encode returns a list of ints; decode accepts the same.
+        ids = _encoder.encode(candidate)[:limit]
+        return _encoder.decode(ids)
+
+
+def count_tokens_messages(messages: Iterable[BaseMessage]) -> int:
+    """Return the total token count for an iterable of BaseMessage objects."""
+    parts = []
+    for msg in messages:
+        content = msg.content
+        if isinstance(content, list):
+            parts.extend(
+                item["text"] if isinstance(item, dict) and "text" in item else str(item)
+                for item in content
+            )
+        else:
+            parts.append(str(content))
+    return count_tokens("\n".join(parts))

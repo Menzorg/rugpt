@@ -33,8 +33,9 @@ from typing import Annotated, Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import tool, InjectedToolArg
+from langchain_core.tools import InjectedToolArg, StructuredTool
 from langgraph.prebuilt import ToolRuntime
+from pydantic import BaseModel, Field
 
 from ...constants import IMAGE_TYPES
 from ...models.rag import RelatedDoc
@@ -57,6 +58,31 @@ _SUMMARY_SINGLE_ITEM_MAX_FRACTION = 0.05
 
 _user_file_storage: Optional[UserFileStorage] = None
 _rag_service: Optional[RAGService] = None
+
+
+class ListDocumentsInput(BaseModel):
+    name_query: Optional[str] = Field(
+        default=None,
+        description=(
+            "Vector search query on document filenames. "
+            "Use keywords from the expected filename. Omit to skip."
+        ),
+    )
+    summary_query: Optional[str] = Field(
+        default=None,
+        description=(
+            "Vector search query on document summaries. "
+            "Write a detailed description of the document content (3+ sentences). "
+            "Omit to skip."
+        ),
+    )
+    file_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "UUID of a specific document. When provided, returns full info for that "
+            "document only, bypassing all token budgets and other filters."
+        ),
+    )
 
 
 def init_document_service(
@@ -164,23 +190,17 @@ def _format_compact_batch(files: list[UserFile]) -> list[str]:
     ]
 
 
-@tool(response_format="content")
-async def list_documents(
+async def _list_documents_async(
     config: Annotated[RunnableConfig, InjectedToolArg],
-    runtime: ToolRuntime[RuntimeContext],
+    runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg],
     name_query: Optional[str] = None,
     summary_query: Optional[str] = None,
+    file_id: Optional[str] = None,
 ) -> str:
-    """List documents visible to the caller in their organization.
-    Use when the user asks what files are available, to browse the catalog,
-    or before calling rag_search to check if the needed document exists.
-    Args:
-        name_query: Substring filter on filename, case-insensitive. Omit or pass empty to skip.
-        summary_query: Vector search query on document summaries. Omit or pass empty to skip.
-        If any query is provided, only search results are returned (merged and deduplicated).
-        If both are omitted, the full document list is returned.
-    """
-    logger.info(f"tool list_documents: name_query={name_query!r}, summary_query={summary_query!r}")
+    logger.info(
+        "tool list_documents: name_query=%r, summary_query=%r, file_id=%r",
+        name_query, summary_query, file_id,
+    )
 
     if _user_file_storage is None:
         logger.error("list_documents: storage not initialized, call init_document_service() at startup")
@@ -195,6 +215,18 @@ async def list_documents(
 
         user_id = UUID(user_id_str)
         org_id = UUID(org_id_str)
+
+        # --- Single-document lookup: bypasses all budgets and filters ---
+        if file_id and file_id.strip():
+            f = await _user_file_storage.get_by_id(UUID(file_id.strip()))
+            if f is None or (f.uploaded_by_user_id != user_id and not f.is_public):
+                return f"Document {file_id} not found or not visible to you."
+            summary_part = f'summary: "{f.summary}"' if f.rag_status == "indexed" and f.summary else "summary: —"
+            return (
+                f"- {f.original_filename} (id={f.id}, created_at={f.created_at}, "
+                f"rag={f.rag_status}, is_table={f.is_table}, "
+                f"size={f.file_size / 1_000_000:.2f}MB, {summary_part})"
+            )
 
         has_name_query = bool(name_query and name_query.strip())
         has_summary_query = bool(summary_query and summary_query.strip())
@@ -306,3 +338,17 @@ async def list_documents(
     except Exception as e:
         logger.error(f"list_documents failed: {e}", exc_info=True)
         return _TOOL_ERROR_RESULT
+
+
+list_documents = StructuredTool.from_function(
+    coroutine=_list_documents_async,
+    name="list_documents",
+    description=(
+        "List documents visible to the caller in their organization. "
+        "Use when the user asks what files are available, to browse the catalog, "
+        "or before calling rag_search to check if the needed document exists. "
+        "Provide name_query or summary_query to search; omit both for the full list. "
+        "Provide file_id to fetch full info for a single document bypassing all budgets."
+    ),
+    args_schema=ListDocumentsInput,
+)

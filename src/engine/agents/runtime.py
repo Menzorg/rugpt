@@ -27,3 +27,6 @@ class RuntimeContext:
     rag_search_runtime_data: RagSearchRuntimeData = field(
         default_factory=RagSearchRuntimeData,
     )
+    # Number of tools available to this agent; used by token counter to account
+    # for tool schema overhead in the context window estimate.
+    available_tools_count: int = 0

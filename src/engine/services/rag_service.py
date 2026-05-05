@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 from uuid import UUID
+
+_PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+_DOC_SUMMARY_PROMPT: str = (_PROMPTS_DIR / "rag_doc_summary.md").read_text(encoding="utf-8")
+_TABLE_SUMMARY_PROMPT: str = (_PROMPTS_DIR / "rag_table_summary.md").read_text(encoding="utf-8")
 
 from bs4 import BeautifulSoup
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -57,7 +62,7 @@ class RAGService:
         llm_api_key: str,
         chunk_size: int,
         chunk_overlap: int,
-        summary_input_max_chars: int,
+        summary_input_max_tokens: int,
         file_storage: UserFileStorage | None = None,
     ) -> None:
         self._store = store or RAG_store(
@@ -78,13 +83,14 @@ class RAGService:
             base_url=llm_base_url,
             api_key=llm_api_key,
             temperature=0,
+            max_tokens=2048
         )
         self._splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
         self._tika_server_endpoint = Config.RAG_TIKA_SERVER_ENDPOINT
-        self._summary_input_max_chars = summary_input_max_chars
+        self._summary_input_max_tokens = summary_input_max_tokens
 
     def _embed_query(self, query: str) -> list[float]:
         return self._embeddings.embed_query(query)
@@ -174,18 +180,15 @@ class RAGService:
             f"{rows_text}"
         )
 
-    def _generate_summary_with_llm(self, text: str) -> str:
-        source_text = text[: self._summary_input_max_chars]
-        prompt = (
-            "Ты делаешь краткое резюме документа для поиска.\n"
-            "Правила:\n"
-            "- Пиши только по-русски.\n"
-            "- Без воды, только факты.\n"
-            "- Сохраняй сущности, названия организаций, номера, даты и суммы как в тексте.\n"
-            "- Формат: 4-7 предложений, без буллетов.\n"
-            "- Не пиши про количество записей. ты видишь ограниченное их количество\n\n"
-            f"Документ:\n{source_text}"
-        )
+    def _generate_summary_with_llm(self, text: str, *, is_table: bool = False) -> str:
+        from ..utils.token_counter import cut_text_by_token_count
+        try:
+            source_text = cut_text_by_token_count(text, self._summary_input_max_tokens)
+        except Exception:
+            logger.warning("cut_text_by_token_count failed, falling back to char limit")
+            source_text = text[: self._summary_input_max_tokens * 3]
+        template = _TABLE_SUMMARY_PROMPT if is_table else _DOC_SUMMARY_PROMPT
+        prompt = template.replace("{document}", source_text)
         result = self._summary_llm.invoke(prompt)
         summary = str(result.content).strip()
         if not summary:
@@ -264,7 +267,7 @@ class RAGService:
                 stage = "summary_generation"
                 logger.info(f"[{fid}] stage={stage}")
                 summary_source = self._build_table_summary_source(filename, headers, table_rows)
-                summary = self._generate_summary_with_llm(summary_source)
+                summary = self._generate_summary_with_llm(summary_source, is_table=True)
                 summary = f"Количество строк в таблице: {len(table_rows)}\n" + summary
                 logger.info(f"[{fid}] summary generated ({len(summary)} chars)")
 

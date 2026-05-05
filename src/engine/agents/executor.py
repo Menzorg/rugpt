@@ -60,13 +60,14 @@ class AgentExecutor:
         self.memory_service = memory_service
         self.correction_rule_service: Optional["CorrectionRuleService"] = None
 
-    def _create_llm(self, model: str, temperature: float = 0.7) -> ChatOpenAI:
+    def _create_llm(self, model: str, temperature: float = 0.7, max_tokens: int = 2048) -> ChatOpenAI:
         """Create a ChatOpenAI instance pointed at the LiteLLM proxy."""
         return ChatOpenAI(
             base_url=self.base_url,
             api_key=self.api_key,
             model=model,
             temperature=temperature,
+            max_tokens=max_tokens,
             timeout=self.timeout,
         )
 
@@ -146,13 +147,14 @@ class AgentExecutor:
         system_prompt = self.prompt_cache.get_prompt(role)
         tools, tools_doc = self.tool_registry.resolve(role.tools) if role.tools else ([], "")
         system_prompt = system_prompt.replace("{tools}", tools_doc)
-        llm = self._create_llm(model, temperature)
+        llm = self._create_llm(model, temperature, max_tokens)
         
         runtime_context = RuntimeContext()
+        runtime_context.available_tools_count = len(tools)
 
         # RunnableConfig carries initiator's org_id/user_id for tools.
         config = RunnableConfig(
-            max_concurrency=3,
+            max_concurrency=5,
             configurable={
                 "org_id": str(scope_org_id) if scope_org_id else "",
                 "user_id": str(user_id) if user_id else "",
@@ -249,8 +251,6 @@ class AgentExecutor:
                     system_prompt=system_prompt,
                     messages=messages,
                     tools=tools if tools else None,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
                     config=config,
                     context_schema=runtime_context,
                 )
@@ -281,8 +281,6 @@ class AgentExecutor:
                     llm=llm,
                     system_prompt=system_prompt,
                     messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
                     config=config,
                     context_schema=runtime_context,
                 )

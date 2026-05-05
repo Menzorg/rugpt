@@ -226,7 +226,7 @@ class EngineService:
             llm_api_key=Config.LLM_API_KEY,
             chunk_size=Config.RAG_CHUNK_SIZE,
             chunk_overlap=Config.RAG_CHUNK_OVERLAP,
-            summary_input_max_chars=Config.RAG_SUMMARY_INPUT_MAX_CHARS,
+            summary_input_max_tokens=Config.RAG_SUMMARY_INPUT_MAX_TOKENS,
             file_storage=self.user_file_storage,  # для обновления rag_status при индексации
         )
 
