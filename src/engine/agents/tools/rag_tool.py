@@ -90,8 +90,9 @@ async def rag_search(
         configurable = config.get("configurable", {})
         org_id = configurable.get("org_id", "")
         user_id = configurable.get("user_id", "")
+        is_admin = bool(configurable.get("is_admin", False))
 
-        logger.info(f"rag_search called: file_id={file_id}, query={query}, org_id={org_id}, user_id={user_id}")
+        logger.info(f"rag_search called: file_id={file_id}, query={query}, org_id={org_id}, user_id={user_id}, is_admin={is_admin}")
 
         if not org_id or not user_id:
             logger.error("rag_search: missing org_id or user_id in config")
@@ -101,7 +102,7 @@ async def rag_search(
             logger.error("rag_search: service not initialized, call init_rag_service() at startup")
             return "RAG search unavailable: service not initialized."
 
-        if not await _can_access_file(file_id, org_id, user_id):
+        if not await _can_access_file(file_id, org_id, user_id, is_admin):
             return "You don't have access to that document."
 
 
