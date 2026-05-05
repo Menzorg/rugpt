@@ -18,17 +18,14 @@ How it works:
 1. Before formatting a batch we check the remaining budget
    (SUMMARY_TOKENS_BUDGET - spent_so_far).  If it is already exhausted the
    whole batch switches to compact mode (id + name + is_table only).
-2. Within a batch that fits the budget: if any single summary would consume
-   more than 5 % of the total budget on its own, it is cut to the median
-   character length of all summaries in the batch.  This prevents one huge
-   document from starving the rest.
-3. After formatting we count the tokens of every summary that was displayed
-   untruncated (i.e. not cut by the budget check) and add them to
-   spent_summary_tokens.  Summaries replaced by [BUDGET EXHAUSTED] are not
-   counted — they did not consume budget.
+2. Within a batch that fits the budget, every summary is capped by the smaller
+   of the per-item token limit and the remaining summary budget. This prevents
+   one huge document from starving the rest.
+3. After formatting we count the tokens of every summary text that was
+   displayed and add them to spent_summary_tokens.  Summaries replaced by
+   [BUDGET EXHAUSTED] are not counted — they did not consume budget.
 """
 import logging
-import statistics
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -43,7 +40,7 @@ from ...models.user_file import UserFile
 from ..runtime import ListDocumentsRuntimeData, RuntimeContext
 from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
-from ...utils.token_counter import count_tokens
+from ...utils.token_counter import count_tokens, cut_text_by_token_count
 
 logger = logging.getLogger("rugpt.agents.tools.document")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
@@ -115,14 +112,6 @@ def _remember_seen_documents(runsession: object, files: list[UserFile]) -> None:
         runsession.seen_ids.update(str(f.id) for f in files)
 
 
-def _median_summary_chars(files: list[UserFile]) -> Optional[int]:
-    """Median character length of non-empty summaries in *files*, or None."""
-    lengths = [len(f.summary) for f in files if f.rag_status == "indexed" and f.summary]
-    if not lengths:
-        return None
-    return int(statistics.median(lengths))
-
-
 def _format_full_batch(
     files: list[UserFile],
     runtimedata: ListDocumentsRuntimeData,
@@ -133,43 +122,43 @@ def _format_full_batch(
 
     Returns (lines, tokens_spent_this_batch).
 
-    Per-item cap: if a summary would by itself exceed
-    _SUMMARY_SINGLE_ITEM_MAX_FRACTION of the total budget, it is cut to the
-    median summary length of the batch before token-counting.
+    Per-item cap: each summary is limited to the smaller of the configured
+    per-item token cap and the remaining summary budget at the time it is
+    formatted.
 
-    Budget tracking: only summaries that were shown without being cut by the
-    budget check are added to tokens_spent_this_batch — those are the ones
-    that actually consumed budget.
+    Budget tracking: every displayed summary text is added to
+    tokens_spent_this_batch — that is the text that actually consumed budget.
     """
     remaining = _SUMMARY_TOKENS_BUDGET - runtimedata.spent_summary_tokens
     single_item_token_limit = int(_SUMMARY_TOKENS_BUDGET * _SUMMARY_SINGLE_ITEM_MAX_FRACTION)
-    median_chars = _median_summary_chars(files)
 
     lines = []
     total_tokens_spent = 0
 
     for f in files:
         if f.rag_status == "indexed" and f.summary:
-            summary_text = f.summary
-
-            # Cut oversized summaries to median chars so one doc cannot monopolize budget.
-            if median_chars is not None:
-                raw_tokens = count_tokens(summary_text)
-                if raw_tokens > single_item_token_limit:
-                    summary_text = summary_text[:single_item_token_limit] + "..."
-
-            tokens_for_this = count_tokens(summary_text)
-
             if remaining <= 0:
                 # Budget already exhausted from earlier items or previous calls.
                 summary_part = "summary: [BUDGET EXHAUSTED]"
-            elif tokens_for_this <= remaining:
-                summary_part = f'summary: "{summary_text}"'
-                # Track only summaries actually displayed — they consumed budget.
-                total_tokens_spent += tokens_for_this
-                remaining -= tokens_for_this
             else:
-                summary_part = "summary: [BUDGET EXHAUSTED]"
+                summary_text = f.summary
+                raw_tokens = count_tokens(summary_text)
+                effective_limit = min(single_item_token_limit, remaining)
+
+                if raw_tokens > effective_limit:
+                    ellipsis_tokens = count_tokens("...")
+                    cut_limit = max(1, effective_limit - ellipsis_tokens)
+                    summary_text = cut_text_by_token_count(summary_text, cut_limit).rstrip() + "..."
+
+                tokens_for_this = count_tokens(summary_text)
+
+                if tokens_for_this <= remaining:
+                    summary_part = f'summary: "{summary_text}"'
+                    # Track only summaries actually displayed — they consumed budget.
+                    total_tokens_spent += tokens_for_this
+                    remaining -= tokens_for_this
+                else:
+                    summary_part = "summary: [TOKEN BUDGET EXHAUSTED]"
         else:
             summary_part = "summary: —"
 
