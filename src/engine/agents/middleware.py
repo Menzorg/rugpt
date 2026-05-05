@@ -6,7 +6,7 @@ from typing import Any, Sequence
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
 
-from ..utils.token_counter import count_tokens, count_tokens_messages
+from ..utils.token_counter import count_tokens
 from .runtime import RuntimeContext
 
 logger = logging.getLogger("rugpt.agents.middleware")
@@ -115,7 +115,7 @@ class TokenBudgetToolBlockMiddleware(AgentMiddleware):
     async def awrap_model_call(self, request, handler):
         ratio = self._ratio_used(request.messages)
         if ratio >= self.ratio:
-            logger.warning(
+            logger.info(
                 "tool-block middleware: blocking model tools at %.2f%% context", ratio * 100
             )
             request = self._block_request(request)
@@ -124,7 +124,7 @@ class TokenBudgetToolBlockMiddleware(AgentMiddleware):
     def wrap_tool_call(self, request, handler):
         ratio = self._ratio_used(request.state["messages"])
         if ratio >= self.ratio:
-            logger.warning(
+            logger.info(
                 "tool-block middleware: blocking tool call %s at %.2f%% context",
                 request.tool_call.get("name"), ratio * 100,
             )
@@ -134,76 +134,8 @@ class TokenBudgetToolBlockMiddleware(AgentMiddleware):
     async def awrap_tool_call(self, request, handler):
         ratio = self._ratio_used(request.state["messages"])
         if ratio >= self.ratio:
-            logger.warning(
+            logger.info(
                 "tool-block middleware: blocking tool call %s at %.2f%% context",
-                request.tool_call.get("name"), ratio * 100,
-            )
-            return make_blocked_tool_message(request.tool_call)
-        return await handler(request)
-
-
-class TokenBudgetSummaryMiddleware(AgentMiddleware):
-    """
-    Block tool calls once the context approaches the limit.
-
-    Default middleware for agents without document-heavy tools.
-    Uses count_tokens_messages for accurate per-message token counting.
-    """
-
-    def __init__(
-        self,
-        max_context_tokens: int = MAX_CONTEXT_TOKENS,
-        ratio: float = TOKEN_BUDGET_RATIO,
-    ):
-        self.max_context_tokens = max_context_tokens
-        self.ratio = ratio
-
-    def _ratio_used(self, messages: Sequence[Any]) -> float:
-        lc_messages = [m for m in messages if isinstance(m, BaseMessage)]
-        return count_tokens_messages(lc_messages) / self.max_context_tokens
-
-    def _block_request(self, request):
-        return request.override(
-            tools=[],
-            system_message=append_to_system(
-                request.system_message,
-                TOKEN_BUDGET_SYSTEM_BLOCK,
-            ),
-        )
-
-    def wrap_model_call(self, request, handler):
-        ratio = self._ratio_used(request.messages)
-        if ratio >= self.ratio:
-            logger.warning(
-                "summary middleware: blocking model tools at %.2f%% context", ratio * 100
-            )
-            request = self._block_request(request)
-        return handler(request)
-
-    async def awrap_model_call(self, request, handler):
-        ratio = self._ratio_used(request.messages)
-        if ratio >= self.ratio:
-            logger.warning(
-                "summary middleware: blocking model tools at %.2f%% context", ratio * 100
-            )
-            request = self._block_request(request)
-        return await handler(request)
-
-    def wrap_tool_call(self, request, handler):
-        ratio = self._ratio_used(request.state["messages"])
-        if ratio >= self.ratio:
-            logger.warning(
-                "summary middleware: blocking tool call %s at %.2f%% context",
-                request.tool_call.get("name"), ratio * 100,
-            )
-            return make_blocked_tool_message(request.tool_call)
-        return handler(request)
-
-    async def awrap_tool_call(self, request, handler):
-        ratio = self._ratio_used(request.state["messages"])
-        if ratio >= self.ratio:
-            logger.warning(
-                "summary middleware: blocking tool call %s at %.2f%% context",
                 request.tool_call.get("name"), ratio * 100,
             )
             return make_blocked_tool_message(request.tool_call)

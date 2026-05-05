@@ -60,7 +60,7 @@ class AgentExecutor:
         self.memory_service = memory_service
         self.correction_rule_service: Optional["CorrectionRuleService"] = None
 
-    def _create_llm(self, model: str, temperature: float = 0.7, max_tokens: int = 2048) -> ChatOpenAI:
+    def _create_llm(self, model: str, temperature: float = 0.7, max_tokens: int = 4096) -> ChatOpenAI:
         """Create a ChatOpenAI instance pointed at the LiteLLM proxy."""
         return ChatOpenAI(
             base_url=self.base_url,

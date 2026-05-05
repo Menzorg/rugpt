@@ -9,14 +9,16 @@ import logging
 from typing import Any, List, Optional
 
 from langchain.agents import create_agent
+from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
-from ..middleware import TokenBudgetToolBlockMiddleware, TokenBudgetSummaryMiddleware
+from ..middleware import TokenBudgetToolBlockMiddleware
 from ..result import AgentResult, ToolCall
 from ..runtime import RuntimeContext
+from ...utils.token_counter import count_tokens_messages
 
 _TOOL_BLOCK_TOOL_NAMES = {"list_documents", "rag_search"}
 
@@ -124,7 +126,11 @@ async def _react_agent_call(
         if tool_names & _TOOL_BLOCK_TOOL_NAMES:
             middleware = [TokenBudgetToolBlockMiddleware(runtime_context=runtime_ctx)]
         else:
-            middleware = [TokenBudgetSummaryMiddleware()]
+            middleware = [SummarizationMiddleware(
+                llm,
+                trigger=("tokens", 25000),
+                token_counter=count_tokens_messages,
+            )]
         agent = create_agent(
             llm,
             tools=tools,
