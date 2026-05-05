@@ -4,7 +4,7 @@
 # Запускается на домашней машине wolflord
 # Usage: ./syncw.sh
 
-VM_HOST="dev-nid"
+VM_HOST="rugpt-dev"
 REMOTE_PATH="/home/wolflord/rugpt/"
 LOCAL_PATH="$HOME/rugpt/"
 
