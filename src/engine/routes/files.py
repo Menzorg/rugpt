@@ -10,6 +10,7 @@ Endpoints for file upload/download/management:
 """
 import logging
 from typing import Optional, List
+from urllib.parse import quote as urlquote
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form, Body
@@ -134,12 +135,20 @@ async def download_file(file_id: str, current_user: dict = Depends(get_current_u
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="File data not found in storage")
 
+    # HTTP-заголовки кодируются как latin-1, кириллица в filename вызывает
+    # UnicodeEncodeError. RFC 6266 / 5987: UTF-8 имя кодируется percent-escape
+    # в filename*. ASCII-fallback в filename для старых клиентов.
+    fname = record.original_filename or "file"
+    ascii_fallback = fname.encode("ascii", errors="ignore").decode("ascii") or "file"
+    encoded = urlquote(fname, safe="")
+    content_disposition = (
+        f"attachment; filename=\"{ascii_fallback}\"; "
+        f"filename*=UTF-8''{encoded}"
+    )
     return Response(
         content=data,
         media_type=CONTENT_TYPES.get(record.file_type, "application/octet-stream"),
-        headers={
-            "Content-Disposition": f'attachment; filename="{record.original_filename}"'
-        },
+        headers={"Content-Disposition": content_disposition},
     )
 
 

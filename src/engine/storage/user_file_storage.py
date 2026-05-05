@@ -54,6 +54,30 @@ class UserFileStorage(BaseStorage):
         )
         return self._row_to_file(row) if row else None
 
+    async def find_active_clones_by_source(
+        self, user_id: UUID, source_file_ids: List[UUID],
+    ) -> Dict[UUID, Dict]:
+        """Батч: для каких source_file_ids у этого user'а уже есть active clone.
+
+        Возвращает Dict[source_id → {"id": clone_id, "rag_status": str}].
+        Используется в chat-routes чтобы пробросить на фронт id клона
+        (для кнопки «В память») и его rag_status (показывать/скрывать
+        «В память» в зависимости от того, проиндексирован ли уже).
+        """
+        if not source_file_ids:
+            return {}
+        rows = await self.fetch(
+            """
+            SELECT cloned_from_file_id AS src, id AS clone_id, rag_status
+            FROM user_files
+            WHERE user_id = $1
+              AND cloned_from_file_id = ANY($2::uuid[])
+              AND is_active = true
+            """,
+            user_id, source_file_ids,
+        )
+        return {r["src"]: {"id": r["clone_id"], "rag_status": r["rag_status"]} for r in rows}
+
     async def find_duplicate(self, user_id: UUID, content_hash: str) -> Optional[UserFile]:
         """
         Найти активный файл пользователя с совпадающим SHA-256 хешем.

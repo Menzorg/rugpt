@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from .chat_service import ChatService
     from .task_event_service import TaskEventService
     from .project_service import ProjectService
-    from .task_notification_service import TaskNotificationService
     from ..storage.task_participant_storage import TaskParticipantStorage
 
 logger = logging.getLogger("rugpt.services.task")
@@ -57,7 +56,6 @@ class TaskService:
         chat_service: Optional["ChatService"] = None,
         task_event_service: Optional["TaskEventService"] = None,
         project_service: Optional["ProjectService"] = None,
-        task_notification_service: Optional["TaskNotificationService"] = None,
         user_storage: Optional[UserStorage] = None,
         task_participant_storage: Optional["TaskParticipantStorage"] = None,
     ):
@@ -66,19 +64,108 @@ class TaskService:
         self.chat_service = chat_service
         self.task_event_service = task_event_service
         self.project_service = project_service
-        self.task_notification_service = task_notification_service
         self.user_storage = user_storage
         self.task_participant_storage = task_participant_storage
 
-    async def _notify(self, method_name: str, *args, **kwargs) -> None:
-        """Best-effort PM notification via TaskNotificationService. Silent no-op if absent."""
-        if self.task_notification_service is None:
+    async def _bell_to_recipients(
+        self,
+        task: "Task",
+        actor_user_id: Optional[UUID],
+        title: str,
+        content: Optional[str] = None,
+    ) -> None:
+        """Best-effort bell notification (in_app_notifications) всем участникам
+        задачи (creator + assignee + participants) кроме actor. Используется
+        `_resolve_recipients` для согласованной фильтрации (active users only).
+        """
+        if self.notification_service is None:
             return
         try:
-            method = getattr(self.task_notification_service, method_name)
-            await method(*args, **kwargs)
+            recipients = await self._resolve_recipients(
+                task, exclude_user_id=actor_user_id,
+            )
         except Exception as e:
-            logger.error(f"PM notify {method_name} failed: {e}")
+            logger.error(f"Bell notify resolve failed for task {task.id}: {e}")
+            return
+        for u in recipients:
+            try:
+                await self.notification_service.create(
+                    user_id=u.id,
+                    org_id=task.org_id,
+                    type="task_status_change",
+                    title=title,
+                    content=content,
+                    reference_type="task",
+                    reference_id=task.id,
+                )
+            except Exception as e:
+                logger.error(f"Bell notify create failed for user {u.id} task {task.id}: {e}")
+
+    async def _bell_to_user(
+        self,
+        user_id: UUID,
+        org_id: UUID,
+        task_id: UUID,
+        title: str,
+        content: Optional[str] = None,
+    ) -> None:
+        """Best-effort single-recipient bell. Used for participant add/remove
+        where notification has one specific addressee, not 'all involved'."""
+        if self.notification_service is None:
+            return
+        try:
+            await self.notification_service.create(
+                user_id=user_id,
+                org_id=org_id,
+                type="task_status_change",
+                title=title,
+                content=content,
+                reference_type="task",
+                reference_id=task_id,
+            )
+        except Exception as e:
+            logger.error(f"Bell single notify failed for user {user_id} task {task_id}: {e}")
+
+    @staticmethod
+    def _format_actor(user: "User") -> str:
+        """Display name for actor: '@username' if username present, else plain name."""
+        return f"@{user.username}" if getattr(user, "username", None) else user.name
+
+    async def _resolve_recipients(
+        self, task: "Task", exclude_user_id: Optional[UUID] = None,
+    ) -> List["User"]:
+        """Active users involved in the task: creator + assignee + participants.
+        Deduplicates and excludes `exclude_user_id`. Filters out users with is_active=false.
+        Returns [] if user_storage is unavailable (test/no-db mode).
+        """
+        if self.user_storage is None:
+            return []
+        candidate_ids: List[UUID] = []
+        if task.created_by_user_id:
+            candidate_ids.append(task.created_by_user_id)
+        if task.assignee_user_id:
+            candidate_ids.append(task.assignee_user_id)
+        if self.task_participant_storage is not None:
+            participant_ids = await self.task_participant_storage.list_user_ids(task.id)
+            candidate_ids.extend(participant_ids)
+
+        seen: set = set()
+        unique_ids: List[UUID] = []
+        for uid in candidate_ids:
+            if uid is None or uid == exclude_user_id or uid in seen:
+                continue
+            seen.add(uid)
+            unique_ids.append(uid)
+
+        result: List["User"] = []
+        for uid in unique_ids:
+            user = await self.user_storage.get_by_id(uid)
+            if user is None:
+                continue
+            if not getattr(user, "is_active", False):
+                continue
+            result.append(user)
+        return result
 
     # --- Internal helpers ---
 
@@ -248,11 +335,20 @@ class TaskService:
             reference_id=created.id,
         )
 
-        # 5. Notify each new participant.
+        # 5. Notify each new participant via bell (skip self-add).
+        actor_user = None
+        if self.user_storage is not None and created_by_user_id is not None:
+            actor_user = await self.user_storage.get_by_id(created_by_user_id)
+        actor_label = self._format_actor(actor_user) if actor_user else ""
         for pid in filtered_participants:
-            await self._notify(
-                "notify_added_as_participant", created, pid,
-                by_user_id=created_by_user_id,
+            if pid == created_by_user_id:
+                continue
+            await self._bell_to_user(
+                user_id=pid,
+                org_id=org_id,
+                task_id=created.id,
+                title=f"Вас добавили в задачу «{created.title}»",
+                content=f"Добавил: {actor_label}" if actor_label else None,
             )
 
         return created
@@ -595,10 +691,15 @@ class TaskService:
             payload={"user_id": str(user_id), "added_by": str(actor.id)},
         )
 
-        # Notify
-        await self._notify(
-            "notify_added_as_participant", task, user_id, by_user_id=actor.id,
-        )
+        # Notify added user via bell (skip self-add).
+        if user_id != actor.id:
+            await self._bell_to_user(
+                user_id=user_id,
+                org_id=task.org_id,
+                task_id=task.id,
+                title=f"Вас добавили в задачу «{task.title}»",
+                content=f"Добавил: {self._format_actor(actor)}",
+            )
 
         # Return shape for API — fetch the just-added user directly.
         if self.user_storage is not None:
@@ -655,10 +756,15 @@ class TaskService:
             payload={"user_id": str(user_id), "removed_by": str(actor.id)},
         )
 
-        # Notify
-        await self._notify(
-            "notify_removed_as_participant", task, user_id, by_user_id=actor.id,
-        )
+        # Notify removed user via bell (skip self-remove).
+        if user_id != actor.id:
+            await self._bell_to_user(
+                user_id=user_id,
+                org_id=task.org_id,
+                task_id=task.id,
+                title=f"Вас исключили из задачи «{task.title}»",
+                content=f"Исключил: {self._format_actor(actor)}",
+            )
 
         return True
 
@@ -720,7 +826,11 @@ class TaskService:
             event_type="took",
             payload={"from_status": old_status, "to_status": "in_progress"},
         )
-        await self._notify("notify_take", updated, user)
+        await self._bell_to_recipients(
+            updated, user.id,
+            title=f"Задача «{updated.title}» взята в работу",
+            content=self._format_actor(user),
+        )
         return updated
 
     async def mark_done(self, task_id: UUID, user: User) -> Task:
@@ -740,7 +850,11 @@ class TaskService:
             event_type="marked_done",
             payload={"from_status": "in_progress", "to_status": "awaiting_review"},
         )
-        await self._notify("notify_mark_done", updated, user)
+        await self._bell_to_recipients(
+            updated, user.id,
+            title=f"Задача «{updated.title}» отмечена выполненной",
+            content=self._format_actor(user),
+        )
         return updated
 
     async def accept_task(self, task_id: UUID, user: User) -> Task:
@@ -759,7 +873,10 @@ class TaskService:
             event_type="accepted",
             payload={"from_status": "awaiting_review", "to_status": "done"},
         )
-        await self._notify("notify_accept", updated, user)
+        await self._bell_to_recipients(
+            updated, user.id,
+            title=f"Задача «{updated.title}» принята",
+        )
         return updated
 
     async def reject_task(
@@ -787,7 +904,11 @@ class TaskService:
                 "comment": comment,
             },
         )
-        await self._notify("notify_reject", updated, user, comment)
+        await self._bell_to_recipients(
+            updated, user.id,
+            title=f"Задача «{updated.title}» возвращена в работу",
+            content=comment,
+        )
         return updated
 
     # ============================================
@@ -818,7 +939,12 @@ class TaskService:
                 "new": deadline.isoformat(),
             },
         )
-        await self._notify("notify_set_deadline", updated, user)
+        deadline_str = updated.deadline.strftime("%d.%m.%Y %H:%M") if updated.deadline else "—"
+        await self._bell_to_recipients(
+            updated, user.id,
+            title=f"Срок задачи «{updated.title}» изменён",
+            content=f"Новый срок: {deadline_str}",
+        )
         return updated
 
     async def propose_deadline(
@@ -840,7 +966,15 @@ class TaskService:
             event_type="deadline_proposed",
             payload={"proposed": proposed.isoformat()},
         )
-        await self._notify("notify_propose_deadline", updated, user)
+        proposed_str = (
+            updated.proposed_deadline.strftime("%d.%m.%Y %H:%M")
+            if updated.proposed_deadline else "—"
+        )
+        await self._bell_to_recipients(
+            updated, user.id,
+            title=f"Предложен новый срок для «{updated.title}»",
+            content=f"{self._format_actor(user)}: {proposed_str}",
+        )
         return updated
 
     async def accept_proposed_deadline(self, task_id: UUID, user: User) -> Task:
@@ -866,7 +1000,12 @@ class TaskService:
                 "new": proposed.isoformat(),
             },
         )
-        await self._notify("notify_accept_proposed_deadline", updated, user)
+        deadline_str = updated.deadline.strftime("%d.%m.%Y %H:%M") if updated.deadline else "—"
+        await self._bell_to_recipients(
+            updated, user.id,
+            title=f"Новый срок для «{updated.title}» принят",
+            content=deadline_str,
+        )
         return updated
 
     async def reject_proposed_deadline(self, task_id: UUID, user: User) -> Task:
@@ -887,7 +1026,10 @@ class TaskService:
             event_type="deadline_proposal_rejected",
             payload={"rejected": rejected.isoformat() if rejected else None},
         )
-        await self._notify("notify_reject_proposed_deadline", updated, user)
+        await self._bell_to_recipients(
+            updated, user.id,
+            title=f"Новый срок для «{updated.title}» отклонён",
+        )
         return updated
 
     # ============================================
@@ -916,16 +1058,11 @@ class TaskService:
                     event_type="overdue",
                     payload={"from_status": old_status},
                 )
-                await self._notify("notify_overdue", task)
-
-                # Notify assignee
-                await self.notification_service.create(
-                    user_id=task.assignee_user_id,
-                    org_id=task.org_id,
-                    type="task_status_change",
+                # Bell всем involved (creator + assignee + participants).
+                # actor_user_id=None — overdue scheduler-driven, исключать некого.
+                await self._bell_to_recipients(
+                    task, actor_user_id=None,
                     title=f"Задача просрочена: {task.title}",
-                    reference_type="task",
-                    reference_id=task.id,
                 )
 
         return overdue_tasks

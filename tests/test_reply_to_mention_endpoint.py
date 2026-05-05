@@ -88,7 +88,6 @@ async def test_reply_endpoint_403_when_not_mentioned():
             message_id=msg_id,
             request=ReplyToMentionRequest(content="ok"),
             user_id=sender_id,
-            org_id=uuid4(),
             engine=fake_engine,
         )
     assert exc.value.status_code == 403
@@ -114,7 +113,6 @@ async def test_reply_endpoint_409_on_double_reply():
             message_id=msg_id,
             request=ReplyToMentionRequest(content="ok"),
             user_id=sender_id,
-            org_id=uuid4(),
             engine=fake_engine,
         )
     assert exc.value.status_code == 409
@@ -138,12 +136,12 @@ async def test_reply_endpoint_success_calls_send_message():
     new_msg_id = uuid4()
     new_msg = MagicMock(id=new_msg_id, to_dict=lambda: _msg_dict(new_msg_id))
     fake_engine.chat_service.send_message = AsyncMock(return_value=new_msg)
+    fake_engine.kafka_producer = None  # bypass Kafka broadcast in unit test
 
     await reply_to_mention(
         message_id=msg_id,
         request=ReplyToMentionRequest(content="ответ"),
         user_id=sender_id,
-        org_id=uuid4(),
         engine=fake_engine,
     )
 

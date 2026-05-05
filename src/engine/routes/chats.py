@@ -40,6 +40,10 @@ class ReplyToMentionRequest(BaseModel):
     content: str
 
 
+class MarkReadRequest(BaseModel):
+    message_id: UUID
+
+
 class ChatResponse(BaseModel):
     id: str
     org_id: str
@@ -80,6 +84,13 @@ class AttachmentResponse(BaseModel):
     file_size: Optional[int]
     file_type: Optional[str]
     is_deleted: bool
+    # ID active clone'а текущего viewer'а (или None если нет). Фронт по нему
+    # дёргает индексацию RAG без отдельного запроса. None также если
+    # enrichment ещё не выполнен (другие endpoint'ы кроме list_messages).
+    cloned_by_me_id: Optional[str] = None
+    # rag_status клона: 'indexed' / 'indexing' / 'pending' / 'failed' / ...
+    # None — нет клона или endpoint не enrich'ил.
+    cloned_by_me_rag_status: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -123,6 +134,21 @@ async def list_my_chats(
         raise HTTPException(status_code=400, detail="Invalid chat type")
     chats = await engine.chat_service.list_user_chats(user_id, chat_type=type)
     return [ChatResponse(**chat.to_dict()) for chat in chats]
+
+
+@router.get("/unread-counts")
+async def get_unread_counts(
+    user_id: UUID = Query(..., description="In real app, get from JWT"),
+    engine: EngineService = Depends(get_engine),
+):
+    """Bulk: return {chat_id: count} for all chats of the user (count > 0 only)."""
+    user = await engine.user_storage.get_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    counts = await engine.chat_service.list_unread_counts(
+        user_id=user_id, org_id=user.org_id,
+    )
+    return {str(chat_id): count for chat_id, count in counts.items()}
 
 
 @router.post("/direct", response_model=ChatResponse)
@@ -245,6 +271,26 @@ async def archive_chat(
 
 # Message endpoints
 
+async def _enrich_attachments_cloned_by_me(messages, user_id, engine):
+    """Mutates each MessageAttachment in messages, setting cloned_by_me_id to
+    the user's clone id (если есть) — фронт юзает id для index-RAG action'а
+    без доп. запроса. Батч: один SQL на весь список вложений всех сообщений.
+    """
+    source_ids = []
+    for m in messages:
+        for a in m.attachments or []:
+            source_ids.append(a.file_id)
+    if not source_ids:
+        return
+    clone_map = await engine.user_file_storage.find_active_clones_by_source(user_id, source_ids)
+    for m in messages:
+        for a in m.attachments or []:
+            entry = clone_map.get(a.file_id)
+            if entry:
+                a.cloned_by_me_id = entry["id"]
+                a.cloned_by_me_rag_status = entry["rag_status"]
+
+
 @router.get("/{chat_id}/messages", response_model=List[MessageResponse])
 async def list_messages(
     chat_id: UUID,
@@ -263,6 +309,10 @@ async def list_messages(
         refs_by_msg = await engine.reference_service.resolve_batch(
             [(m.id, m.content or "") for m in messages], actor,
         )
+
+    # Per-viewer attachment enrichment: пометить файлы, которые этот юзер уже
+    # клонировал «в мои файлы». Фронт скроет кнопку «В мои файлы» для них.
+    await _enrich_attachments_cloned_by_me(messages, user_id, engine)
 
     out = []
     for msg in messages:
@@ -378,6 +428,25 @@ async def send_message(
     )
 
 
+@router.post("/{chat_id}/read", status_code=204)
+async def mark_chat_read(
+    chat_id: UUID,
+    body: MarkReadRequest,
+    user_id: UUID = Query(..., description="In real app, get from JWT"),
+    engine: EngineService = Depends(get_engine),
+):
+    """Mark messages in chat as read up to and including message_id."""
+    try:
+        await engine.chat_service.mark_chat_read(
+            chat_id=chat_id, user_id=user_id, message_id=body.message_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return None
+
+
 @router.get("/messages/{message_id}", response_model=MessageResponse)
 async def get_message(
     message_id: UUID,
@@ -394,9 +463,27 @@ async def get_message(
 async def validate_message(
     message_id: UUID,
     request: ValidateMessageRequest,
-    engine: EngineService = Depends(get_engine)
+    user_id: UUID,
+    engine: EngineService = Depends(get_engine),
 ):
-    """Validate AI message"""
+    """Validate AI message. Identity берётся из подписанного payload
+    (Zero Trust: webclient SignatureGuard уже проверил подпись = ключ устройства
+    этого user_id), не из JWT. Allowed for admin OR owner of the role
+    (user_id == ai_message.sender_id).
+    """
+    target = await engine.chat_service.get_message(message_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    actor = await engine.user_storage.get_by_id(user_id)
+    if not actor:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    is_admin = bool(getattr(actor, "is_admin", False))
+    is_role_owner = target.sender_id == user_id
+    if not (is_admin or is_role_owner):
+        raise HTTPException(status_code=403, detail="Only admin or role owner may validate")
+
     message = await engine.chat_service.validate_ai_message(
         message_id, request.edited_content
     )
@@ -418,20 +505,16 @@ async def delete_message(
 
 
 class CorrectionRuleResponse(BaseModel):
+    """Должна совпадать с CorrectionRule.to_dict() — иначе FastAPI 500
+    на response-валидации, ack уйдёт error даже когда правило создалось."""
     id: str
     role_id: str
-    org_id: str
-    original_message_id: str
-    ai_message_id: str
-    chat_id: str
-    user_question: str
-    ai_answer: str
-    correction_text: str
-    rule_text: Optional[str]
-    created_by_user_id: str
-    is_active: bool
-    created_at: str
-    updated_at: str
+    mem_id: Optional[str] = None
+    src_user_message_id: Optional[str] = None
+    src_ai_response_id: Optional[str] = None
+    user_correction_text: Optional[str] = None
+    extracted_lesson: Optional[str] = None
+    is_active: bool = True
 
     class Config:
         from_attributes = True
@@ -441,14 +524,29 @@ class CorrectionRuleResponse(BaseModel):
 async def reject_message(
     message_id: UUID,
     request: RejectMessageRequest,
-    user_id: UUID,  # In real app, get from JWT
+    user_id: UUID,
     engine: EngineService = Depends(get_engine),
-    current_user: dict = Depends(get_current_user)
 ):
-    """Reject AI message and create correction rule"""
-    if not current_user["is_admin"]:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
+    """Reject AI message and create correction rule.
+
+    Identity берётся из подписанного payload (user_id query, прошедший проверку
+    SignatureGuard на webclient), не из JWT. Allowed for admin OR owner
+    of the role (user_id == ai_message.sender_id) — владелец роли учит свою же
+    роль через correction rules.
+    """
+    target = await engine.chat_service.get_message(message_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    actor = await engine.user_storage.get_by_id(user_id)
+    if not actor:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    is_admin = bool(getattr(actor, "is_admin", False))
+    is_role_owner = target.sender_id == user_id
+    if not (is_admin or is_role_owner):
+        raise HTTPException(status_code=403, detail="Only admin or role owner may reject")
+
     rule = await engine.correction_rule_service.reject_and_create_rule(
         ai_message_id=message_id,
         user_id=user_id,
@@ -508,7 +606,7 @@ async def reply_to_mention(
     )
 
     # Publish to chat.events for real-time WS delivery via NestJS consumer.
-    # Same pattern as task_notification_service / agent_handler — engine
+    # Same pattern as agent_handler — engine
     # является единственным источником истины для broadcast'а.
     if engine.kafka_producer is not None:
         try:

@@ -2,13 +2,10 @@
 Integration test: Engine with real Kafka + Postgres.
 
 Verifies:
-1. PM notifications travel from TaskService.take_task through TaskNotificationService,
-   get persisted in messages table, and are published to chat.events in a form that
-   a fresh aiokafka consumer can read.
-2. AI mention @@role triggers a Kafka publish to agent.requests with correct payload
+1. AI mention @@role triggers a Kafka publish to agent.requests with correct payload
    (the consumer loop inside Engine handles the rest — not verified here because
    it requires a running Ollama and is covered by unit tests).
-3. Fixtures cleanup everything they create.
+2. Fixtures cleanup everything they create.
 
 Skipped if Kafka is not reachable at localhost:9092.
 """
@@ -39,135 +36,6 @@ def _kafka_reachable() -> bool:
 
 if not _kafka_reachable():
     pytest.skip("Kafka broker not reachable", allow_module_level=True)
-
-
-async def _fetch_ids_from_dev_db():
-    """Grab real org+user IDs from dev DB for FK satisfaction.
-
-    Finds an org (non-system) with at least two active non-system users.
-    """
-    conn = await asyncpg.connect(Config.get_postgres_dsn())
-    try:
-        row = await conn.fetchrow(
-            """
-            SELECT u.org_id AS org_id
-              FROM users u
-             WHERE u.is_active = true AND u.is_system = false
-               AND u.org_id != '00000000-0000-0000-0000-000000000000'::uuid
-             GROUP BY u.org_id
-            HAVING COUNT(*) >= 2
-             LIMIT 1
-            """
-        )
-        if not row:
-            return None
-        org_id = row["org_id"]
-        users = await conn.fetch(
-            "SELECT * FROM users WHERE org_id=$1 AND is_active=true AND is_system=false LIMIT 2",
-            org_id,
-        )
-        if len(users) < 2:
-            return None
-        return org_id, users[0], users[1]
-    finally:
-        await conn.close()
-
-
-def test_pm_notification_published_to_chat_events():
-    """take_task -> PM notification -> chat.events (verified by fresh consumer)."""
-    async def go():
-        from aiokafka import AIOKafkaConsumer
-        from src.engine.services.engine_service import init_engine_service
-        from src.engine.models.user import User
-
-        fixtures = await _fetch_ids_from_dev_db()
-        if fixtures is None:
-            pytest.skip("dev DB missing required fixtures (org + 2 users)")
-        org_id, admin_row, chu_row = fixtures
-
-        def _u(r):
-            return User(
-                id=r["id"], org_id=r["org_id"], name=r["name"],
-                username=r["username"], email=r["email"],
-                is_admin=r["is_admin"], is_active=r["is_active"],
-                is_head=r.get("is_head", False),
-            )
-
-        admin = _u(admin_row)
-        assignee = _u(chu_row)
-
-        # Subscribe BEFORE triggering the task transition
-        consumer = AIOKafkaConsumer(
-            Config.KAFKA_TOPIC_CHAT_EVENTS,
-            bootstrap_servers=KAFKA_BROKERS,
-            group_id=f"integ-pm-{uuid4()}",
-            auto_offset_reset="latest",
-            value_deserializer=lambda v: json.loads(v.decode()),
-        )
-        await consumer.start()
-
-        # Reset singleton so each test gets a fresh EngineService bound to this
-        # asyncio event loop (asyncio.run creates a new loop per test).
-        import src.engine.services.engine_service as _es
-        _es._engine_service = None
-        engine = await init_engine_service()
-
-        task = None
-        try:
-            task = await engine.task_service.create(
-                org_id=org_id,
-                title="integ-pm-task",
-                assignee_user_id=assignee.id,
-                created_by_user_id=admin.id,
-            )
-            # Assignee takes -> creator should get PM notification
-            await engine.task_service.take_task(task.id, assignee)
-
-            # Wait up to 5s for chat.events message
-            msg = await asyncio.wait_for(consumer.__anext__(), timeout=5.0)
-            payload = msg.value
-            assert "chat_id" in payload
-            assert "message" in payload
-            content = payload["message"]["content"]
-            assert task.title in content
-            assert "в работу" in content
-
-        finally:
-            # Cleanup
-            if task is not None:
-                conn = await asyncpg.connect(Config.get_postgres_dsn())
-                try:
-                    await conn.execute(
-                        "DELETE FROM task_events WHERE task_id=$1", task.id
-                    )
-                    await conn.execute(
-                        "DELETE FROM chats WHERE task_id=$1", task.id
-                    )
-                    # delete any direct chats with pm that were created for this test
-                    pm_row = await conn.fetchrow(
-                        "SELECT id FROM users WHERE username='pm' AND is_system=true"
-                    )
-                    if pm_row:
-                        await conn.execute(
-                            "DELETE FROM messages WHERE chat_id IN "
-                            "(SELECT id FROM chats WHERE $1 = ANY(participants::uuid[]) AND type='direct')",
-                            str(pm_row["id"]),
-                        )
-                        await conn.execute(
-                            "DELETE FROM chats WHERE type='direct' AND $1 = ANY(participants::uuid[]) "
-                            "AND updated_at > NOW() - INTERVAL '1 minute'",
-                            str(pm_row["id"]),
-                        )
-                    await conn.execute(
-                        "DELETE FROM in_app_notifications WHERE reference_id=$1", task.id
-                    )
-                    await conn.execute("DELETE FROM tasks WHERE id=$1", task.id)
-                finally:
-                    await conn.close()
-
-            await consumer.stop()
-
-    asyncio.run(go())
 
 
 def test_ai_mention_publishes_agent_request():

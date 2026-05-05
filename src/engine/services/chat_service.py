@@ -12,6 +12,7 @@ from ..config import Config
 from ..models.chat import Chat, ChatType
 from ..models.message import Message, Mention, SenderType, MentionType
 from ..storage.chat_storage import ChatStorage
+from ..storage.chat_read_state_storage import ChatReadStateStorage
 from ..storage.message_storage import MessageStorage
 
 if TYPE_CHECKING:
@@ -84,11 +85,13 @@ class ChatService:
         self,
         chat_storage: ChatStorage,
         message_storage: MessageStorage,
+        chat_read_state_storage: Optional[ChatReadStateStorage] = None,
         user_file_storage: Optional["UserFileStorage"] = None,
         message_attachment_storage: Optional["MessageAttachmentStorage"] = None,
     ):
         self.chat_storage = chat_storage
         self.message_storage = message_storage
+        self.chat_read_state_storage = chat_read_state_storage
         self.user_file_storage = user_file_storage
         self.message_attachment_storage = message_attachment_storage
 
@@ -456,6 +459,53 @@ class ChatService:
     async def delete_message(self, message_id: UUID) -> bool:
         """Delete message"""
         return await self.message_storage.delete(message_id)
+
+    # ============================================
+    # Read-state (unread tracking)
+    # ============================================
+
+    async def mark_chat_read(
+        self,
+        chat_id: UUID,
+        user_id: UUID,
+        message_id: UUID,
+    ) -> None:
+        """Mark messages in `chat_id` up to and including `message_id` as read by `user_id`.
+
+        Validation:
+            - Message must exist and belong to `chat_id` → ValueError if not.
+            - User must be a participant of the chat → PermissionError if not.
+
+        Delegates persistence to ChatReadStateStorage.upsert with the message's
+        `created_at` as the high-water-mark. The storage layer enforces the
+        monotonic guard (HWM never moves backward).
+        """
+        msg = await self.message_storage.get_by_id(message_id)
+        if msg is None or msg.chat_id != chat_id:
+            raise ValueError("Message not in chat")
+
+        chat = await self.chat_storage.get_by_id(chat_id)
+        if chat is None or not chat.is_active or user_id not in chat.participants:
+            raise PermissionError("Not a participant")
+
+        await self.chat_read_state_storage.upsert(
+            chat_id, user_id, message_id, msg.created_at,
+        )
+        return None
+
+    async def list_unread_counts(
+        self,
+        user_id: UUID,
+        org_id: UUID,
+    ) -> dict:
+        """Return {chat_id: unread_count} for all chats of `user_id` in `org_id`.
+
+        Thin pass-through to ChatReadStateStorage.get_unread_counts_for_user.
+        Only chats with count > 0 appear; counts cap at 100.
+        """
+        return await self.chat_read_state_storage.get_unread_counts_for_user(
+            user_id, org_id,
+        )
 
     async def user_can_access_attached_file(
         self, user_id: UUID, file_id: UUID, org_id: UUID,

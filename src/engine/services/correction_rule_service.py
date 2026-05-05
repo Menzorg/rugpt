@@ -50,6 +50,7 @@ class CorrectionRuleService:
         embedding_model: str = "",
         llm_base_url: str = "",
         llm_api_key: str = "",
+        kafka_producer=None,
     ):
         self.correction_rule_storage = correction_rule_storage
         self.message_storage = message_storage
@@ -57,6 +58,7 @@ class CorrectionRuleService:
         self.user_storage = user_storage
         self.chat_service = chat_service
         self.agent_executor = agent_executor
+        self.kafka_producer = kafka_producer
         self._embeddings = OpenAIEmbeddings(
             model=embedding_model,
             base_url=llm_base_url,
@@ -136,13 +138,32 @@ class CorrectionRuleService:
             extracted_lesson=lesson,
         )
         
-        await self.chat_service.send_message(
+        # Эхо коррекции в чат — это комментарий ЧЕЛОВЕКА (владельца роли),
+        # а не нового ответа AI. Использовать SenderType.USER чтобы:
+        # (1) пузырь рендерился как обычное сообщение от человека, не как AI,
+        # (2) ai_is_valid автоматически True (см. chat_service.send_message),
+        #     иначе эхо попадает в pending-review и засоряет список валидаций.
+        echo = await self.chat_service.send_message(
             chat_id=ai_message.chat_id,
             sender_id=user_id,
             content=correction_text,
-            sender_type=SenderType.AI_ROLE,
+            sender_type=SenderType.USER,
             reply_to_id=ai_message_id,
         )
+
+        # Публикация в chat.events — иначе участники чата не увидят эхо
+        # без перезагрузки страницы (chat_service.send_message сам в Kafka
+        # не пишет, broadcast делает webclient kafka-consumer).
+        if self.kafka_producer is not None:
+            try:
+                from ..config import Config
+                await self.kafka_producer.send(
+                    Config.KAFKA_TOPIC_CHAT_EVENTS,
+                    {"chat_id": str(echo.chat_id), "message": echo.to_dict()},
+                    key=str(echo.chat_id),
+                )
+            except Exception as e:
+                logger.error(f"Failed to publish correction echo to Kafka: {e}")
         
         created_rule = await self.correction_rule_storage.create(rule)
         logger.info("correction rule %s created for role %s", created_rule.id, role_id)

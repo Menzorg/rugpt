@@ -51,7 +51,12 @@ class UserStorage(BaseStorage):
 
     async def get_by_username(self, username: str, org_id: UUID) -> Optional[User]:
         """Get user by username within organization"""
-        query = "SELECT * FROM users WHERE username = $1 AND org_id = $2"
+        query = """
+            SELECT u.*, d.name AS department_name
+            FROM users u
+            LEFT JOIN departments d ON d.id = u.department_id
+            WHERE u.username = $1 AND u.org_id = $2
+        """
         row = await self.fetchrow(query, username.lower(), org_id)
         return self._row_to_user(row) if row else None
 
@@ -212,6 +217,7 @@ class UserStorage(BaseStorage):
             is_admin=row["is_admin"],
             is_system=row.get("is_system", False),  # Default False for backward compatibility
             department_id=row.get("department_id"),
+            department_name=row.get("department_name"),
             is_head=row.get("is_head", False),
             is_active=row["is_active"],
             avatar_url=row["avatar_url"],
