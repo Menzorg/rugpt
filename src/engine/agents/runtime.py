@@ -35,4 +35,4 @@ class RuntimeContext:
     total_tokens_spent: int = 0
     # Critical token budget cap for this run. Once reached, RAG tools are blocked
     # and summarization middleware starts compacting conversation state.
-    critical_tokens_cap: int = 20_000
+    critical_tokens_cap: int = 24_000

@@ -124,14 +124,15 @@ async def _react_agent_call(
         critical_tokens_cap = (
             runtime_ctx.critical_tokens_cap if runtime_ctx is not None else 25_000
         )
-        if tool_names & _TOOL_BLOCK_TOOL_NAMES:
-            middleware = [TokenBudgetToolBlockMiddleware(runtime_context=runtime_ctx)]
-        else:
-            middleware = [HistoryCompactionMiddleware(
-                llm,
-                trigger_tokens=critical_tokens_cap,
-                keep_last=8,
-            )]
+        #TODO: Decide on one of these two middlewares or both
+        # if tool_names & _TOOL_BLOCK_TOOL_NAMES:
+        #     middleware = [TokenBudgetToolBlockMiddleware(runtime_context=runtime_ctx)]
+        # else:
+        middleware = [HistoryCompactionMiddleware(
+            llm,
+            trigger_tokens=20000,
+            keep_last=8,
+        )]
         agent = create_agent(
             llm,
             tools=tools,
