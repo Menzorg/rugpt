@@ -61,9 +61,17 @@ async def run_simple_agent(
                     "enable_thinking": False,
                 }
             })
+        llm_thinking = llm.bind(
+            extra_body={
+                "chat_template_kwargs": {
+                    "enable_thinking": True,
+                }
+            }
+        )
         # ReAct agent with tools
         return await _react_agent_call(
             llm_nothink,
+            llm_thinking,
             lc_messages,
             system_prompt,
             tools,
@@ -100,6 +108,7 @@ async def _direct_llm_call(
 
 async def _react_agent_call(
     llm: ChatOpenAI,
+    summary_llm: ChatOpenAI,
     messages: list,
     system_prompt: str,
     tools: List[BaseTool],
@@ -128,7 +137,7 @@ async def _react_agent_call(
         #     middleware = [TokenBudgetToolBlockMiddleware(runtime_context=runtime_ctx)]
         # else:
         middleware = [HistoryCompactionMiddleware(
-            llm,
+            summary_llm,
             trigger_tokens=20000,
             keep_last=15,
         )]

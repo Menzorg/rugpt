@@ -112,6 +112,10 @@ def _remember_seen_documents(runsession: object, files: list[UserFile]) -> None:
         runsession.seen_ids.update(str(f.id) for f in files)
 
 
+def _format_created_date(f: UserFile) -> str:
+    return f.created_at.date().isoformat()
+
+
 def _format_full_batch(
     files: list[UserFile],
     runtimedata: ListDocumentsRuntimeData,
@@ -163,9 +167,9 @@ def _format_full_batch(
             summary_part = "summary: —"
 
         lines.append(
-            f"- {f.original_filename} (id={f.id}, created_at={f.created_at}, "
+            f"- {f.original_filename} (id={f.id}, created_at={_format_created_date(f)}, "
             f"rag={f.rag_status}, is_table={f.is_table}, "
-            f"size={f.file_size / 1_000_000:.2f}MB, {summary_part})"
+            f"{summary_part})"
         )
 
     return lines, total_tokens_spent
@@ -212,7 +216,7 @@ async def _list_documents_async(
                 return f"Document {file_id} not found or not visible to you."
             summary_part = f'summary: "{f.summary}"' if f.rag_status == "indexed" and f.summary else "summary: —"
             return (
-                f"- {f.original_filename} (id={f.id}, created_at={f.created_at}, "
+                f"- {f.original_filename} (id={f.id}, created_at={_format_created_date(f)}, "
                 f"rag={f.rag_status}, is_table={f.is_table}, "
                 f"size={f.file_size / 1_000_000:.2f}MB, {summary_part})"
             )

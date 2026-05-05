@@ -216,8 +216,8 @@ class HistoryCompactionMiddleware(AgentMiddleware):
                 content=f"[CONVERSATION SUMMARY]\n{summary_text}",
                 id=str(uuid.uuid4()),
             )
-            compacted = [summary_msg, *to_keep]
-            new_token_count = count_tokens_messages(compacted)
+            replacement_messages = [summary_msg, *to_keep]
+            new_token_count = count_tokens_messages(replacement_messages)
             if hasattr(runtime, "context") and isinstance(runtime.context, RuntimeContext):
                 runtime.context.total_tokens_spent = new_token_count
                 logger.info(
@@ -226,12 +226,12 @@ class HistoryCompactionMiddleware(AgentMiddleware):
                 )
             logger.info(
                 "compaction middleware: compacted %d → %d messages (%d tokens → %d, %d chars summary)",
-                len(loop_messages), len(compacted), token_count, new_token_count, len(summary_text),
+                len(loop_messages), len(replacement_messages), token_count, new_token_count, len(summary_text),
             )
             return {
                 "messages": [
                     RemoveMessage(id=REMOVE_ALL_MESSAGES),
-                    *compacted,
+                    *replacement_messages,
                 ]
             }
         except Exception:
