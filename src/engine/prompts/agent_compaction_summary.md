@@ -8,12 +8,12 @@ Extract and preserve:
 4. **Requested output format** — any formatting instructions (language, structure, length, style) the user specified.
 5. **Work done** — what the agent already completed or confirmed so the agent does not repeat it.
 6. **Open items** — what still needs to be done to fulfil the user's request.
+7. **Most relevant chunks** - really relevant results of `rag_search`.
 
 Rules:
 - Write in the same language as the user's messages.
 - Be maximally concise — no filler, no hedging.
 - Do not omit any document IDs or facts; losing them would force redundant tool calls.
-- Do not include your own commentary or meta-notes.
 
 Messages to summarize:
 {messages}

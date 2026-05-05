@@ -120,10 +120,10 @@ async def _react_agent_call(
             else type(context_schema)
         )
         runtime_ctx = context if isinstance(context, RuntimeContext) else None
-        tool_names = {t.name for t in tools}
-        critical_tokens_cap = (
-            runtime_ctx.critical_tokens_cap if runtime_ctx is not None else 25_000
-        )
+        # tool_names = {t.name for t in tools}
+        # critical_tokens_cap = (
+        #     runtime_ctx.critical_tokens_cap if runtime_ctx is not None else 25_000
+        # )
         #TODO: Decide on one of these two middlewares or both
         # if tool_names & _TOOL_BLOCK_TOOL_NAMES:
         #     middleware = [TokenBudgetToolBlockMiddleware(runtime_context=runtime_ctx)]
@@ -154,7 +154,7 @@ async def _react_agent_call(
         # config carries org_id/user_id for tools like rag_search
         result = await agent.ainvoke(
             {"messages": input_messages},
-            config={**(config or {}), "recursion_limit": 20},
+            config={**(config or {}), "recursion_limit": 25},
             context=context,
         )
 
