@@ -9,7 +9,6 @@ import logging
 from typing import Any, List, Optional
 
 from langchain.agents import create_agent
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
@@ -38,18 +37,18 @@ async def run_simple_agent(
     With tools: LangGraph ReAct agent that can call tools.
     max_tokens is set on the llm instance by the caller (AgentExecutor._create_llm).
     """
-    # Build LangChain message objects
+    # Build OpenAI-style message dicts.
     lc_messages = []
     if system_prompt:
-        lc_messages.append(SystemMessage(content=system_prompt))
+        lc_messages.append({"role": "system", "content": system_prompt})
 
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "")
         if role == "user":
-            lc_messages.append(HumanMessage(content=content))
+            lc_messages.append({"role": "user", "content": content})
         elif role == "assistant":
-            lc_messages.append(AIMessage(content=content))
+            lc_messages.append({"role": "assistant", "content": content})
         # system messages already handled above
 
     if not tools:
@@ -131,7 +130,7 @@ async def _react_agent_call(
         middleware = [HistoryCompactionMiddleware(
             llm,
             trigger_tokens=20000,
-            keep_last=8,
+            keep_last=15,
         )]
         agent = create_agent(
             llm,
@@ -142,10 +141,10 @@ async def _react_agent_call(
         )
 
         # create_agent receives system_prompt separately; keep the runtime
-        # message state free of the duplicated SystemMessage built above.
+        # message state free of the duplicated system dict built above.
         input_messages = (
             messages[1:]
-            if messages and isinstance(messages[0], SystemMessage)
+            if messages and messages[0].get("role") == "system"
             else messages
         )
 

@@ -11,7 +11,6 @@ import logging
 from typing import List, Optional, TypedDict, Annotated
 import operator
 
-from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
@@ -24,7 +23,7 @@ logger = logging.getLogger("rugpt.agents.graphs.multi_agent")
 
 class MultiAgentState(TypedDict):
     """State passed between graph nodes"""
-    messages: Annotated[list[BaseMessage], operator.add]
+    messages: Annotated[list[dict], operator.add]
     current_output: str
     step_outputs: dict
 
@@ -101,15 +100,15 @@ async def run_multi_agent(
         graph = builder.compile()
 
         # Build initial state
-        lc_messages = []
+        input_messages = []
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
-            if role == "user":
-                lc_messages.append(HumanMessage(content=content))
+            if role in {"user", "assistant"}:
+                input_messages.append({"role": role, "content": content})
 
         initial_state = {
-            "messages": lc_messages,
+            "messages": input_messages,
             "current_output": "",
             "step_outputs": {},
         }
@@ -148,11 +147,14 @@ def _make_node_fn(llm: ChatOpenAI, system_prompt: str, instruction: str):
     async def node_fn(state: MultiAgentState) -> dict:
         context = state.get("current_output", "")
         step_messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=(
-                f"{context}\n\n--- Instruction: {instruction} ---\n"
-                f"Respond based on the context and instruction above."
-            )),
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"{context}\n\n--- Instruction: {instruction} ---\n"
+                    f"Respond based on the context and instruction above."
+                ),
+            },
         ]
         # Include original user messages
         step_messages = state["messages"] + step_messages

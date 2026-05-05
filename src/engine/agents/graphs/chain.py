@@ -8,7 +8,6 @@ with the output of step N feeding into step N+1.
 import logging
 from typing import List, Optional
 
-from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
@@ -69,12 +68,15 @@ async def run_chain_agent(
         output_key = step.get("output_key", f"step_{i+1}")
 
         step_messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=(
-                f"{accumulated_context}\n"
-                f"--- Step {i+1}/{len(steps)}: {instruction} ---\n"
-                f"Respond to the instruction above based on the context."
-            )),
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"{accumulated_context}\n"
+                    f"--- Step {i+1}/{len(steps)}: {instruction} ---\n"
+                    f"Respond to the instruction above based on the context."
+                ),
+            },
         ]
 
         try:

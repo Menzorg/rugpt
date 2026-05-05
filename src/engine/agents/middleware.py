@@ -212,7 +212,7 @@ class HistoryCompactionMiddleware(AgentMiddleware):
         )
         try:
             summary_text = await self._acreate_summary(to_summarise)
-            summary_msg = HumanMessage(
+            summary_msg = AIMessage(
                 content=f"[CONVERSATION SUMMARY]\n{summary_text}",
                 id=str(uuid.uuid4()),
             )

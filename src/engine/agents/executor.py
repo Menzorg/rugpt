@@ -32,6 +32,7 @@ _MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя теб�
 Не говори пользователю о существовании сводки. 
 История чата актуальнее сводки"""
 
+
 class AgentExecutor:
     """
     Central agent executor.
@@ -198,6 +199,8 @@ class AgentExecutor:
 
         # --- Injection phase ---
 
+        injected_messages: list[dict] = []
+
         if user_id is not None and initiator:
             user_lines = [
                 f"ID: {initiator.id}",
@@ -217,17 +220,17 @@ class AgentExecutor:
                     user_lines.append(attachments_block)
             user_block = "Информация о пользователе:\n" + "\n".join(l for l in user_lines if l)
             user_block += "\nНе раскрывать пользователю его ID."
-            system_prompt += f"\n\n{user_block}"
+            injected_messages.append({"role": "assistant", "content": user_block})
 
-        injected_messages: list[dict] = []
         if org_context:
-            org_context_message = {"role": "user", "content": f"Контекст организации:\n{org_context}"}
-            injected_messages.append(org_context_message)
+            injected_messages.append({"role": "assistant", "content": f"Контекст организации:\n{org_context}"})
             logger.info("org_context: prepared injected message for org=%s", scope_org_id)
 
         if summary:
-            summary_message = {"role": "user", "content": f"Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n{summary}"}
-            injected_messages.append(summary_message)
+            injected_messages.append({
+                "role": "assistant",
+                "content": f"Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n{summary}",
+            })
             logger.info("memory: prepared summary injected message for chat=%s", chat_id)
             system_prompt += _MEMORY_PROMPT_BLOCK
 
