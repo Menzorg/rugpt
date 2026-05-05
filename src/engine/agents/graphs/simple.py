@@ -13,11 +13,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
-from ..middleware import HistoryCompactionMiddleware, TokenBudgetToolBlockMiddleware
 from ..result import AgentResult, ToolCall
-from ..runtime import RuntimeContext
-
-_TOOL_BLOCK_TOOL_NAMES = {"list_documents", "rag_search"}
 
 logger = logging.getLogger("rugpt.agents.graphs.simple")
 
@@ -29,6 +25,7 @@ async def run_simple_agent(
     tools: Optional[List[BaseTool]] = None,
     config: Optional[RunnableConfig] = None,
     context_schema: Optional[Any] = None,
+    middleware: Optional[List[Any]] = None,
 ) -> AgentResult:
     """
     Run simple agent.
@@ -61,22 +58,15 @@ async def run_simple_agent(
                     "enable_thinking": False,
                 }
             })
-        llm_thinking = llm.bind(
-            extra_body={
-                "chat_template_kwargs": {
-                    "enable_thinking": True,
-                }
-            }
-        )
         # ReAct agent with tools
         return await _react_agent_call(
             llm_nothink,
-            llm_thinking,
             lc_messages,
             system_prompt,
             tools,
             config,
             context_schema,
+            middleware,
         )
 
 
@@ -108,12 +98,12 @@ async def _direct_llm_call(
 
 async def _react_agent_call(
     llm: ChatOpenAI,
-    summary_llm: ChatOpenAI,
     messages: list,
     system_prompt: str,
     tools: List[BaseTool],
     config: Optional[RunnableConfig] = None,
     context_schema: Optional[Any] = None,
+    extra_middleware: Optional[List[Any]] = None,
 ) -> AgentResult:
     """ReAct agent with tool calling"""
     try:
@@ -127,20 +117,7 @@ async def _react_agent_call(
             if context_schema is None or isinstance(context_schema, type)
             else type(context_schema)
         )
-        runtime_ctx = context if isinstance(context, RuntimeContext) else None
-        # tool_names = {t.name for t in tools}
-        # critical_tokens_cap = (
-        #     runtime_ctx.critical_tokens_cap if runtime_ctx is not None else 25_000
-        # )
-        #TODO: Decide on one of these two middlewares or both
-        # if tool_names & _TOOL_BLOCK_TOOL_NAMES:
-        #     middleware = [TokenBudgetToolBlockMiddleware(runtime_context=runtime_ctx)]
-        # else:
-        middleware = [HistoryCompactionMiddleware(
-            summary_llm,
-            trigger_tokens=20000,
-            keep_last=15,
-        )]
+        middleware = extra_middleware or []
         agent = create_agent(
             llm,
             tools=tools,

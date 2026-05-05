@@ -231,41 +231,10 @@ async def _list_documents_async(
             and not _is_image_file(f)
         ]
 
-        # --- Deduplication across the whole agent run ---
-        runtimedata = runtime.context.list_documents_runtime_data
-        seen_ids = (
-            runtimedata.seen_ids
-            if isinstance(runtimedata, ListDocumentsRuntimeData)
-            else set()
-        )
-        deduplicated_across_runs = bool(seen_ids)
-        if deduplicated_across_runs:
-            visible = [f for f in visible if str(f.id) not in seen_ids]
-
-        if not visible:
-            return _with_dedup_header(
-                deduplicated_across_runs,
-                "No documents in your scope.",
-            )
-
-        # --- RAG budget guard ---
-        if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
-            logger.info(
-                "list_documents: blocked — total_tokens_spent=%d >= %d",
-                runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
-            )
-            return (
-                "[RAG SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
-                "USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO LIST DOCUMENTS]"
-            )
-
         # --- Search mode: one or both queries provided ---
         if has_name_query or has_summary_query:
             if _rag_service is None:
-                return _with_dedup_header(
-                    deduplicated_across_runs,
-                    "list_documents: search unavailable (RAG service not initialized).",
-                )
+                return "list_documents: search unavailable (RAG service not initialized)."
 
             matched_ids: set[str] = set()
 
@@ -294,62 +263,113 @@ async def _list_documents_async(
                 if str(f.id) in matched_ids
             ][:_MAX_RESULTS]
 
-            if not results:
+            async with runtime.context.lock:
+                runtimedata = runtime.context.list_documents_runtime_data
+                seen_ids = (
+                    runtimedata.seen_ids
+                    if isinstance(runtimedata, ListDocumentsRuntimeData)
+                    else set()
+                )
+                deduplicated_across_runs = bool(seen_ids)
+                if deduplicated_across_runs:
+                    results = [f for f in results if str(f.id) not in seen_ids]
+
+                if not results:
+                    return _with_dedup_header(
+                        deduplicated_across_runs,
+                        "No documents matched your query.",
+                    )
+
+                # --- RAG budget guard ---
+                if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
+                    logger.info(
+                        "list_documents: blocked — total_tokens_spent=%d >= %d",
+                        runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
+                    )
+                    return (
+                        "[RAG SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+                        "USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO LIST DOCUMENTS]"
+                    )
+
+                lines, tokens_spent = _format_full_batch(results, runtimedata)
+                runtimedata.spent_summary_tokens += tokens_spent
+                _remember_seen_documents(runtimedata, results)
+                result = _with_dedup_header(
+                    deduplicated_across_runs,
+                    f"Documents found ({len(lines)}):\n" + "\n".join(lines),
+                )
+                rag_tokens = count_tokens(result)
+                runtime.context.total_tokens_spent += rag_tokens
+                logger.info("list_documents search: tokens=%d, total_tokens_spent=%d", rag_tokens, runtime.context.total_tokens_spent)
+                return result
+
+        async with runtime.context.lock:
+            # --- Deduplication across the whole agent run ---
+            runtimedata = runtime.context.list_documents_runtime_data
+            seen_ids = (
+                runtimedata.seen_ids
+                if isinstance(runtimedata, ListDocumentsRuntimeData)
+                else set()
+            )
+            deduplicated_across_runs = bool(seen_ids)
+            if deduplicated_across_runs:
+                visible = [f for f in visible if str(f.id) not in seen_ids]
+
+            if not visible:
                 return _with_dedup_header(
                     deduplicated_across_runs,
-                    "No documents matched your query.",
+                    "No documents in your scope.",
                 )
 
-            lines, tokens_spent = _format_full_batch(results, runtimedata)
+            # --- RAG budget guard ---
+            if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
+                logger.info(
+                    "list_documents: blocked — total_tokens_spent=%d >= %d",
+                    runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
+                )
+                return (
+                    "[RAG SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+                    "USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO LIST DOCUMENTS]"
+                )
+
+            # --- List mode: no queries ---
+            total = len(visible)
+
+            # Switch to compact when the summary token budget for this run is used up.
+            budget_exhausted = runtimedata.spent_summary_tokens >= _SUMMARY_TOKENS_BUDGET
+
+            if total > _TRUNCATED_LIMIT or budget_exhausted:
+                # Compact mode: minimal fields, list capped at _TRUNCATED_LIMIT.
+                truncated = visible[:_TRUNCATED_LIMIT]
+                lines = _format_compact_batch(truncated)
+                omitted_fields = "created_at, rag_status, file_size, summary"
+                footer = f"\n[FIELDS OMITTED TO REDUCE OUTPUT: {omitted_fields}. USE FILTERS TO GET FULL INFO ON SPECIFIC DOCS.]"
+                if total > _TRUNCATED_LIMIT:
+                    footer += f"\nTOTAL COUNT OF DOCUMENTS IN ORGANIZATION IS {total} BUT OUTPUT IS TRUNCATED TO {_TRUNCATED_LIMIT}. USE FILTERS IF REQUIRED DOCUMENTS ARE NOT IN LIST"
+                if budget_exhausted:
+                    footer += "\n[SUMMARY BUDGET EXHAUSTED FROM PREVIOUS CALLS. USE FILTERS TO NARROW RESULTS AND SEE SUMMARIES.]"
+                _remember_seen_documents(runtimedata, truncated)
+                result = _with_dedup_header(
+                    deduplicated_across_runs,
+                    f"Documents found ({len(lines)}):\n" + "\n".join(lines) + footer,
+                )
+                rag_tokens = count_tokens(result)
+                runtime.context.total_tokens_spent += rag_tokens
+                logger.info("list_documents compact: tokens=%d, total_tokens_spent=%d", rag_tokens, runtime.context.total_tokens_spent)
+                return result
+
+            # Full mode: summaries included, per-item cap and budget enforced inside helper.
+            lines, tokens_spent = _format_full_batch(visible, runtimedata)
             runtimedata.spent_summary_tokens += tokens_spent
-            _remember_seen_documents(runtimedata, results)
+            _remember_seen_documents(runtimedata, visible)
             result = _with_dedup_header(
                 deduplicated_across_runs,
-                f"Documents found ({len(lines)}):\n" + "\n".join(lines),
+                f"Documents found ({total} total):\n" + "\n".join(lines),
             )
             rag_tokens = count_tokens(result)
             runtime.context.total_tokens_spent += rag_tokens
-            logger.info("list_documents search: tokens=%d, total_tokens_spent=%d", rag_tokens, runtime.context.total_tokens_spent)
+            logger.info("list_documents full: tokens=%d, total_tokens_spent=%d", rag_tokens, runtime.context.total_tokens_spent)
             return result
-
-        # --- List mode: no queries ---
-        total = len(visible)
-
-        # Switch to compact when the summary token budget for this run is used up.
-        budget_exhausted = runtimedata.spent_summary_tokens >= _SUMMARY_TOKENS_BUDGET
-
-        if total > _TRUNCATED_LIMIT or budget_exhausted:
-            # Compact mode: minimal fields, list capped at _TRUNCATED_LIMIT.
-            truncated = visible[:_TRUNCATED_LIMIT]
-            lines = _format_compact_batch(truncated)
-            omitted_fields = "created_at, rag_status, file_size, summary"
-            footer = f"\n[FIELDS OMITTED TO REDUCE OUTPUT: {omitted_fields}. USE FILTERS TO GET FULL INFO ON SPECIFIC DOCS.]"
-            if total > _TRUNCATED_LIMIT:
-                footer += f"\nTOTAL COUNT OF DOCUMENTS IN ORGANIZATION IS {total} BUT OUTPUT IS TRUNCATED TO {_TRUNCATED_LIMIT}. USE FILTERS IF REQUIRED DOCUMENTS ARE NOT IN LIST"
-            if budget_exhausted:
-                footer += "\n[SUMMARY BUDGET EXHAUSTED FROM PREVIOUS CALLS. USE FILTERS TO NARROW RESULTS AND SEE SUMMARIES.]"
-            _remember_seen_documents(runtimedata, truncated)
-            result = _with_dedup_header(
-                deduplicated_across_runs,
-                f"Documents found ({len(lines)}):\n" + "\n".join(lines) + footer,
-            )
-            rag_tokens = count_tokens(result)
-            runtime.context.total_tokens_spent += rag_tokens
-            logger.info("list_documents compact: tokens=%d, total_tokens_spent=%d", rag_tokens, runtime.context.total_tokens_spent)
-            return result
-
-        # Full mode: summaries included, per-item cap and budget enforced inside helper.
-        lines, tokens_spent = _format_full_batch(visible, runtimedata)
-        runtimedata.spent_summary_tokens += tokens_spent
-        _remember_seen_documents(runtimedata, visible)
-        result = _with_dedup_header(
-            deduplicated_across_runs,
-            f"Documents found ({total} total):\n" + "\n".join(lines),
-        )
-        rag_tokens = count_tokens(result)
-        runtime.context.total_tokens_spent += rag_tokens
-        logger.info("list_documents full: tokens=%d, total_tokens_spent=%d", rag_tokens, runtime.context.total_tokens_spent)
-        return result
 
     except Exception as e:
         logger.error(f"list_documents failed: {e}", exc_info=True)

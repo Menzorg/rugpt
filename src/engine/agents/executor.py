@@ -8,6 +8,7 @@ import logging
 from typing import Any, List, Optional, TYPE_CHECKING
 from uuid import UUID
 
+from langchain.agents.middleware import ToolCallLimitMiddleware
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 
@@ -15,6 +16,7 @@ from ..config import Config
 from ..models.role import Role
 from ..services.prompt_cache import PromptCache
 from ..utils.token_counter import count_tokens
+from .middleware import HistoryCompactionMiddleware
 from .result import AgentResult
 from .runtime import RuntimeContext
 from .tools.registry import ToolRegistry
@@ -27,6 +29,8 @@ if TYPE_CHECKING:
     from ..services.correction_rule_service import CorrectionRuleService
 
 logger = logging.getLogger("rugpt.agents.executor")
+
+_RAG_SEARCH_TOOL_CALL_LIMIT = 15
 
 _MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. В квадратных скобках единицы информации пронумерованы согласно их давности (номер меньше = информация свежее) 
 Не говори пользователю о существовании сводки. 
@@ -252,6 +256,26 @@ class AgentExecutor:
         # Save number of tokens spent on the prompt + injected context, so that tools can check against the critical cap before running expensive retrievals.
         runtime_context.total_tokens_spent += count_tokens(messages_blob)
 
+        agent_middleware = [
+            HistoryCompactionMiddleware(
+                llm,
+                trigger_tokens=23000,
+                keep_last=12,
+            )
+        ]
+        if any(tool.name == "rag_search" for tool in tools):
+            agent_middleware.append(
+                ToolCallLimitMiddleware(
+                    tool_name="rag_search",
+                    run_limit=_RAG_SEARCH_TOOL_CALL_LIMIT,
+                    exit_behavior="continue",
+                )
+            )
+            logger.info(
+                "rag_search tool call limit: run_limit=%d",
+                _RAG_SEARCH_TOOL_CALL_LIMIT,
+            )
+
         logger.info(
             f"Executing agent: role={role.code}, type={role.agent_type}, "
             f"model={model}, tools={len(tools)}, chat_id={chat_id}, has_memory_summary={'yes' if chat_id and summary else 'no'}"
@@ -266,6 +290,7 @@ class AgentExecutor:
                     tools=tools if tools else None,
                     config=config,
                     context_schema=runtime_context,
+                    middleware=agent_middleware,
                 )
 
             elif role.agent_type == "chain":
@@ -296,6 +321,7 @@ class AgentExecutor:
                     messages=messages,
                     config=config,
                     context_schema=runtime_context,
+                    middleware=agent_middleware,
                 )
 
         except Exception as e:

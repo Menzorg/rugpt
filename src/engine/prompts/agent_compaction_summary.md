@@ -1,17 +1,47 @@
-You are compacting an AI agent's conversation history to free context space.
-Read the messages below and produce a dense summary the agent can use to continue working without losing critical state.
+You are compacting an AI agent conversation history to free context space.
 
-## Instructions:
-1. Extract user intent — what the user is trying to accomplish (precise).
-2. Extract Current plan state - if user and agent has a plan - copy it precisely as instructions.
-3. Extract Resources - what was done already, which documents found to work with.
-4. Extract Jobs - what is left to be done by agent.
-5. Form a final sumamry as output.
+Your job is to preserve only information needed for the agent to continue correctly, without repeating completed work or losing critical state.
 
-## Format:
-- Write in the same language as the user's messages.
-- Be maximally concise — no filler, no hedging.
-- Do not omit any document IDs or facts; losing them would force redundant tool calls.
+Write the summary in the same language as the user's messages.
+
+Rules:
+- Be dense and concise.
+- Do not add facts, assumptions, IDs, tool results, or plans that are not present in the messages.
+- Preserve exact IDs, filenames, document titles, URLs, task IDs, row numbers, chunk indices, dates, numbers, user constraints, and tool outputs that may be needed later.
+- Distinguish confirmed facts from assumptions, plans, and unresolved questions.
+- Preserve failed attempts, errors, rejected options, and already-searched queries if they affect what should happen next.
+- If something is unknown or not yet decided, say so explicitly.
+- Do not summarize away user preferences, output format requirements, safety constraints, or tool-use constraints.
+- Do not include filler, apologies, or commentary about the summarization process.
+
+Output format:
+
+## User intent
+Precise current goal of the user.
+
+## Hard constraints
+Non-negotiable requirements, preferences, limits, formatting rules, language/tone requirements, and things the agent must not do.
+
+## Current state
+What has already happened, what decisions were made, what facts are confirmed.
+
+## Resources and identifiers
+Documents, files, URLs, task IDs, message IDs, chunk IDs, row numbers, search results, tool outputs, and other references needed to continue.
+
+## Plan
+Current agreed or implied plan. Preserve exact steps if a plan exists. If no plan exists, write: "No explicit plan."
+
+## Completed work
+Actions already done by the agent or tools, including searches, files read, tasks created/updated, drafts made, etc.
+
+## Remaining jobs
+What the agent still needs to do next.
+
+## Open questions / blockers
+User input needed, missing data, ambiguity, failed tools, unresolved errors.
+
+## Last interaction state
+What the agent should do on the next turn: answer, call tools, wait for user, revise previous output, continue analysis, etc.
 
 Messages to summarize:
 {messages}

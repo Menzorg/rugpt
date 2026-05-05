@@ -116,51 +116,52 @@ async def rag_search(
         if file_status != "indexed":
             return f"FILE IS NOT INDEXED. CURRENT STATUS: {file_status}"
 
-        runtime_data = runtime.context.rag_search_runtime_data
-        seen_count = (
-            len(runtime_data.chunk_ids)
-            if isinstance(runtime_data, RagSearchRuntimeData)
-            else 0
-        )
+        async with runtime.context.lock:
+            runtime_data = runtime.context.rag_search_runtime_data
+            seen_count = (
+                len(runtime_data.chunk_ids)
+                if isinstance(runtime_data, RagSearchRuntimeData)
+                else 0
+            )
 
-        # Block search if the cumulative RAG token budget is exhausted.
-        if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
+            # Block search if the cumulative RAG token budget is exhausted.
+            if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
+                logger.info(
+                    "rag_search: blocked for file_id=%s — total_tokens_spent=%d >= %d",
+                    file_id, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
+                )
+                doc_name = doc.original_filename or file_id
+                return (
+                    f"[RAG SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+                    f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]"
+                )
+
+            top_k = _top_k_for_seen_chunks(seen_count)
+
+            chunks = await _rag_service.search_concrete_in_doc(
+                file_id=file_id,
+                query=query,
+                top_k=top_k,
+            )
+
+            if not chunks:
+                return f"No relevant content found in '{doc.original_filename or file_id}'."
+
+            _remember_seen_chunks(runtime_data, chunks)
+
+            lines = [f"## {doc.original_filename or file_id}"]
+            for chunk in chunks:
+                idx = f"chunk_index={chunk.chunk_index}" if chunk.chunk_index else ""
+                lines.append(f"\n[{chunk.source_type}, {idx}] {chunk.chunk_text}")
+
+            result = "\n".join(lines)
+            spent = count_tokens(result)
+            runtime.context.total_tokens_spent += spent
             logger.info(
-                "rag_search: blocked for file_id=%s — total_tokens_spent=%d >= %d",
-                file_id, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
+                "rag_search: returned %d chunks for file_id=%s (seen_chunks=%d, top_k=%d, tokens=%d, total_tokens_spent=%d)",
+                len(chunks), file_id, seen_count, top_k, spent, runtime.context.total_tokens_spent,
             )
-            doc_name = doc.original_filename or file_id
-            return (
-                f"[RAG SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
-                f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]"
-            )
-
-        top_k = _top_k_for_seen_chunks(seen_count)
-
-        chunks = await _rag_service.search_concrete_in_doc(
-            file_id=file_id,
-            query=query,
-            top_k=top_k,
-        )
-
-        if not chunks:
-            return f"No relevant content found in '{doc.original_filename or file_id}'."
-
-        _remember_seen_chunks(runtime_data, chunks)
-
-        lines = [f"## {doc.original_filename or file_id}"]
-        for chunk in chunks:
-            idx = f"chunk_index={chunk.chunk_index}" if chunk.chunk_index else ""
-            lines.append(f"\n[{chunk.source_type}, {idx}] {chunk.chunk_text}")
-
-        result = "\n".join(lines)
-        spent = count_tokens(result)
-        runtime.context.total_tokens_spent += spent
-        logger.info(
-            "rag_search: returned %d chunks for file_id=%s (seen_chunks=%d, top_k=%d, tokens=%d, total_tokens_spent=%d)",
-            len(chunks), file_id, seen_count, top_k, spent, runtime.context.total_tokens_spent,
-        )
-        return result
+            return result
     except Exception as e:
         logger.error(f"rag_search failed: {e}", exc_info=True)
         return _TOOL_ERROR_RESULT

@@ -1,6 +1,7 @@
 """Per-run runtime context shared with agent tools."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
 
@@ -21,6 +22,7 @@ class RagSearchRuntimeData:
 class RuntimeContext:
     """Mutable scratch state scoped to a single agent execution."""
 
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     list_documents_runtime_data: ListDocumentsRuntimeData = field(
         default_factory=ListDocumentsRuntimeData,
     )
