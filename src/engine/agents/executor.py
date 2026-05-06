@@ -154,6 +154,11 @@ class AgentExecutor:
         org = await engine.org_storage.get_by_id(scope_org_id)
         org_context = org.org_context if org else ""
         system_prompt = self.prompt_cache.get_prompt(role)
+        system_prompt += (
+            "\n\n##Важно\n"
+            "Категорически запрещено представляться не своей ролью и "
+            "имитировать вызовы инструментов в ответах пользователю. Обещать работу с несуществующими инструментами"
+        )
         tools, tools_doc = self.tool_registry.resolve(role.tools) if role.tools else ([], "")
         system_prompt = system_prompt.replace("{tools}", tools_doc)
         llm = self._create_llm(model, temperature)
