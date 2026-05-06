@@ -50,7 +50,7 @@ class TaskQueryInput(BaseModel):
 
 class TaskUpdateInput(BaseModel):
     task_id: str = Field(description="UUID of the task to update")
-    status: str = Field(default="", description="New status: created, in_progress, done")
+    status: str = Field(default="", description="New status: created, in_progress, awaiting_review, done. Transitions are role-restricted — the tool will return an error if the caller is not permitted.")
     title: str = Field(default="", description="New title (empty = keep current)")
     description: str = Field(default="", description="New description (empty = keep current)")
     new_participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of task participants to add")
@@ -332,6 +332,13 @@ def create_task_tools(
             f"add_participants={new_participant_user_ids} remove_participants={delete_participant_user_ids}"
         )
         try:
+            configurable = (config or {}).get("configurable", {})
+            user_id = configurable.get("user_id", "")
+            is_admin = configurable.get("is_admin", False)
+
+            if not user_id:
+                return "SYSTEM CAN'T SEE CURRENT USER ID"
+
             task_uuid = UUID(task_id)
             add_participant_uuids = _parse_uuid_list(new_participant_user_ids)
             remove_participant_uuids = _parse_uuid_list(delete_participant_user_ids)
@@ -344,36 +351,51 @@ def create_task_tools(
                 or add_participant_uuids
                 or remove_participant_uuids
             )
-            
-            user_id = configurable.get("user_id", "")
-            if not user_id:
-                return "SYSTEM CAN'T SEE CURRENT USER ID"
 
             existing_task = await task_service.get(task_uuid)
             if not existing_task:
                 return f"Task {task_id} not found"
 
-            initiator = None
-            if has_status_update or has_field_update:
-                configurable = (config or {}).get("configurable", {})
-                
+            caller_uuid = UUID(user_id)
+            is_creator = existing_task.created_by_user_id == caller_uuid
+            is_assignee = existing_task.assignee_user_id == caller_uuid
 
-                caller_uuid = UUID(user_id)
-                is_admin = configurable.get("is_admin", False)
+            if has_status_update:
+                current = existing_task.status
 
-                if (
-                    has_status_update
-                    and not is_admin
-                    and existing_task.assignee_user_id != caller_uuid
-                ):
-                    return "USER HAS NOT ALLOWED TO UPDATE OTHER USER TASK STATUS BECAUSE HE IS NO ASSIGNEE NOR CREATOR"
+                if current == "done":
+                    return "Task is already done and cannot be changed."
 
-                if (
-                    has_field_update
-                    and not is_admin
-                    and existing_task.created_by_user_id != caller_uuid
-                ):
-                    return "USER HAS NOT ALLOWED TO UPDATE TASK FIELDS BECAUSE HE IS NO ADMIN NOR CREATOR"
+                if current == "awaiting_review":
+                    if not is_creator:
+                        return (
+                            "Only the task creator can act on a task in 'awaiting_review' status. "
+                            "You are not the creator of this task."
+                        )
+                    if status not in ("in_progress", "done"):
+                        return (
+                            f"Cannot change status from 'awaiting_review' to '{status}'. "
+                            "Allowed transitions: 'in_progress' (send back for rework) or 'done' (accept)."
+                        )
+
+                elif current == "created":
+                    if not is_assignee:
+                        return (
+                            "Only the task assignee can update the status of a task in 'created' status. "
+                            "You are not the assignee of this task."
+                        )
+                    if status != "in_progress":
+                        return (
+                            f"Cannot change status from 'created' to '{status}'. "
+                            "The only allowed transition is to 'in_progress'."
+                        )
+
+            if (
+                has_field_update
+                and not is_admin
+                and not is_creator
+            ):
+                return "Only the task creator or an admin can update task fields (title, description, participants)."
 
             # Apply field updates before status so the final state reflects both changes.
             if title or description:
@@ -390,8 +412,6 @@ def create_task_tools(
                     return f"Task {task_id} not found"
 
             if add_participant_uuids or remove_participant_uuids:
-                configurable = (config or {}).get("configurable", {})
-
                 from ...services.engine_service import get_engine_service
                 engine = get_engine_service()
                 initiator = await engine.user_storage.get_by_id(UUID(user_id))
