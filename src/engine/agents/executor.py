@@ -154,11 +154,6 @@ class AgentExecutor:
         org = await engine.org_storage.get_by_id(scope_org_id)
         org_context = org.org_context if org else ""
         system_prompt = self.prompt_cache.get_prompt(role)
-        system_prompt += (
-            "\n\n##Важно\n"
-            "Категорически запрещено представляться не своей ролью и "
-            "имитировать вызовы инструментов в ответах пользователю. Обещать работу с несуществующими инструментами"
-        )
         tools, tools_doc = self.tool_registry.resolve(role.tools) if role.tools else ([], "")
         system_prompt = system_prompt.replace("{tools}", tools_doc)
         llm = self._create_llm(model, temperature)
@@ -259,6 +254,14 @@ class AgentExecutor:
         messages_blob = "\n".join(
             f"{msg.get('role', '')}: {msg.get('content', '')}"
             for msg in messages
+        )
+        
+        # Guardrails so roles don't mix in same chat is user mentions multiple
+        system_prompt += (
+            "\n\n##ВАЖНЫЕ ОГРАНИЧЕНИЯ\n"
+            "Категорически запрещено представляться не своей ролью и "
+            "имитировать вызовы инструментов в ответах пользователю. Обещать работу с несуществующими инструментами.\n"
+            "Обязательно сразу предупреждай пользователя, что выполняешь только свои прямые обязанности и ничьи больше."
         )
         
         # Save number of tokens spent on the prompt + injected context, so that tools can check against the critical cap before running expensive retrievals.

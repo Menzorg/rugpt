@@ -42,6 +42,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("rugpt.services.ai")
 
+_OTHER_ROLE_HISTORY_PLACEHOLDER = (
+    "[Исторический ответ другой роли скрыт. Текущая роль не наследует его "
+    "инструменты, обещания и полномочия.]"
+)
+
 
 # Poll-dialog role codes (lives in system org per migration 029).
 POLL_INTERVIEWER_ROLE_CODE = "poll_interviewer"
@@ -361,7 +366,11 @@ class AIService:
             return None
 
         # Build conversation context
-        conv_messages = await self._build_conversation(message, strip_username)
+        conv_messages = await self._build_conversation(
+            message,
+            strip_username,
+            responder_id=responder_id,
+        )
 
         # Generate
         try:
@@ -438,6 +447,7 @@ class AIService:
         self,
         message: Message,
         strip_username: Optional[str] = None,
+        responder_id: Optional[UUID] = None,
     ) -> List[dict]:
         """Build conversation as list of {"role": str, "content": str} dicts."""
         messages = []
@@ -449,7 +459,14 @@ class AIService:
             if msg.id == message.id:
                 continue
             role_name = "assistant" if msg.sender_type == SenderType.AI_ROLE else "user"
-            messages.append({"role": role_name, "content": self._with_attachment_ids(msg)})
+            content = self._with_attachment_ids(msg)
+            if (
+                role_name == "assistant"
+                and responder_id is not None
+                and msg.sender_id != responder_id
+            ):
+                content = _OTHER_ROLE_HISTORY_PLACEHOLDER
+            messages.append({"role": role_name, "content": content})
 
         # Current message
         content = message.content
