@@ -457,6 +457,8 @@ def create_task_tools(
             )
         except Exception as e:
             logger.error(f"task_update failed: {e}", exc_info=True)
+            if isinstance(e, ValueError) and "invalid literal for UUID" in str(e):
+                return "Invalid UUID format in input. Please check task_id and user_id fields"
             return _TOOL_ERROR_RESULT
 
     create_tool = StructuredTool.from_function(
