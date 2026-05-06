@@ -37,6 +37,8 @@ class TaskCreateInput(BaseModel):
     participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of additional task participants")
 
 
+_TASKS_PAGE_SIZE = 50
+
 class TaskQueryInput(BaseModel):
     assignee_user_id: str = Field(default="", description="Filter by UUID of employee the task is assigned to (empty = any)")
     created_by_user_id: str = Field(default="", description="Filter by UUID of the user who CREATED the task (empty = any)")
@@ -46,6 +48,12 @@ class TaskQueryInput(BaseModel):
     deadline_to: Optional[date] = Field(default=None, description="Filter tasks with deadline on or before this date, YYYY-MM-DD (empty = no upper bound)")
     created_from: Optional[date] = Field(default=None, description="Filter tasks created on or after this date, YYYY-MM-DD (empty = no lower bound)")
     created_to: Optional[date] = Field(default=None, description="Filter tasks created on or before this date, YYYY-MM-DD (empty = no upper bound)")
+    page: int = Field(default=1, description="Page number (default 1, page size is 50).")
+
+
+class TaskDeadlineProposalInput(BaseModel):
+    task_id: str = Field(description="UUID of the task whose proposed deadline to accept or reject")
+    accept: bool = Field(description="True to accept the proposed deadline, False to reject it")
 
 
 class TaskUpdateInput(BaseModel):
@@ -53,6 +61,7 @@ class TaskUpdateInput(BaseModel):
     status: str = Field(default="", description="New status: created, in_progress, awaiting_review, done. Transitions are role-restricted — the tool will return an error if the caller is not permitted.")
     title: str = Field(default="", description="New title (empty = keep current)")
     description: str = Field(default="", description="New description (empty = keep current)")
+    deadline: Optional[str] = Field(default=None, description="New deadline in ISO format (e.g. 2025-03-15T18:00:00). Only the task creator or admin can set this.")
     new_participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of task participants to add")
     delete_participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of task participants to remove")
 
@@ -67,7 +76,7 @@ def create_task_tools(
     """
     Create task tools wired to a real TaskService instance.
 
-    Returns (task_create_tool, task_query_tool, task_update_tool).
+    Returns (task_create_tool, task_query_tool, task_update_tool, task_deadline_proposal_tool).
     """
 
     def _parse_uuid_list(values: Optional[List[str]]) -> List[UUID]:
@@ -107,7 +116,10 @@ def create_task_tools(
 
             assignee_uuid = UUID(assignee_user_id)
             participant_uuids = _parse_uuid_list(participant_user_ids)
-            dl = datetime.fromisoformat(deadline) if deadline else None
+            try:
+                dl = datetime.fromisoformat(deadline) if deadline else None
+            except ValueError:
+                return f"Invalid deadline format: {deadline!r}. Use ISO format, e.g. '2025-03-15T18:00:00'."
 
             # org_id is injected by the executor from the caller's context; absent means
             # the tool was invoked outside a proper agent run — refuse rather than guess.
@@ -158,6 +170,7 @@ def create_task_tools(
         deadline_to: Optional[date] = None,
         created_from: Optional[date] = None,
         created_to: Optional[date] = None,
+        page: int = 1,
         config: Annotated[RunnableConfig, InjectedToolArg] = None,
     ) -> str:
         """Query tasks. Filter by assignee, creator, status, full-text search, and/or date ranges.
@@ -262,8 +275,12 @@ def create_task_tools(
                 return "No tasks found."
 
             total = len(tasks)
-            limited = total > Config.TASKS_QUERY_LIMIT
-            shown = tasks[:Config.TASKS_QUERY_LIMIT]
+            page = max(1, page)
+            total_pages = max(1, (total + _TASKS_PAGE_SIZE - 1) // _TASKS_PAGE_SIZE)
+            page = min(page, total_pages)
+            start = (page - 1) * _TASKS_PAGE_SIZE
+            end = min(start + _TASKS_PAGE_SIZE, total)
+            shown = tasks[start:end]
 
             # TODO: replace char budget with token budget via a token counting service
             total_desc_chars = sum(len(t.description) for t in shown if t.description)
@@ -274,6 +291,7 @@ def create_task_tools(
             engine = get_engine_service()
             user_ids = {t.assignee_user_id for t in shown if t.assignee_user_id}
             user_ids |= {t.created_by_user_id for t in shown if t.created_by_user_id}
+            user_ids |= {t.proposed_deadline_by for t in shown if t.proposed_deadline_by}
             users = await engine.user_storage.get_certain_users(list(user_ids))
             name_map = {u.id: u.name for u in users}
             participants_by_task = await engine.task_participant_storage.get_for_tasks(
@@ -283,6 +301,9 @@ def create_task_tools(
             lines = []
             for t in shown:
                 dl = f", deadline: {t.deadline.isoformat()}" if t.deadline else ""
+                if t.proposed_deadline:
+                    proposer = name_map.get(t.proposed_deadline_by, str(t.proposed_deadline_by)) if t.proposed_deadline_by else "assignee"
+                    dl += f", proposed_deadline: {t.proposed_deadline.isoformat()} (by {proposer})"
                 assignee = name_map.get(t.assignee_user_id, str(t.assignee_user_id))
                 creator = name_map.get(t.created_by_user_id, str(t.created_by_user_id)) if t.created_by_user_id else ""
                 participant_names = [
@@ -298,7 +319,8 @@ def create_task_tools(
                     f" (id={t.id}, assignee={assignee}{f', creator={creator}' if creator else ''}{participants}{desc})"
                 )
 
-            header = f"Tasks ({total} total{f', LIMITED TO {Config.TASKS_QUERY_LIMIT}' if limited else ''}):"
+            span = f"{start + 1}–{end} of {total}"
+            header = f"Tasks {span} (page {page}/{total_pages}):"
             footer = (
                 "\nTASK DESCRIPTIONS HIDDEN TO PREVENT OUTPUT FLOOD."
                 " SHRINK OUTPUT USING FILTERS TO CHECK DESCRIPTIONS IF YOU NEED"
@@ -311,9 +333,10 @@ def create_task_tools(
 
     async def _task_update_async(
         task_id: str,
-        status: Literal["done", "created", "in_progress"] = "",
+        status: Literal["done", "created", "in_progress", "awaiting_review"] = "",
         title: Optional[str] = "",
         description: Optional[str] = "",
+        deadline: Optional[str] = None,
         new_participant_user_ids: Optional[List[str]] = None,
         delete_participant_user_ids: Optional[List[str]] = None,
         config: Annotated[RunnableConfig, InjectedToolArg] = None,
@@ -324,12 +347,13 @@ def create_task_tools(
             status: New status (created, in_progress, done)
             title: New title (empty = keep current)
             description: New description (empty = keep current)
+            deadline: New deadline in ISO format (only creator or admin can set)
             new_participant_user_ids: Optional UUIDs of task participants to add.
             delete_participant_user_ids: Optional UUIDs of task participants to remove.
         """
         logger.info(
             f"tool task_update: task={task_id} status={status!r} title_set={bool(title)} "
-            f"add_participants={new_participant_user_ids} remove_participants={delete_participant_user_ids}"
+            f"deadline={deadline!r} add_participants={new_participant_user_ids} remove_participants={delete_participant_user_ids}"
         )
         try:
             configurable = (config or {}).get("configurable", {})
@@ -344,6 +368,10 @@ def create_task_tools(
             remove_participant_uuids = _parse_uuid_list(delete_participant_user_ids)
             updated = None
             participant_changes = []
+            try:
+                deadline_dt = datetime.fromisoformat(deadline) if deadline else None
+            except ValueError:
+                return f"Invalid deadline format: {deadline!r}. Use ISO format, e.g. '2025-03-15T18:00:00'."
             has_status_update = bool(status)
             has_field_update = bool(
                 title
@@ -360,14 +388,31 @@ def create_task_tools(
             is_creator = existing_task.created_by_user_id == caller_uuid
             is_assignee = existing_task.assignee_user_id == caller_uuid
 
+            _ALLOWED_STATUSES = ("created", "in_progress", "awaiting_review", "done")
+            if has_status_update and status not in _ALLOWED_STATUSES:
+                return (
+                    f"'{status}' is not a valid status. "
+                    f"Allowed values: {', '.join(_ALLOWED_STATUSES)}."
+                )
+
             if has_status_update:
                 current = existing_task.status
+                
+
+                
+                if status == current:
+                    return f"Task is already in status '{status}'. No change needed."
+
+                if status == "awaiting_review":
+                    if not is_assignee:
+                        return "Only the task assignee can set status to 'awaiting_review'. "
 
                 if current == "done":
                     return "Task is already done and cannot be changed."
 
                 if current == "in_progress" and status == "done":
                     return "You can't change status directly from 'in_progress' to 'done'. Assignee must set it to 'awaiting_review' first."
+
 
                 if current == "awaiting_review":
                     if not is_creator:
@@ -393,11 +438,10 @@ def create_task_tools(
                             "The only allowed transition is to 'in_progress'."
                         )
 
-            if (
-                has_field_update
-                and not is_admin
-                and not is_creator
-            ):
+            if deadline_dt and not is_creator and not is_admin and not is_assignee:
+                return "Only the task creator, admin, or assignee can change the deadline."
+
+            if has_field_update and not is_admin and not is_creator:
                 return "Only the task creator or an admin can update task fields (title, description, participants)."
 
             # Apply field updates before status so the final state reflects both changes.
@@ -409,6 +453,23 @@ def create_task_tools(
                 )
                 if not updated:
                     return f"Task {task_id} not found"
+
+            if deadline_dt:
+                from ...services.engine_service import get_engine_service
+                engine = get_engine_service()
+                caller_user = await engine.user_storage.get_by_id(caller_uuid)
+                if caller_user is None:
+                    return "CURRENT USER NOT FOUND"
+                if is_creator or is_admin:
+                    # Creator/admin sets the deadline directly — takes effect immediately.
+                    updated = await task_service.set_deadline(task_uuid, caller_user, deadline_dt)
+                else:
+                    # Assignee can only propose a new deadline; creator must accept it.
+                    updated = await task_service.propose_deadline(task_uuid, caller_user, deadline_dt)
+                    return (
+                        f"Deadline proposal submitted: {deadline_dt.isoformat()}. "
+                        "The task creator must accept it for it to take effect."
+                    )
             if status:
                 updated = await task_service.update_status(task_uuid, status)
                 if not updated:
@@ -461,6 +522,45 @@ def create_task_tools(
                 return "Invalid UUID format in input. Please check task_id and user_id fields"
             return _TOOL_ERROR_RESULT
 
+    async def _task_deadline_proposal_async(
+        task_id: str,
+        accept: bool,
+        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+    ) -> str:
+        """Accept or reject an assignee's proposed deadline. Only the task creator can call this."""
+        logger.info("tool task_deadline_proposal: task=%s accept=%s", task_id, accept)
+        try:
+            configurable = (config or {}).get("configurable", {})
+            user_id = configurable.get("user_id", "")
+            if not user_id:
+                return "SYSTEM CAN'T SEE CURRENT USER ID"
+
+            from ...services.engine_service import get_engine_service
+            engine = get_engine_service()
+
+            caller_user = await engine.user_storage.get_by_id(UUID(user_id))
+            if caller_user is None:
+                return "CURRENT USER NOT FOUND"
+
+            task_uuid = UUID(task_id)
+            task = await task_service.get(task_uuid)
+            if not task:
+                return f"Task {task_id} not found."
+            if task.proposed_deadline is None:
+                return "This task has no pending deadline proposal."
+            if task.created_by_user_id != caller_user.id:
+                return "Only the task creator can accept or reject a deadline proposal."
+
+            if accept:
+                updated = await task_service.accept_proposed_deadline(task_uuid, caller_user)
+                return f"Deadline proposal accepted. New deadline: {updated.deadline.isoformat()}."
+            else:
+                await task_service.reject_proposed_deadline(task_uuid, caller_user)
+                return "Deadline proposal rejected."
+        except Exception as e:
+            logger.error("task_deadline_proposal failed: %s", e, exc_info=True)
+            return _TOOL_ERROR_RESULT
+
     create_tool = StructuredTool.from_function(
         coroutine=_task_create_async,
         name="task_create",
@@ -486,4 +586,11 @@ def create_task_tools(
         args_schema=TaskUpdateInput,
     )
 
-    return create_tool, query_tool, update_tool
+    deadline_proposal_tool = StructuredTool.from_function(
+        coroutine=_task_deadline_proposal_async,
+        name="task_deadline_proposal",
+        description="Accept or reject an assignee's proposed deadline on a task. Only the task creator can call this.",
+        args_schema=TaskDeadlineProposalInput,
+    )
+
+    return create_tool, query_tool, update_tool, deadline_proposal_tool

@@ -33,7 +33,7 @@ logger = logging.getLogger("rugpt.agents.executor")
 _RAG_SEARCH_TOOL_CALL_LIMIT = 15
 _LIST_DOCUMENTS_TOOL_CALL_LIMIT = 5
 _TASK_TOOLS_TOTAL_CALL_LIMIT = 50
-_TASK_TOOL_NAMES = {"task_create", "task_query", "task_update"}
+_TASK_TOOL_NAMES = {"task_create", "task_query", "task_update", "task_deadline_proposal"}
 
 _MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. В квадратных скобках единицы информации пронумерованы согласно их давности (номер меньше = информация свежее) 
 Не говори пользователю о существовании сводки. 
