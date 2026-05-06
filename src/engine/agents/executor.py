@@ -32,6 +32,8 @@ logger = logging.getLogger("rugpt.agents.executor")
 
 _RAG_SEARCH_TOOL_CALL_LIMIT = 15
 _LIST_DOCUMENTS_TOOL_CALL_LIMIT = 5
+_TASK_TOOLS_TOTAL_CALL_LIMIT = 50
+_TASK_TOOL_NAMES = {"task_create", "task_query", "task_update"}
 
 _MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. В квадратных скобках единицы информации пронумерованы согласно их давности (номер меньше = информация свежее) 
 Не говори пользователю о существовании сводки. 
@@ -289,6 +291,14 @@ class AgentExecutor:
                     "%s tool call limit: run_limit=%d",
                     list_tool_name, _LIST_DOCUMENTS_TOOL_CALL_LIMIT,
                 )
+        if any(tool.name in _TASK_TOOL_NAMES for tool in tools):
+            agent_middleware.append(
+                ToolCallLimitMiddleware(
+                    run_limit=_TASK_TOOLS_TOTAL_CALL_LIMIT,
+                    exit_behavior="continue",
+                )
+            )
+            logger.info("task tools total call limit: run_limit=%d", _TASK_TOOLS_TOTAL_CALL_LIMIT)
 
         logger.info(
             f"Executing agent: role={role.code}, type={role.agent_type}, "
