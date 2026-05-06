@@ -366,6 +366,9 @@ def create_task_tools(
                 if current == "done":
                     return "Task is already done and cannot be changed."
 
+                if current == "in_progress" and status == "done":
+                    return "You can't change status directly from 'in_progress' to 'done'. Assignee must set it to 'awaiting_review' first."
+
                 if current == "awaiting_review":
                     if not is_creator:
                         return (
