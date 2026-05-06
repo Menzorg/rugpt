@@ -438,6 +438,9 @@ def create_task_tools(
                             "The only allowed transition is to 'in_progress'."
                         )
 
+            if deadline_dt and existing_task.status == "overdue":
+                return "Cannot change the deadline of an overdue task."
+
             if deadline_dt and not is_creator and not is_admin and not is_assignee:
                 return "Only the task creator, admin, or assignee can change the deadline."
 
