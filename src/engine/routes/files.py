@@ -188,7 +188,7 @@ async def index_file_for_rag(
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
     try:
-        updated = await engine.file_service.index_for_rag(
+        updated, _future = await engine.file_service.index_for_rag(
             file_id=file_uuid,
             requesting_user_id=current_user["user_id"],
         )

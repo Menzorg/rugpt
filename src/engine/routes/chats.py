@@ -380,7 +380,7 @@ async def send_message(
         # return_exceptions=True prevents one failure from cancelling the rest.
         if index_futures:
             try:
-                asyncio.gather(*index_futures, return_exceptions=True)
+                await asyncio.gather(*index_futures, return_exceptions=True)
             except Exception as e:
                 logger.error("RAG indexing wait failed for chat %s: %s", chat_id, e)
 

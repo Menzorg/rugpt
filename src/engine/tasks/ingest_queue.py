@@ -103,7 +103,7 @@ class IngestQueue:
         filename: str,
         data: bytes,
     ) -> asyncio.Future:
-        """Enqueue an ingest job. Returns immediately — caller must not await.
+        """Enqueue an ingest job. Returns immediately — waiting is optional.
 
         The done-callback ensures exceptions are logged even though the
         Future is intentionally not awaited by callers.
