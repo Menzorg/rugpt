@@ -117,6 +117,7 @@ async def rag_search(
             return f"FILE IS NOT INDEXED. CURRENT STATUS: {file_status}"
 
         async with runtime.context.lock:
+            # Read shared run state only long enough to choose this search size.
             runtime_data = runtime.context.rag_search_runtime_data
             seen_count = (
                 len(runtime_data.chunk_ids)
@@ -138,24 +139,39 @@ async def rag_search(
 
             top_k = _top_k_for_seen_chunks(seen_count)
 
-            chunks = await _rag_service.search_concrete_in_doc(
-                file_id=file_id,
-                query=query,
-                top_k=top_k,
-            )
+        # RAG search may hit storage/vector backends, so keep it outside the runtime lock.
+        chunks = await _rag_service.search_concrete_in_doc(
+            file_id=file_id,
+            query=query,
+            top_k=top_k,
+        )
 
-            if not chunks:
-                return f"No relevant content found in '{doc.original_filename or file_id}'."
+        if not chunks:
+            return f"No relevant content found in '{doc.original_filename or file_id}'."
 
+        lines = [f"## {doc.original_filename or file_id}"]
+        for chunk in chunks:
+            idx = f"chunk_index={chunk.chunk_index}" if chunk.chunk_index else ""
+            lines.append(f"\n[{chunk.source_type}, {idx}] {chunk.chunk_text}")
+
+        result = "\n".join(lines)
+        spent = count_tokens(result)
+
+        async with runtime.context.lock:
+            # Re-check the cap before committing output because parallel tools may have spent tokens.
+            if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
+                logger.info(
+                    "rag_search: blocked after search for file_id=%s — total_tokens_spent=%d >= %d",
+                    file_id, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
+                )
+                doc_name = doc.original_filename or file_id
+                return (
+                    f"[RAG SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+                    f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]"
+                )
+
+            runtime_data = runtime.context.rag_search_runtime_data
             _remember_seen_chunks(runtime_data, chunks)
-
-            lines = [f"## {doc.original_filename or file_id}"]
-            for chunk in chunks:
-                idx = f"chunk_index={chunk.chunk_index}" if chunk.chunk_index else ""
-                lines.append(f"\n[{chunk.source_type}, {idx}] {chunk.chunk_text}")
-
-            result = "\n".join(lines)
-            spent = count_tokens(result)
             runtime.context.total_tokens_spent += spent
             logger.info(
                 "rag_search: returned %d chunks for file_id=%s (seen_chunks=%d, top_k=%d, tokens=%d, total_tokens_spent=%d)",
