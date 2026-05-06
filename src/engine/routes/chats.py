@@ -3,6 +3,8 @@ Chat Routes
 
 API endpoints for chats and messages.
 """
+import asyncio
+import logging
 from typing import List, Optional
 from uuid import UUID
 
@@ -12,6 +14,8 @@ from pydantic import BaseModel
 from .auth import get_current_user
 from ..constants import RAG_COMPATIBLE_TYPES
 from ..services.engine_service import get_engine_service, EngineService
+
+logger = logging.getLogger("rugpt.routes.chats")
 
 router = APIRouter(prefix="/api/v1/chats", tags=["chats"])
 
@@ -360,16 +364,32 @@ async def send_message(
         and len(request.file_ids) <= 5
         and await engine.chat_storage.is_ai_direct_chat(chat_id)
     ):
+        # Kick off RAG indexing for each compatible attachment and collect
+        # the futures returned by index_for_rag.  Indexing is idempotent:
+        # already-indexed or in-flight files return future=None and are skipped.
+        index_futures = []
         for fid in request.file_ids:
             file = await engine.file_service.get(fid)
             if file is not None and file.file_type in RAG_COMPATIBLE_TYPES:
-                await engine.file_service.index_for_rag(fid, user_id)
+                _, future = await engine.file_service.index_for_rag(fid, user_id)
+                if future is not None:
+                    index_futures.append(future)
+
+        # Wait for all pending indexing jobs to finish before the message is
+        # stored, so the AI's first reply already has access to the content.
+        # return_exceptions=True prevents one failure from cancelling the rest.
+        if index_futures:
+            try:
+                asyncio.gather(*index_futures, return_exceptions=True)
+            except Exception as e:
+                logger.error("RAG indexing wait failed for chat %s: %s", chat_id, e)
 
     # Send user message
     message = await engine.chat_service.send_message(
         chat_id=chat_id,
         sender_id=user_id,
         content=request.content,
+        
         mentions=mentions,
         reply_to_id=request.reply_to_id,
         file_ids=request.file_ids,

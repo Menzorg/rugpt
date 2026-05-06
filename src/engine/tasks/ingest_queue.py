@@ -20,8 +20,8 @@ from uuid import UUID
 
 logger = logging.getLogger("rugpt.tasks.ingest_queue")
 
-# Max concurrent Tika + Ollama jobs. CPU-bound — raise when migrating to GPU workers.
-_MAX_WORKERS = 3
+# Max concurrent Tika + RAG jobs. CPU-bound — raise when migrating to GPU workers.
+_MAX_WORKERS = 5
 
 
 def _run_ingest_sync(

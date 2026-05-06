@@ -4,6 +4,7 @@ File Service
 Business logic for file upload/download/management.
 Uses StorageAdapter for binary data, UserFileStorage for metadata.
 """
+import asyncio
 import hashlib
 import logging
 from typing import Optional, List
@@ -128,7 +129,7 @@ class FileService:
         )
         return created
 
-    async def index_for_rag(self, file_id: UUID, requesting_user_id: UUID) -> UserFile:
+    async def index_for_rag(self, file_id: UUID, requesting_user_id: UUID) -> tuple[UserFile, "asyncio.Future | None"]:
         """Owner-initiated: enqueue file for RAG indexing.
 
         Idempotent: if already pending/indexing/indexed, returns the file unchanged
@@ -154,9 +155,9 @@ class FileService:
             logger.info(
                 f"File {file.id} already ingested for RAG; skipping enqueue"
             )
-            return file
+            return file, None
         if file.rag_status in ("pending", "indexing"):
-            return file  # idempotent — already in pipeline or done
+            return file, None  # idempotent — already in pipeline or done
 
         # Re-read bytes from storage to enqueue (upload didn't keep them in memory)
         data = await self.adapter.read(file.storage_key)
@@ -179,7 +180,7 @@ class FileService:
         # stuck at 'pending' (idempotency guard would otherwise block retry).
         from ..tasks.ingest_queue import ingest_queue
         try:
-            ingest_queue.submit(
+            future: asyncio.Future = ingest_queue.submit(
                 file_id=file.id,
                 org_id=str(file.org_id),
                 user_id=str(file.user_id),
@@ -202,7 +203,7 @@ class FileService:
             f"Enqueued file {file.id} for RAG indexing "
             f"(owner={requesting_user_id}, type={file.file_type})"
         )
-        return file
+        return file, future
 
     async def clone(
         self,
