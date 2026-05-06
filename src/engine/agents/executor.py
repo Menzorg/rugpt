@@ -276,18 +276,19 @@ class AgentExecutor:
                 "rag_search tool call limit: run_limit=%d",
                 _RAG_SEARCH_TOOL_CALL_LIMIT,
             )
-        if any(tool.name == "list_documents" for tool in tools):
-            agent_middleware.append(
-                ToolCallLimitMiddleware(
-                    tool_name="list_documents",
-                    run_limit=_LIST_DOCUMENTS_TOOL_CALL_LIMIT,
-                    exit_behavior="continue",
+        for list_tool_name in ("list_global_documents", "list_private_documents"):
+            if any(tool.name == list_tool_name for tool in tools):
+                agent_middleware.append(
+                    ToolCallLimitMiddleware(
+                        tool_name=list_tool_name,
+                        run_limit=_LIST_DOCUMENTS_TOOL_CALL_LIMIT,
+                        exit_behavior="continue",
+                    )
                 )
-            )
-            logger.info(
-                "list_documents tool call limit: run_limit=%d",
-                _LIST_DOCUMENTS_TOOL_CALL_LIMIT,
-            )
+                logger.info(
+                    "%s tool call limit: run_limit=%d",
+                    list_tool_name, _LIST_DOCUMENTS_TOOL_CALL_LIMIT,
+                )
 
         logger.info(
             f"Executing agent: role={role.code}, type={role.agent_type}, "

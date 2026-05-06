@@ -1,16 +1,21 @@
 """
 Document Tools
 
-LangChain tool for listing documents available to an agent's initiator.
+Two LangChain tools for listing documents:
 
-Visibility model mirrors RAG / /files endpoint: caller sees their own files
-plus `is_public` files within the same org.
+  list_global_documents — org-wide visibility: caller's own files + all is_public files.
+  list_private_documents — private visibility: only files uploaded by the caller.
+
+Visibility modes
+----------------
+  "global"  — uploaded_by_user_id == user_id  OR  is_public
+  "private" — uploaded_by_user_id == user_id  (no public files)
 
 Service lifecycle: call init_document_service(storage) once during engine startup.
 
 Summary budget system
 ---------------------
-Each list_documents call may display document summaries.  To prevent the model
+Each list_*_documents call may display document summaries.  To prevent the model
 context from being overwhelmed we maintain a per-run token budget tracked in
 ListDocumentsRuntimeData.spent_summary_tokens.
 
@@ -183,28 +188,52 @@ def _format_compact_batch(files: list[UserFile]) -> list[str]:
     ]
 
 
-async def _list_documents_async(
+def _apply_visibility(
+    files: list[UserFile],
+    user_id: UUID,
+    private_only: bool,
+    is_admin: bool = False,
+) -> list[UserFile]:
+    """Filter *files* by visibility mode, excluding images in both cases."""
+    if private_only:
+        return [
+            f for f in files
+            if f.uploaded_by_user_id == user_id
+            and not _is_image_file(f) # Only user's own files
+        ]
+    return [
+        f for f in files
+        if (f.uploaded_by_user_id != user_id and (f.is_public or is_admin)) # Any files but user's
+        and not _is_image_file(f)
+    ]
+
+
+async def _list_documents_impl(
     config: Annotated[RunnableConfig, InjectedToolArg],
     runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg],
+    private_only: bool,
     name_query: Optional[str] = None,
     summary_query: Optional[str] = None,
     file_id: Optional[str] = None,
 ) -> str:
+    tool_name = "list_private_documents" if private_only else "list_global_documents"
     logger.info(
-        "tool list_documents: name_query=%r, summary_query=%r, file_id=%r",
-        name_query, summary_query, file_id,
+        "tool %s: name_query=%r, summary_query=%r, file_id=%r",
+        tool_name, name_query, summary_query, file_id,
     )
 
     if _user_file_storage is None:
-        logger.error("list_documents: storage not initialized, call init_document_service() at startup")
-        return "list_documents unavailable: storage not initialized."
+        logger.error("%s: storage not initialized, call init_document_service() at startup", tool_name)
+        return f"{tool_name} unavailable: storage not initialized."
 
     try:
         configurable = config.get("configurable", {})
         user_id_str = configurable.get("user_id", "")
         org_id_str = configurable.get("org_id", "")
+        is_admin = configurable.get("is_admin", False)
+        
         if not user_id_str or not org_id_str:
-            return "list_documents unavailable: missing context."
+            return f"{tool_name} unavailable: missing context."
 
         user_id = UUID(user_id_str)
         org_id = UUID(org_id_str)
@@ -212,7 +241,11 @@ async def _list_documents_async(
         # --- Single-document lookup: bypasses all budgets and filters ---
         if file_id and file_id.strip():
             f = await _user_file_storage.get_by_id(UUID(file_id.strip()))
-            if f is None or (f.uploaded_by_user_id != user_id and not f.is_public):
+            if f is None:
+                return f"Document {file_id} not found."
+            if private_only and f.uploaded_by_user_id != user_id:
+                return f"Document {file_id} not found or not visible to you."
+            if not private_only and f.uploaded_by_user_id != user_id and not f.is_public:
                 return f"Document {file_id} not found or not visible to you."
             summary_part = f'summary: "{f.summary}"' if f.rag_status == "indexed" and f.summary else "summary: —"
             return (
@@ -225,16 +258,16 @@ async def _list_documents_async(
         has_summary_query = bool(summary_query and summary_query.strip())
 
         all_files = await _user_file_storage.list_by_org(org_id)
-        visible: list[UserFile] = [
-            f for f in all_files
-            if (f.uploaded_by_user_id == user_id or f.is_public)
-            and not _is_image_file(f)
-        ]
+        visible: list[UserFile] = _apply_visibility(all_files, user_id, private_only, is_admin=False)
+
+        if not visible and not private_only and is_admin:
+            # If nothing found, admin can search private files of other people as well since they have visibility on everything.
+            visible = _apply_visibility(all_files, user_id, private_only, is_admin=is_admin)
 
         # --- Search mode: one or both queries provided ---
         if has_name_query or has_summary_query:
             if _rag_service is None:
-                return "list_documents: search unavailable (RAG service not initialized)."
+                return f"{tool_name}: search unavailable (RAG service not initialized)."
 
             matched_ids: set[str] = set()
 
@@ -283,8 +316,8 @@ async def _list_documents_async(
                 # --- RAG budget guard ---
                 if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
                     logger.info(
-                        "list_documents: blocked — total_tokens_spent=%d >= %d",
-                        runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
+                        "%s: blocked — total_tokens_spent=%d >= %d",
+                        tool_name, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
                     )
                     return (
                         "[RAG SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
@@ -300,7 +333,7 @@ async def _list_documents_async(
                 )
                 rag_tokens = count_tokens(result)
                 runtime.context.total_tokens_spent += rag_tokens
-                logger.info("list_documents search: tokens=%d, total_tokens_spent=%d", rag_tokens, runtime.context.total_tokens_spent)
+                logger.info("%s search: tokens=%d, total_tokens_spent=%d", tool_name, rag_tokens, runtime.context.total_tokens_spent)
                 return result
 
         async with runtime.context.lock:
@@ -324,8 +357,8 @@ async def _list_documents_async(
             # --- RAG budget guard ---
             if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
                 logger.info(
-                    "list_documents: blocked — total_tokens_spent=%d >= %d",
-                    runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
+                    "%s: blocked — total_tokens_spent=%d >= %d",
+                    tool_name, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
                 )
                 return (
                     "[RAG SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
@@ -339,7 +372,6 @@ async def _list_documents_async(
             budget_exhausted = runtimedata.spent_summary_tokens >= _SUMMARY_TOKENS_BUDGET
 
             if total > _TRUNCATED_LIMIT or budget_exhausted:
-                # Compact mode: minimal fields, list capped at _TRUNCATED_LIMIT.
                 truncated = visible[:_TRUNCATED_LIMIT]
                 lines = _format_compact_batch(truncated)
                 omitted_fields = "created_at, rag_status, file_size, summary"
@@ -355,7 +387,7 @@ async def _list_documents_async(
                 )
                 rag_tokens = count_tokens(result)
                 runtime.context.total_tokens_spent += rag_tokens
-                logger.info("list_documents compact: tokens=%d, total_tokens_spent=%d", rag_tokens, runtime.context.total_tokens_spent)
+                logger.info("%s compact: tokens=%d, total_tokens_spent=%d", tool_name, rag_tokens, runtime.context.total_tokens_spent)
                 return result
 
             # Full mode: summaries included, per-item cap and budget enforced inside helper.
@@ -368,23 +400,54 @@ async def _list_documents_async(
             )
             rag_tokens = count_tokens(result)
             runtime.context.total_tokens_spent += rag_tokens
-            logger.info("list_documents full: tokens=%d, total_tokens_spent=%d", rag_tokens, runtime.context.total_tokens_spent)
+            logger.info("%s full: tokens=%d, total_tokens_spent=%d", tool_name, rag_tokens, runtime.context.total_tokens_spent)
             return result
 
     except Exception as e:
-        logger.error(f"list_documents failed: {e}", exc_info=True)
+        logger.error(f"{tool_name} failed: {e}", exc_info=True)
         return _TOOL_ERROR_RESULT
 
 
-list_documents = StructuredTool.from_function(
-    coroutine=_list_documents_async,
-    name="list_documents",
+async def _list_global_documents_async(
+    config: Annotated[RunnableConfig, InjectedToolArg],
+    runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg],
+    name_query: Optional[str] = None,
+    summary_query: Optional[str] = None,
+    file_id: Optional[str] = None,
+) -> str:
+    return await _list_documents_impl(config, runtime, private_only=False,
+                                      name_query=name_query, summary_query=summary_query, file_id=file_id)
+
+
+async def _list_private_documents_async(
+    config: Annotated[RunnableConfig, InjectedToolArg],
+    runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg],
+    name_query: Optional[str] = None,
+    summary_query: Optional[str] = None,
+    file_id: Optional[str] = None,
+) -> str:
+    return await _list_documents_impl(config, runtime, private_only=True,
+                                      name_query=name_query, summary_query=summary_query, file_id=file_id)
+
+
+list_global_documents = StructuredTool.from_function(
+    coroutine=_list_global_documents_async,
+    name="list_global_documents",
     description=(
-        "List documents visible to the caller in their organization. "
-        "Use when the user asks what files are available, to browse the catalog, "
-        "or before calling rag_search to check if the needed document exists. "
-        "Provide name_query or summary_query to search; omit both for the full list. "
-        "Provide file_id to fetch full info for a single document bypassing all budgets."
+        "List documents visible org-wide: caller's own files plus all public files in the organization. "
+        "Use name_query or summary_query to search; omit both for the full list. "
+        "Use file_id to fetch full info for a single document bypassing all budgets."
+    ),
+    args_schema=ListDocumentsInput,
+)
+
+list_private_documents = StructuredTool.from_function(
+    coroutine=_list_private_documents_async,
+    name="list_private_documents",
+    description=(
+        "List only documents uploaded by the caller — no public or other users' files are included. "
+        "Use name_query or summary_query to search; omit both for the full list. "
+        "Use file_id to fetch full info for a single document bypassing all budgets."
     ),
     args_schema=ListDocumentsInput,
 )

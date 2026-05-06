@@ -257,7 +257,7 @@ class EngineService:
         from ..agents.tools.table_rows_tool import table_rows_search
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
-        from ..agents.tools.list_documents import list_documents
+        from ..agents.tools.list_documents import list_global_documents, list_private_documents
         from ..agents.tools.user_tool import create_user_tools
         from ..agents.tools.analyze_image import create_analyze_image_tool
 
@@ -284,7 +284,8 @@ class EngineService:
         self.tool_registry.register("table_rows_search", table_rows_search)
         self.tool_registry.register("web_search", web_search)
         self.tool_registry.register("role_call", role_call)
-        self.tool_registry.register("list_documents", list_documents)
+        self.tool_registry.register("list_global_documents", list_global_documents)
+        self.tool_registry.register("list_private_documents", list_private_documents)
         self.tool_registry.register("analyze_image", analyze_image_tool)
 
         (user_search_tool,) = create_user_tools(
@@ -448,7 +449,7 @@ class EngineService:
         init_table_rows_service(self.rag_service, self.user_file_storage)
 
         # Wire the shared UserFileStorage into the document tool
-        from ..agents.tools.list_documents import init_document_service
+        from ..agents.tools.list_global_documents import init_document_service
         init_document_service(self.user_file_storage, self.rag_service)
 
         # Start Kafka producer (no-op when KAFKA_ENABLED=false)

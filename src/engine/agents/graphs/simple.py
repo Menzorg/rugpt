@@ -139,7 +139,7 @@ async def _react_agent_call(
         # config carries org_id/user_id for tools like rag_search
         result = await agent.ainvoke(
             {"messages": input_messages},
-            config={**(config or {}), "recursion_limit": 80},
+            config={**(config or {}), "recursion_limit": 50 * (len(middleware) + 1)},
             context=context,
         )
 
