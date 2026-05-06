@@ -43,15 +43,17 @@ from ...constants import IMAGE_TYPES
 from ...models.rag import RelatedDoc
 from ...models.user_file import UserFile
 from ..runtime import ListDocumentsRuntimeData, RuntimeContext
+from ...models.user import User
 from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
+from ...storage.user_storage import UserStorage
 from ...utils.token_counter import count_tokens, cut_text_by_token_count
 
 logger = logging.getLogger("rugpt.agents.tools.document")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
-_TRUNCATED_LIMIT = 500
-_MAX_RESULTS = 500
+_TRUNCATED_LIMIT = 250
+_MAX_RESULTS = 250
 
 # Total token budget for document summaries across the whole agent run.
 _SUMMARY_TOKENS_BUDGET = 4000
@@ -59,6 +61,7 @@ _SUMMARY_TOKENS_BUDGET = 4000
 _SUMMARY_SINGLE_ITEM_MAX_FRACTION = 0.025
 
 _user_file_storage: Optional[UserFileStorage] = None
+_user_storage: Optional[UserStorage] = None
 _rag_service: Optional[RAGService] = None
 
 
@@ -87,14 +90,26 @@ class ListDocumentsInput(BaseModel):
     )
 
 
+class ListGlobalDocumentsInput(ListDocumentsInput):
+    owner_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter results to documents uploaded by this user UUID. "
+            "Omit to include all visible documents."
+        ),
+    )
+
+
 def init_document_service(
     storage: UserFileStorage,
     rag_service: Optional[RAGService] = None,
+    user_storage: Optional[UserStorage] = None,
 ) -> None:
-    """Set the shared UserFileStorage and RAGService for all document tool calls."""
-    global _user_file_storage, _rag_service
+    """Set the shared storage instances for all document tool calls."""
+    global _user_file_storage, _rag_service, _user_storage
     _user_file_storage = storage
     _rag_service = rag_service
+    _user_storage = user_storage
     logger.info("Document tool storage initialized")
 
 
@@ -121,9 +136,36 @@ def _format_created_date(f: UserFile) -> str:
     return f.created_at.date().isoformat()
 
 
+async def _resolve_owner_names(
+    files: list[UserFile],
+    caller_id: UUID,
+) -> dict[UUID, str]:
+    """Return a {user_id: display_name} cache for all file owners that differ from the caller."""
+    cache: dict[UUID, str] = {}
+    if _user_storage is None:
+        return cache
+    unknown_ids = {
+        f.uploaded_by_user_id for f in files
+        if f.uploaded_by_user_id != caller_id and f.uploaded_by_user_id not in cache
+    }
+    for uid in unknown_ids:
+        user: Optional[User] = await _user_storage.get_by_id(uid)
+        cache[uid] = user.name if user and user.name else str(uid)
+    return cache
+
+
+def _owner_label(f: UserFile, caller_id: UUID, owner_cache: dict[UUID, str]) -> str:
+    if f.uploaded_by_user_id == caller_id:
+        return ""
+    name = owner_cache.get(f.uploaded_by_user_id, str(f.uploaded_by_user_id))
+    return f", owner={name}"
+
+
 def _format_full_batch(
     files: list[UserFile],
     runtimedata: ListDocumentsRuntimeData,
+    caller_id: UUID,
+    owner_cache: dict[UUID, str],
 ) -> tuple[list[str], int]:
     """
     Format *files* with full detail (including summaries) while respecting the
@@ -171,21 +213,27 @@ def _format_full_batch(
         else:
             summary_part = "summary: —"
 
+        owner = _owner_label(f, caller_id, owner_cache)
         lines.append(
             f"- {f.original_filename} (id={f.id}, created_at={_format_created_date(f)}, "
-            f"rag={f.rag_status}, is_table={f.is_table}, "
+            f"rag={f.rag_status}, is_table={f.is_table}{owner}, "
             f"{summary_part})"
         )
 
     return lines, total_tokens_spent
 
 
-def _format_compact_batch(files: list[UserFile]) -> list[str]:
+def _format_compact_batch(
+    files: list[UserFile],
+    caller_id: UUID,
+    owner_cache: dict[UUID, str],
+) -> list[str]:
     """Format *files* without heavy fields (no summary, size, or dates)."""
-    return [
-        f"- {f.original_filename} (id={f.id}, is_table={f.is_table})"
-        for f in files
-    ]
+    lines = []
+    for f in files:
+        owner = _owner_label(f, caller_id, owner_cache)
+        lines.append(f"- {f.original_filename} (id={f.id}, is_table={f.is_table}{owner})")
+    return lines
 
 
 def _apply_visibility(
@@ -215,6 +263,7 @@ async def _list_documents_impl(
     name_query: Optional[str] = None,
     summary_query: Optional[str] = None,
     file_id: Optional[str] = None,
+    owner_id: Optional[str] = None,
 ) -> str:
     tool_name = "list_private_documents" if private_only else "list_global_documents"
     logger.info(
@@ -264,7 +313,22 @@ async def _list_documents_impl(
             # If nothing found, admin can search private files of other people as well since they have visibility on everything.
             visible = _apply_visibility(all_files, user_id, private_only, is_admin=is_admin)
 
+        # --- owner_id filter (global tool only) ---
+        if owner_id and owner_id.strip():
+            try:
+                filter_uuid = UUID(owner_id.strip())
+                visible = [f for f in visible if f.uploaded_by_user_id == filter_uuid]
+            except ValueError:
+                return f"{tool_name}: invalid owner_id '{owner_id}'."
+
+        owner_cache: dict[UUID, str] = await _resolve_owner_names(visible, user_id)
+
         # --- Search mode: one or both queries provided ---
+        # Global listing without any filter is forbidden — the result would be
+        # an unbounded org-wide dump that is rarely useful and wastes context.
+        if not private_only and not has_name_query and not has_summary_query and not (owner_id and owner_id.strip()):
+            return "[NO FILTERS WERE SET FOR GLOBAL DOCS SEARCH. Provide name_query, summary_query, or owner_id to narrow results.]"
+
         if has_name_query or has_summary_query:
             if _rag_service is None:
                 return f"{tool_name}: search unavailable (RAG service not initialized)."
@@ -324,7 +388,7 @@ async def _list_documents_impl(
                         "USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO LIST DOCUMENTS]"
                     )
 
-                lines, tokens_spent = _format_full_batch(results, runtimedata)
+                lines, tokens_spent = _format_full_batch(results, runtimedata, user_id, owner_cache)
                 runtimedata.spent_summary_tokens += tokens_spent
                 _remember_seen_documents(runtimedata, results)
                 result = _with_dedup_header(
@@ -373,7 +437,7 @@ async def _list_documents_impl(
 
             if total > _TRUNCATED_LIMIT or budget_exhausted:
                 truncated = visible[:_TRUNCATED_LIMIT]
-                lines = _format_compact_batch(truncated)
+                lines = _format_compact_batch(truncated, user_id, owner_cache)
                 omitted_fields = "created_at, rag_status, file_size, summary"
                 footer = f"\n[FIELDS OMITTED TO REDUCE OUTPUT: {omitted_fields}. USE FILTERS TO GET FULL INFO ON SPECIFIC DOCS.]"
                 if total > _TRUNCATED_LIMIT:
@@ -391,7 +455,7 @@ async def _list_documents_impl(
                 return result
 
             # Full mode: summaries included, per-item cap and budget enforced inside helper.
-            lines, tokens_spent = _format_full_batch(visible, runtimedata)
+            lines, tokens_spent = _format_full_batch(visible, runtimedata, user_id, owner_cache)
             runtimedata.spent_summary_tokens += tokens_spent
             _remember_seen_documents(runtimedata, visible)
             result = _with_dedup_header(
@@ -414,9 +478,11 @@ async def _list_global_documents_async(
     name_query: Optional[str] = None,
     summary_query: Optional[str] = None,
     file_id: Optional[str] = None,
+    owner_id: Optional[str] = None,
 ) -> str:
     return await _list_documents_impl(config, runtime, private_only=False,
-                                      name_query=name_query, summary_query=summary_query, file_id=file_id)
+                                      name_query=name_query, summary_query=summary_query,
+                                      file_id=file_id, owner_id=owner_id)
 
 
 async def _list_private_documents_async(
@@ -436,9 +502,10 @@ list_global_documents = StructuredTool.from_function(
     description=(
         "List documents visible org-wide: caller's own files plus all public files in the organization. "
         "Use name_query or summary_query to search; omit both for the full list. "
-        "Use file_id to fetch full info for a single document bypassing all budgets."
+        "Use file_id to fetch full info for a single document bypassing all budgets. "
+        "Use owner_id to filter by a specific uploader."
     ),
-    args_schema=ListDocumentsInput,
+    args_schema=ListGlobalDocumentsInput,
 )
 
 list_private_documents = StructuredTool.from_function(
