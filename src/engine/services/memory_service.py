@@ -16,6 +16,7 @@ from ..models.memory_snapshot import MemorySnapshot
 from ..storage.chat_storage import ChatStorage
 from ..storage.memory_snapshot_storage import MemorySnapshotStorage
 from ..storage.message_storage import MessageStorage
+from ..utils.token_logger import log_llm_tokens, log_token_summary
 
 if TYPE_CHECKING:
     from ..agents.executor import AgentExecutor
@@ -103,6 +104,13 @@ class MemoryService:
             if "role" in m and "content" in m
         ]
 
+        # Qwen's chat template requires the first non-system message to be a user
+        # turn. History may contain leading assistant messages (injected context
+        # blocks saved from previous turns). Strip them for Qwen models.
+        if "qwen" in Config.DEFAULT_MODEL.lower():
+            while safe_history and safe_history[0]["role"] == "assistant":
+                safe_history = safe_history[1:]
+
         # Inject the previous summary as a mock user message so the model treats
         # it as established context rather than a system-level instruction.
         history_with_context = safe_history
@@ -124,6 +132,8 @@ class MemoryService:
 
         llm = self.agent_executor._create_llm(model=Config.DEFAULT_MODEL, temperature=0.3)
         result = await llm.ainvoke(llm_messages)
+        total = log_llm_tokens(result, label="memory_service.generate_summary", logger=logger, messages=llm_messages)
+        log_token_summary("memory_service.generate_summary", total, logger=logger)
         return result.content.strip()
 
     # ------------------------------------------------------------------

@@ -13,6 +13,7 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
 from ..result import AgentResult
+from ...utils.token_logger import log_llm_tokens, log_token_summary
 
 logger = logging.getLogger("rugpt.agents.graphs.chain")
 
@@ -62,6 +63,7 @@ async def run_chain_agent(
 
     accumulated_context = f"User question: {user_question}\n"
     last_output = ""
+    grand_total = 0
 
     for i, step in enumerate(steps):
         instruction = step.get("instruction", "")
@@ -83,9 +85,18 @@ async def run_chain_agent(
             response = await llm.ainvoke(step_messages)
             last_output = response.content if hasattr(response, 'content') else str(response)
             accumulated_context += f"\n[{output_key}]: {last_output}\n"
+            step_tokens = log_llm_tokens(
+                response,
+                label=f"chain.step[{i+1}/{len(steps)}][{output_key}]",
+                logger=logger,
+                running_total=grand_total,
+                messages=step_messages,
+            )
+            grand_total += step_tokens
             logger.info(f"Chain step {i+1}/{len(steps)} ({output_key}) completed")
         except Exception as e:
             logger.error(f"Chain step {i+1} failed: {e}")
+            log_token_summary("chain.agent_call (aborted)", grand_total, logger=logger)
             return AgentResult(
                 content=f"[Error at step {i+1}: {e}]",
                 model=llm.model,
@@ -94,9 +105,11 @@ async def run_chain_agent(
                 error=str(e),
             )
 
+    log_token_summary("chain.agent_call", grand_total, logger=logger)
     return AgentResult(
         content=last_output,
         model=llm.model,
         agent_type="chain",
         finish_reason="stop",
+        tokens_used=grand_total,
     )

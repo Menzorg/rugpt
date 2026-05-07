@@ -16,6 +16,7 @@ from ..config import Config
 from ..models.role import Role
 from ..services.prompt_cache import PromptCache
 from ..utils.token_counter import count_tokens
+from ..utils.token_logger import log_token_summary
 from .middleware import HistoryCompactionMiddleware
 from .result import AgentResult
 from .runtime import RuntimeContext
@@ -76,8 +77,8 @@ class AgentExecutor:
             api_key=self.api_key,
             model=model,
             temperature=temperature,
-            max_tokens=max_tokens,
             timeout=self.timeout,
+            #max_tokens=max_tokens,
         )
 
     async def _build_chat_attachments_block(
@@ -163,7 +164,7 @@ class AgentExecutor:
 
         # RunnableConfig carries initiator's org_id/user_id for tools.
         config = RunnableConfig(
-            max_concurrency=3,
+            max_concurrency=2,
             configurable={
                 "org_id": str(scope_org_id) if scope_org_id else "",
                 "user_id": str(user_id) if user_id else "",
@@ -206,6 +207,12 @@ class AgentExecutor:
 
         # --- Injection phase ---
 
+        # Qwen's chat template requires the first non-system message to be a user
+        # turn. Injected context blocks use "user" role for Qwen models so the
+        # template doesn't raise "No user query found in messages".
+        _is_qwen = "qwen" in model.lower()
+        _inject_role = "user" if _is_qwen else "assistant"
+
         injected_messages: list[dict] = []
 
         if user_id is not None and initiator:
@@ -227,15 +234,15 @@ class AgentExecutor:
                     user_lines.append(attachments_block)
             user_block = "Информация о пользователе:\n" + "\n".join(l for l in user_lines if l)
             user_block += "\nНе раскрывать пользователю его ID."
-            injected_messages.append({"role": "assistant", "content": user_block})
+            injected_messages.append({"role": _inject_role, "content": user_block})
 
         if org_context:
-            injected_messages.append({"role": "assistant", "content": f"Контекст организации:\n{org_context}"})
+            injected_messages.append({"role": _inject_role, "content": f"Контекст организации:\n{org_context}"})
             logger.info("org_context: prepared injected message for org=%s", scope_org_id)
 
         if summary:
             injected_messages.append({
-                "role": "assistant",
+                "role": "user" if _is_qwen else _inject_role,
                 "content": f"Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n{summary}",
             })
             logger.info("memory: prepared summary injected message for chat=%s", chat_id)
@@ -250,28 +257,30 @@ class AgentExecutor:
             system_prompt += f"\n\n## Инструкции в частных случаях:\n{rules_block}"
             logger.info("corrections: injected %d lessons for chat=%s", len(lessons), chat_id)
 
-        # Track tokens spent by the full message list sent to the agent.
-        messages_blob = "\n".join(
-            f"{msg.get('role', '')}: {msg.get('content', '')}"
-            for msg in messages
-        )
-        
         # Guardrails so roles don't mix in same chat is user mentions multiple
         system_prompt += (
             "\n\n##ВАЖНЫЕ ОГРАНИЧЕНИЯ\n"
             "Категорически запрещено представляться не своей ролью и "
             "имитировать вызовы инструментов в ответах пользователю. Обещать работу с несуществующими инструментами.\n"
-            "Обязательно сразу предупреждай пользователя, что выполняешь только свои прямые обязанности и ничьи больше."
         )
-        
-        # Save number of tokens spent on the prompt + injected context, so that tools can check against the critical cap before running expensive retrievals.
-        runtime_context.total_tokens_spent += count_tokens(messages_blob)
+
+        # Count tokens for the full prompt (flat text estimate + 150 per tool).
+        messages_blob = "\n".join(
+            f"{msg.get('role', '')}: {msg.get('content', '')}"
+            for msg in messages
+        )
+        initial_tokens = count_tokens(messages_blob, tool_count=len(tools))
+        logger.info(
+            "executor: initial prompt token count=%d (model=%s, tools=%d)",
+            initial_tokens, model, len(tools),
+        )
+        runtime_context.total_tokens_spent += initial_tokens
 
         agent_middleware = [
             HistoryCompactionMiddleware(
                 llm,
                 trigger_tokens=23000,
-                keep_last=12,
+                keep_last=3,
             )
         ]
         if any(tool.name == "rag_search" for tool in tools):
@@ -315,7 +324,7 @@ class AgentExecutor:
 
         try:
             if role.agent_type == "simple":
-                return await run_simple_agent(
+                result = await run_simple_agent(
                     llm=llm,
                     system_prompt=system_prompt,
                     messages=messages,
@@ -326,7 +335,7 @@ class AgentExecutor:
                 )
 
             elif role.agent_type == "chain":
-                return await run_chain_agent(
+                result = await run_chain_agent(
                     llm=llm,
                     system_prompt=system_prompt,
                     messages=messages,
@@ -336,7 +345,7 @@ class AgentExecutor:
                 )
 
             elif role.agent_type == "multi_agent":
-                return await run_multi_agent(
+                result = await run_multi_agent(
                     llm=llm,
                     system_prompt=system_prompt,
                     messages=messages,
@@ -347,7 +356,7 @@ class AgentExecutor:
 
             else:
                 logger.warning(f"Unknown agent_type '{role.agent_type}', falling back to simple")
-                return await run_simple_agent(
+                result = await run_simple_agent(
                     llm=llm,
                     system_prompt=system_prompt,
                     messages=messages,
@@ -355,6 +364,13 @@ class AgentExecutor:
                     context_schema=runtime_context,
                     middleware=agent_middleware,
                 )
+
+            log_token_summary(
+                f"executor[role={role.code},type={role.agent_type}]",
+                result.tokens_used,
+                logger=logger,
+            )
+            return result
 
         except Exception as e:
             logger.error(f"Agent execution failed: {e}")

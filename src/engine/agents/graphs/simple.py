@@ -14,6 +14,7 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
 from ..result import AgentResult, ToolCall
+from ...utils.token_logger import log_llm_tokens, log_token_summary
 
 logger = logging.getLogger("rugpt.agents.graphs.simple")
 
@@ -79,11 +80,15 @@ async def _direct_llm_call(
         response = await llm.ainvoke(messages)
         content = response.content if hasattr(response, 'content') else str(response)
 
+        total = log_llm_tokens(response, label="simple.direct_llm_call", logger=logger, messages=messages)
+        log_token_summary("simple.direct_llm_call", total, logger=logger)
+
         return AgentResult(
             content=content,
             model=llm.model,
             agent_type="simple",
             finish_reason="stop",
+            tokens_used=total,
         )
     except Exception as e:
         logger.error(f"Direct LLM call failed: {e}")
@@ -147,6 +152,7 @@ async def _react_agent_call(
         output_messages = result.get("messages", [])
         tool_calls = []
         final_content = ""
+        grand_total = 0
 
         for msg in output_messages:
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
@@ -159,6 +165,14 @@ async def _react_agent_call(
             if hasattr(msg, 'content') and msg.type == "ai" and not getattr(msg, 'tool_calls', None):
                 final_content = msg.content
 
+            # Accumulate token usage from every AI message in the trace
+            if hasattr(msg, 'usage_metadata') and msg.type == "ai":
+                step_label = f"simple.react_step[tool={'yes' if getattr(msg, 'tool_calls', None) else 'no'}]"
+                spent = log_llm_tokens(msg, label=step_label, logger=logger, running_total=grand_total)
+                grand_total += spent
+
+        log_token_summary("simple.react_agent_call", grand_total, logger=logger)
+
         # If we didn't find a clean final message, use the last message
         if not final_content and output_messages:
             last = output_messages[-1]
@@ -170,6 +184,7 @@ async def _react_agent_call(
             agent_type="simple+tools",
             tool_calls=tool_calls,
             finish_reason="stop",
+            tokens_used=grand_total,
         )
 
     except Exception as e:

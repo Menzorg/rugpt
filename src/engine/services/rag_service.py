@@ -83,7 +83,7 @@ class RAGService:
             base_url=llm_base_url,
             api_key=llm_api_key,
             temperature=0,
-            max_tokens=2048
+            max_tokens=4096
         )
         self._splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
@@ -188,8 +188,12 @@ class RAGService:
             logger.warning("cut_text_by_token_count failed, falling back to char limit")
             source_text = text[: self._summary_input_max_tokens * 3]
         template = _TABLE_SUMMARY_PROMPT if is_table else _DOC_SUMMARY_PROMPT
-        prompt = template.replace("{document}", source_text)
-        result = self._summary_llm.invoke(prompt)
+        system_prompt, _, _ = template.partition("{document}")
+        messages = [
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": source_text},
+        ]
+        result = self._summary_llm.invoke(messages)
         summary = str(result.content).strip()
         if not summary:
             raise ValueError("LLM returned empty summary.")

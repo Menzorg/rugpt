@@ -11,7 +11,70 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_openai import ChatOpenAI
 
 from ..utils.token_counter import count_tokens, count_tokens_messages
+from ..utils.token_logger import log_llm_tokens, log_token_summary
 from .runtime import RuntimeContext
+
+
+def _count_tokens_messages_with_api_fallback(messages: Sequence[Any]) -> tuple[int, str]:
+    """
+    Count tokens for a list of messages, preferring API-reported usage_metadata
+    on AIMessage objects and falling back to the local tokenizer for everything else.
+
+    Returns (token_count, source) where source is "api" if every AI message had
+    usage_metadata, "mixed" if some did and some didn't, or "estimator" if none did.
+    """
+    api_total = 0
+    est_total = 0
+    ai_msgs_with_api = 0
+    ai_msgs_total = 0
+
+    non_ai_text_parts = []
+
+    for m in messages:
+        if isinstance(m, AIMessage):
+            ai_msgs_total += 1
+            meta = getattr(m, "usage_metadata", None) or {}
+            if meta:
+                ai_msgs_with_api += 1
+                api_total += meta.get("total_tokens", 0) or (
+                    meta.get("input_tokens", 0) + meta.get("output_tokens", 0)
+                )
+            else:
+                # No API data — estimate this message's content
+                content = m.content
+                if isinstance(content, list):
+                    text = "\n".join(
+                        item["text"] if isinstance(item, dict) and "text" in item else str(item)
+                        for item in content
+                    )
+                else:
+                    text = str(content)
+                est_total += count_tokens(text)
+        else:
+            # HumanMessage, ToolMessage, SystemMessage — always estimate
+            content = getattr(m, "content", "") or ""
+            if isinstance(content, list):
+                text = "\n".join(
+                    item["text"] if isinstance(item, dict) and "text" in item else str(item)
+                    for item in content
+                )
+            else:
+                text = str(content)
+            non_ai_text_parts.append(text)
+
+    if non_ai_text_parts:
+        est_total += count_tokens("\n".join(non_ai_text_parts))
+
+    total = api_total + est_total
+
+    if ai_msgs_total == 0 or ai_msgs_with_api == 0:
+        source = "estimator"
+    elif ai_msgs_with_api == ai_msgs_total:
+        source = "api+estimator" if non_ai_text_parts else "api"
+    else:
+        source = "mixed"
+
+    return total, source
 
 _COMPACTION_PROMPT = (Path(__file__).parent.parent / "prompts" / "agent_compaction_summary.md").read_text(encoding="utf-8")
 
@@ -97,7 +160,12 @@ class TokenBudgetToolBlockMiddleware(AgentMiddleware):
 
     def _ratio_used(self, messages: Sequence[Any]) -> float:
         tool_count = self.runtime_context.available_tools_count if self.runtime_context is not None else 0
-        tokens = count_tokens("\n".join(_message_text(m) for m in messages), tool_count)
+        tokens, source = _count_tokens_messages_with_api_fallback(messages)
+        tokens += tool_count * 150  # tool schema overhead
+        logger.debug(
+            "tool-block middleware: token count=%d source=%s tool_overhead=%d",
+            tokens, source, tool_count * 150,
+        )
         return tokens / self.max_context_tokens
 
     def _block_request(self, request):
@@ -177,6 +245,12 @@ class HistoryCompactionMiddleware(AgentMiddleware):
                 m.id = str(uuid.uuid4())
 
     def _format_for_summary(self, messages: list[BaseMessage]) -> str:
+        # Qwen's chat template forbids leading assistant turns before the first
+        # user message. Strip injected assistant context blocks from the front.
+        if "qwen" in getattr(self._llm, "model", "").lower():
+            while messages and isinstance(messages[0], AIMessage):
+                messages = messages[1:]
+
         parts = []
         for m in messages:
             role = getattr(m, "type", "message")
@@ -187,13 +261,20 @@ class HistoryCompactionMiddleware(AgentMiddleware):
     async def _acreate_summary(self, messages: list[BaseMessage]) -> str:
         prompt = self._format_for_summary(messages)
         result = await self._llm.ainvoke(prompt)
+        total = log_llm_tokens(
+            result,
+            label="middleware.history_compaction_summary",
+            logger=logger,
+            messages=[{"content": prompt}],
+        )
+        log_token_summary("middleware.history_compaction_summary", total, logger=logger)
         return str(result.content).strip()
 
     async def abefore_model(self, state, runtime) -> dict[str, Any] | None:
         messages: list = state["messages"]
         loop_messages = [m for m in messages if not isinstance(m, SystemMessage)]
 
-        token_count = count_tokens_messages(loop_messages)
+        token_count, token_source = _count_tokens_messages_with_api_fallback(loop_messages)
         if token_count < self._trigger_tokens:
             return None
 
@@ -207,26 +288,35 @@ class HistoryCompactionMiddleware(AgentMiddleware):
         self._ensure_ids(messages)
 
         logger.info(
-            "compaction middleware: %d tokens >= %d, summarising %d messages, keeping %d",
-            token_count, self._trigger_tokens, len(to_summarise), keep,
+            "compaction middleware: %d tokens [source=%s] >= %d, summarising %d messages, keeping %d",
+            token_count, token_source, self._trigger_tokens, len(to_summarise), keep,
         )
         try:
             summary_text = await self._acreate_summary(to_summarise)
-            summary_msg = AIMessage(
-                content=f"[CONVERSATION SUMMARY]\n{summary_text}",
-                id=str(uuid.uuid4()),
-            )
+            
+            if "qwen" in getattr(self._llm, "model", "").lower():
+                summary_msg = HumanMessage(
+                    content=f"[CONVERSATION SUMMARY]\n{summary_text}",
+                    id=str(uuid.uuid4()),
+                )
+            else:
+                summary_msg = AIMessage(
+                    content=f"[CONVERSATION SUMMARY]\n{summary_text}",
+                    id=str(uuid.uuid4()),
+                )
+                
             replacement_messages = [summary_msg, *to_keep]
-            new_token_count = count_tokens_messages(replacement_messages)
+            new_token_count, new_token_source = _count_tokens_messages_with_api_fallback(replacement_messages)
             if hasattr(runtime, "context") and isinstance(runtime.context, RuntimeContext):
                 runtime.context.total_tokens_spent = new_token_count
                 logger.info(
-                    "compaction middleware: total_tokens_spent recalculated to %d after compaction",
-                    new_token_count,
+                    "compaction middleware: total_tokens_spent recalculated to %d [source=%s] after compaction",
+                    new_token_count, new_token_source,
                 )
             logger.info(
-                "compaction middleware: compacted %d → %d messages (%d tokens → %d, %d chars summary)",
-                len(loop_messages), len(replacement_messages), token_count, new_token_count, len(summary_text),
+                "compaction middleware: compacted %d → %d messages (%d tokens [source=%s] → %d [source=%s], %d chars summary)",
+                len(loop_messages), len(replacement_messages),
+                token_count, token_source, new_token_count, new_token_source, len(summary_text),
             )
             return {
                 "messages": [

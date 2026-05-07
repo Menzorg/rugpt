@@ -17,6 +17,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 
 from ..result import AgentResult
+from ...utils.token_logger import log_llm_tokens, log_token_summary
 
 logger = logging.getLogger("rugpt.agents.graphs.multi_agent")
 
@@ -78,12 +79,15 @@ async def run_multi_agent(
         # Build the StateGraph
         builder = StateGraph(MultiAgentState)
 
+        # Shared list to accumulate per-node token counts across the graph run.
+        node_token_log: list[int] = []
+
         # Add nodes
         for node in nodes:
             node_id = node["id"]
             instruction = node.get("instruction", "")
             # Create a closure for each node
-            builder.add_node(node_id, _make_node_fn(llm, system_prompt, instruction))
+            builder.add_node(node_id, _make_node_fn(llm, system_prompt, instruction, node_token_log))
 
         # Add edges
         for edge in edges:
@@ -116,6 +120,9 @@ async def run_multi_agent(
         # Run the graph (config carries org_id/user_id for tools)
         result = await graph.ainvoke(initial_state, config=config)
 
+        grand_total = sum(node_token_log)
+        log_token_summary("multi_agent.graph_call", grand_total, logger=logger)
+
         final_output = result.get("current_output", "")
         if not final_output:
             # Try to get from last message
@@ -129,6 +136,7 @@ async def run_multi_agent(
             model=llm.model,
             agent_type="multi_agent",
             finish_reason="stop",
+            tokens_used=grand_total,
         )
 
     except Exception as e:
@@ -142,7 +150,7 @@ async def run_multi_agent(
         )
 
 
-def _make_node_fn(llm: ChatOpenAI, system_prompt: str, instruction: str):
+def _make_node_fn(llm: ChatOpenAI, system_prompt: str, instruction: str, token_log: list[int]):
     """Create an async node function for the StateGraph"""
     async def node_fn(state: MultiAgentState) -> dict:
         context = state.get("current_output", "")
@@ -161,6 +169,16 @@ def _make_node_fn(llm: ChatOpenAI, system_prompt: str, instruction: str):
 
         response = await llm.ainvoke(step_messages)
         output = response.content if hasattr(response, 'content') else str(response)
+
+        running = sum(token_log)
+        spent = log_llm_tokens(
+            response,
+            label=f"multi_agent.node[{instruction[:30]}]",
+            logger=logger,
+            running_total=running,
+            messages=step_messages,
+        )
+        token_log.append(spent)
 
         return {
             "messages": [],  # don't duplicate

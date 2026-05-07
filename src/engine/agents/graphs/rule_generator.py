@@ -14,6 +14,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 
 from ...config import Config
+from ...utils.token_logger import log_llm_tokens, log_token_summary
 
 logger = logging.getLogger("rugpt.agents.graphs.rule_generator")
 
@@ -80,6 +81,8 @@ async def generate_rule_text(
     try:
         response = await llm.ainvoke(messages)
         rule_text = response.content if hasattr(response, 'content') else str(response)
+        total = log_llm_tokens(response, label="rule_generator.generate_rule_text", logger=logger, messages=messages)
+        log_token_summary("rule_generator.generate_rule_text", total, logger=logger)
         logger.info(f"Generated rule_text: {rule_text[:100]}...")
         return rule_text.strip()
 

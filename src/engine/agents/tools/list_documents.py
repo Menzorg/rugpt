@@ -53,11 +53,11 @@ from ...utils.token_counter import count_tokens, cut_text_by_token_count
 logger = logging.getLogger("rugpt.agents.tools.document")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
-_PAGE_SIZE = 50
-_MAX_RESULTS = 250
+_PAGE_SIZE = 30
+_MAX_RESULTS = 180
 
 # Total token budget for document summaries across the whole agent run.
-_SUMMARY_TOKENS_BUDGET = 4000
+_SUMMARY_TOKENS_BUDGET = 2000
 
 _user_file_storage: Optional[UserFileStorage] = None
 _user_storage: Optional[UserStorage] = None
@@ -348,7 +348,7 @@ async def _list_documents_impl(
                     org_id=org_id_str,
                     user_id=user_id_str,
                     query=name_query.strip(),
-                    top_k=_MAX_RESULTS,
+                    top_k=_MAX_RESULTS
                 )
                 for d in docs:
                     matched_ids.add(d.file_id)
@@ -359,7 +359,7 @@ async def _list_documents_impl(
                     org_id=org_id_str,
                     user_id=user_id_str,
                     query=summary_query.strip(),
-                    top_k=_MAX_RESULTS,
+                    top_k=_MAX_RESULTS
                 )
                 for d in docs:
                     matched_ids.add(d.file_id)
