@@ -17,64 +17,60 @@ from .runtime import RuntimeContext
 
 def _count_tokens_messages_with_api_fallback(messages: Sequence[Any]) -> tuple[int, str]:
     """
-    Count tokens for a list of messages, preferring API-reported usage_metadata
-    on AIMessage objects and falling back to the local tokenizer for everything else.
+    Estimate how many tokens the current message list occupies in the context window.
 
-    Returns (token_count, source) where source is "api" if every AI message had
-    usage_metadata, "mixed" if some did and some didn't, or "estimator" if none did.
+    Strategy: find the last AIMessage that carries usage_metadata. Its input_tokens
+    already represents the entire prompt fed to the model at that turn, so we use
+    input_tokens + output_tokens as the baseline and add text-estimated tokens only
+    for messages that appear after it (they have not been seen by the model yet).
+
+    Summing total_tokens across all turns was wrong: each turn's input_tokens already
+    includes everything before it, causing O(n²) inflation across tool-call rounds.
+
+    Returns (token_count, source) where source is "api+tail" when a baseline was
+    found, or "estimator" when no AIMessage had usage_metadata.
     """
-    api_total = 0
-    est_total = 0
-    ai_msgs_with_api = 0
-    ai_msgs_total = 0
+    messages = list(messages)
 
-    non_ai_text_parts = []
+    # Find the last AIMessage with usage_metadata to use as baseline.
+    last_api_idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if isinstance(m, AIMessage) and (getattr(m, "usage_metadata", None) or {}):
+            last_api_idx = i
+            break
 
-    for m in messages:
-        if isinstance(m, AIMessage):
-            ai_msgs_total += 1
-            meta = getattr(m, "usage_metadata", None) or {}
-            if meta:
-                ai_msgs_with_api += 1
-                api_total += meta.get("total_tokens", 0) or (
-                    meta.get("input_tokens", 0) + meta.get("output_tokens", 0)
-                )
-            else:
-                # No API data — estimate this message's content
-                content = m.content
-                if isinstance(content, list):
-                    text = "\n".join(
-                        item["text"] if isinstance(item, dict) and "text" in item else str(item)
-                        for item in content
-                    )
-                else:
-                    text = str(content)
-                est_total += count_tokens(text)
-        else:
-            # HumanMessage, ToolMessage, SystemMessage — always estimate
+    if last_api_idx == -1:
+        # No API data at all — fall back to full text estimation.
+        parts = []
+        for m in messages:
             content = getattr(m, "content", "") or ""
             if isinstance(content, list):
-                text = "\n".join(
+                parts.append("\n".join(
                     item["text"] if isinstance(item, dict) and "text" in item else str(item)
                     for item in content
-                )
+                ))
             else:
-                text = str(content)
-            non_ai_text_parts.append(text)
+                parts.append(str(content))
+        return count_tokens("\n".join(parts)), "estimator"
 
-    if non_ai_text_parts:
-        est_total += count_tokens("\n".join(non_ai_text_parts))
+    meta = getattr(messages[last_api_idx], "usage_metadata", {}) or {}
+    base_tokens = meta.get("input_tokens", 0) + meta.get("output_tokens", 0)
 
-    total = api_total + est_total
+    # Estimate tokens for messages added after the last API-reported turn.
+    tail_parts = []
+    for m in messages[last_api_idx + 1:]:
+        content = getattr(m, "content", "") or ""
+        if isinstance(content, list):
+            tail_parts.append("\n".join(
+                item["text"] if isinstance(item, dict) and "text" in item else str(item)
+                for item in content
+            ))
+        else:
+            tail_parts.append(str(content))
+    tail_tokens = count_tokens("\n".join(tail_parts)) if tail_parts else 0
 
-    if ai_msgs_total == 0 or ai_msgs_with_api == 0:
-        source = "estimator"
-    elif ai_msgs_with_api == ai_msgs_total:
-        source = "api+estimator" if non_ai_text_parts else "api"
-    else:
-        source = "mixed"
-
-    return total, source
+    return base_tokens + tail_tokens, "api+tail"
 
 _COMPACTION_PROMPT = (Path(__file__).parent.parent / "prompts" / "agent_compaction_summary.md").read_text(encoding="utf-8")
 
