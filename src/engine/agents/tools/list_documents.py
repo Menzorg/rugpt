@@ -505,6 +505,8 @@ async def _list_documents_impl(
 
     except Exception as e:
         logger.error(f"{tool_name} failed: {e}", exc_info=True)
+        if isinstance(e, ValueError) and "badly formed hexadecimal UUID string" in str(e):
+            return f"Invalid UUID in input: {e}"
         return _TOOL_ERROR_RESULT
 
 

@@ -159,6 +159,8 @@ def create_task_tools(
             return f"Task '{title}' created (id={task.id})"
         except Exception as e:
             logger.error(f"task_create failed: {e}", exc_info=True)
+            if isinstance(e, ValueError) and "badly formed hexadecimal UUID string" in str(e):
+                return f"Invalid UUID in input: {e}"
             return _TOOL_ERROR_RESULT
 
     async def _task_query_async(
@@ -329,6 +331,8 @@ def create_task_tools(
             return header + "\n" + "\n".join(lines) + footer
         except Exception as e:
             logger.error(f"task_query failed: {e}", exc_info=True)
+            if isinstance(e, ValueError) and "badly formed hexadecimal UUID string" in str(e):
+                return f"Invalid UUID in input: {e}"
             return _TOOL_ERROR_RESULT
 
     async def _task_update_async(
@@ -521,8 +525,8 @@ def create_task_tools(
             )
         except Exception as e:
             logger.error(f"task_update failed: {e}", exc_info=True)
-            if isinstance(e, ValueError) and "invalid literal for UUID" in str(e):
-                return "Invalid UUID format in input. Please check task_id and user_id fields"
+            if isinstance(e, ValueError) and "badly formed hexadecimal UUID string" in str(e):
+                return f"Invalid UUID in input: {e}"
             return _TOOL_ERROR_RESULT
 
     async def _task_deadline_proposal_async(
@@ -562,6 +566,8 @@ def create_task_tools(
                 return "Deadline proposal rejected."
         except Exception as e:
             logger.error("task_deadline_proposal failed: %s", e, exc_info=True)
+            if isinstance(e, ValueError) and "badly formed hexadecimal UUID string" in str(e):
+                return f"Invalid UUID in input: {e}"
             return _TOOL_ERROR_RESULT
 
     create_tool = StructuredTool.from_function(

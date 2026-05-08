@@ -31,8 +31,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("rugpt.agents.executor")
 
-_RAG_SEARCH_TOOL_CALL_LIMIT = 15
-_LIST_DOCUMENTS_TOOL_CALL_LIMIT = 5
+_RAG_SEARCH_TOOL_CALL_LIMIT = 30
+_LIST_DOCUMENTS_TOOL_CALL_LIMIT = 10
 _TASK_TOOLS_TOTAL_CALL_LIMIT = 50
 _TASK_TOOL_NAMES = {"task_create", "task_query", "task_update", "task_deadline_proposal"}
 
@@ -191,7 +191,15 @@ class AgentExecutor:
 
         lessons: list[str] = []
         if self.correction_rule_service is not None and messages:
-            last_content = messages[-1].get("content", "")
+            raw_content = messages[-1].get("content", "")
+            # content can be a list of blocks when message contains both text and image
+            if isinstance(raw_content, list):
+                last_content = " ".join(
+                    part.get("text", "") if isinstance(part, dict) else str(part)
+                    for part in raw_content
+                )
+            else:
+                last_content = raw_content or ""
             try:
                 rules = await self.correction_rule_service.search_corrections(
                     user_prompt=last_content,
@@ -276,9 +284,16 @@ class AgentExecutor:
         )
         runtime_context.total_tokens_spent += initial_tokens
 
+        llm_summarizer = llm.bind(
+            extra_body={
+                "chat_template_kwargs": {
+                    "enable_thinking": True,
+                }
+            })
+
         agent_middleware = [
             HistoryCompactionMiddleware(
-                llm,
+                llm_summarizer,
                 trigger_tokens=23000,
                 keep_last=3,
             )

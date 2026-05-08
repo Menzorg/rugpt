@@ -1,47 +1,51 @@
-You are compacting an AI agent conversation history to free context space.
+Ты выполняешь компактизацию истории переписки AI-агента, чтобы освободить место в контексте.
 
-Your job is to preserve only information needed for the agent to continue correctly, without repeating completed work or losing critical state.
+Твоя задача — сохранить только ту информацию, которая нужна агенту для правильного продолжения работы, не повторяя завершённые действия и не теряя критически важное состояние.
 
-Write the summary in the same language as the user's messages.
+Пиши резюме на том же языке, что и сообщения пользователя.
 
-Rules:
-- Be dense and concise.
-- Do not add facts, assumptions, IDs, tool results, or plans that are not present in the messages.
-- Preserve exact IDs, filenames, document titles, URLs, task IDs, row numbers, chunk indices, dates, numbers, user constraints, and tool outputs that may be needed later.
-- Distinguish confirmed facts from assumptions, plans, and unresolved questions.
-- Preserve failed attempts, errors, rejected options, and already-searched queries if they affect what should happen next.
-- If something is unknown or not yet decided, say so explicitly.
-- Do not summarize away user preferences, output format requirements, safety constraints, or tool-use constraints.
-- Do not include filler, apologies, or commentary about the summarization process.
+Правила:
+- Не добавляй факты, допущения, ID, результаты инструментов или планы, которых нет в сообщениях.
+- Сохраняй точные ID, имена файлов, названия документов, URL, ID задач, номера строк, индексы чанков, даты, числа, ограничения пользователя и выводы инструментов, которые могут понадобиться позже.
+- Различай подтверждённые факты, допущения, планы и нерешённые вопросы.
+- Сохраняй неудачные попытки, ошибки, отклонённые варианты и уже выполненные поисковые запросы, если они влияют на дальнейшие действия.
+- Если что-то неизвестно или ещё не решено, скажи об этом явно.
+- Не опускай предпочтения пользователя, требования к формату вывода, ограничения безопасности и ограничения на использование инструментов.
+- Не добавляй общие фразы, извинения или комментарии о самом процессе суммаризации.
+- Просмотри все выводы инструментов и извлеки данные, необходимые для текущей задачи. Это самое важное. Суммаризируй каждый вывод инструмента.
+- Если в переписке уже есть такая же сводка, внимательно собери из неё информацию.
 
-Output format:
+Формат вывода:
 
-## User intent
-Precise current goal of the user.
+## Намерение пользователя
+Точная текущая цель пользователя.
 
-## Hard constraints
-Non-negotiable requirements, preferences, limits, formatting rules, language/tone requirements, and things the agent must not do.
+## Жёсткие ограничения
+Обязательные требования, предпочтения, лимиты, правила форматирования, требования к языку/тону и то, чего агент не должен делать.
 
-## Current state
-What has already happened, what decisions were made, what facts are confirmed.
+## Текущее состояние
+Что уже произошло, какие решения приняты, какие факты подтверждены.
 
-## Resources and identifiers
-Documents, files, URLs, task IDs, message IDs, chunk IDs, row numbers, search results, tool outputs, and other references needed to continue.
+## Ресурсы и идентификаторы
+Документы, файлы, URL, ID задач, ID сообщений, ID чанков, номера строк, результаты поиска, выводы инструментов и другие ссылки, необходимые для продолжения.
 
-## Plan
-Current agreed or implied plan. Preserve exact steps if a plan exists. If no plan exists, write: "No explicit plan."
+## Сохранённые данные
+Самая важная часть! Сохрани здесь все выводы инструментов. Из чанков RAG-поиска извлеки наиболее ценные (минимум 1 чанк из каждого вывода инструмента должен быть сохранён как есть, из остальных — извлечены ключевые факты).
 
-## Completed work
-Actions already done by the agent or tools, including searches, files read, tasks created/updated, drafts made, etc.
+## План
+Текущий согласованный или подразумеваемый план. Сохрани точные шаги, если план существует. Если плана нет, напиши: "Явного плана нет."
 
-## Remaining jobs
-What the agent still needs to do next.
+## Выполненная работа
+Действия, уже совершённые агентом или инструментами: поиски, прочитанные файлы, созданные/обновлённые задачи, сделанные черновики и т.д.
 
-## Open questions / blockers
-User input needed, missing data, ambiguity, failed tools, unresolved errors.
+## Оставшиеся задачи
+Что агенту ещё нужно сделать дальше.
 
-## Last interaction state
-What the agent should do on the next turn: answer, call tools, wait for user, revise previous output, continue analysis, etc.
+## Открытые вопросы / блокеры
+Необходим ввод пользователя, недостающие данные, неоднозначность, сбои инструментов, неразрешённые ошибки.
 
-Messages to summarize:
+## Состояние последнего взаимодействия
+Что агент должен сделать на следующем ходу: ответить, вызвать инструменты, ждать пользователя, пересмотреть предыдущий вывод, продолжить анализ и т.д.
+
+Сообщения для суммаризации:
 {messages}
