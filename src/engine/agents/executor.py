@@ -31,8 +31,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("rugpt.agents.executor")
 
-_RAG_SEARCH_TOOL_CALL_LIMIT = 30
-_LIST_DOCUMENTS_TOOL_CALL_LIMIT = 10
+_RAG_SEARCH_TOOL_CALL_LIMIT = 15
+_LIST_DOCUMENTS_TOOL_CALL_LIMIT = 8
 _TASK_TOOLS_TOTAL_CALL_LIMIT = 50
 _TASK_TOOL_NAMES = {"task_create", "task_query", "task_update", "task_deadline_proposal"}
 
@@ -78,6 +78,7 @@ class AgentExecutor:
             model=model,
             temperature=temperature,
             timeout=self.timeout,
+            model_kwargs={"parallel_tool_calls": True}
             #max_tokens=max_tokens,
         )
 

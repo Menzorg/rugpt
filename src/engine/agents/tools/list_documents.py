@@ -249,6 +249,16 @@ def _format_compact_batch(
     return lines
 
 
+def _format_single_doc(f: UserFile) -> str:
+    """Full detail for a single document — full summary, size, no budget cap."""
+    summary_part = f'summary: "{f.summary}"' if f.rag_status == "indexed" and f.summary else "summary: —"
+    return (
+        f"- {f.original_filename} (id={f.id}, created_at={_format_created_date(f)}, "
+        f"rag={f.rag_status}, is_table={f.is_table}, "
+        f"size={f.file_size / 1_000_000:.2f}MB, {summary_part})"
+    )
+
+
 def _apply_visibility(
     files: list[UserFile],
     user_id: UUID,
@@ -315,12 +325,7 @@ async def _list_documents_impl(
                 and not (f.is_public or is_admin)
             ):
                 return f"Document {file_id} not found or not visible to you."
-            summary_part = f'summary: "{f.summary}"' if f.rag_status == "indexed" and f.summary else "summary: —"
-            return (
-                f"- {f.original_filename} (id={f.id}, created_at={_format_created_date(f)}, "
-                f"rag={f.rag_status}, is_table={f.is_table}, "
-                f"size={f.file_size / 1_000_000:.2f}MB, {summary_part})"
-            )
+            return _format_single_doc(f)
 
         has_name_query = bool(name_query and name_query.strip())
         has_summary_query = bool(summary_query and summary_query.strip())
@@ -415,19 +420,23 @@ async def _list_documents_impl(
             async with runtime.context.lock:
                 # Re-enter the lock for summary-budget spending and seen-id mutations.
                 runtimedata = runtime.context.list_documents_runtime_data
-                lines, tokens_spent = _format_full_batch(page_results, runtimedata, user_id, owner_cache)
-                runtimedata.spent_summary_tokens += tokens_spent
                 _remember_seen_documents(runtimedata, page_results)
 
-                # Build the final page after mutations so token accounting matches returned text.
-                span = f"{start + 1}–{end} of {total}"
-                header = f"Documents {span} (page {page}/{total_pages}):"
-                result = _with_dedup_header(
-                    deduplicated_across_runs,
-                    f"{header}\n" + "\n".join(lines),
-                )
+                if len(page_results) == 1:
+                    # Single result — return full summary without budget cap so the model
+                    # gets complete context and doesn't need a follow-up file_id lookup.
+                    result = _with_dedup_header(deduplicated_across_runs, _format_single_doc(page_results[0]))
+                else:
+                    lines, tokens_spent = _format_full_batch(page_results, runtimedata, user_id, owner_cache)
+                    runtimedata.spent_summary_tokens += tokens_spent
+                    span = f"{start + 1}–{end} of {total}"
+                    header = f"Documents {span} (page {page}/{total_pages}):"
+                    result = _with_dedup_header(
+                        deduplicated_across_runs,
+                        f"{header}\n" + "\n".join(lines),
+                    )
+
                 rag_tokens = count_tokens(result)
-                # Track total retrieval text injected into the agent context.
                 runtime.context.total_tokens_spent += rag_tokens
                 logger.info("%s search page=%d: tokens=%d, total_tokens_spent=%d", tool_name, page, rag_tokens, runtime.context.total_tokens_spent)
                 return result
@@ -476,29 +485,30 @@ async def _list_documents_impl(
         owner_cache = await _resolve_owner_names(page_files, user_id)
 
         async with runtime.context.lock:
-            # Formatting decides whether this page can afford summaries.
             runtimedata = runtime.context.list_documents_runtime_data
-            budget_exhausted = runtimedata.spent_summary_tokens >= _SUMMARY_TOKENS_BUDGET
-
-            if budget_exhausted:
-                # Once the summary budget is gone, keep listing ids/names without more summary text.
-                lines = _format_compact_batch(page_files, user_id, owner_cache)
-                footer = "\n[SUMMARY BUDGET EXHAUSTED FROM PREVIOUS CALLS. USE FILTERS TO NARROW RESULTS AND SEE SUMMARIES.]"
-            else:
-                lines, tokens_spent = _format_full_batch(page_files, runtimedata, user_id, owner_cache)
-                runtimedata.spent_summary_tokens += tokens_spent
-                footer = ""
-
-            # Mark only documents that were actually returned to the model.
             _remember_seen_documents(runtimedata, page_files)
-            span = f"{start + 1}–{end} of {total}"
-            header = f"Documents {span} (page {page}/{total_pages}):"
-            result = _with_dedup_header(
-                deduplicated_across_runs,
-                f"{header}\n" + "\n".join(lines) + footer,
-            )
+
+            if len(page_files) == 1:
+                # Single result — return full summary without budget cap so the model
+                # gets complete context and doesn't need a follow-up file_id lookup.
+                result = _with_dedup_header(deduplicated_across_runs, _format_single_doc(page_files[0]))
+            else:
+                budget_exhausted = runtimedata.spent_summary_tokens >= _SUMMARY_TOKENS_BUDGET
+                if budget_exhausted:
+                    lines = _format_compact_batch(page_files, user_id, owner_cache)
+                    footer = "\n[SUMMARY BUDGET EXHAUSTED FROM PREVIOUS CALLS. USE FILTERS TO NARROW RESULTS AND SEE SUMMARIES.]"
+                else:
+                    lines, tokens_spent = _format_full_batch(page_files, runtimedata, user_id, owner_cache)
+                    runtimedata.spent_summary_tokens += tokens_spent
+                    footer = ""
+                span = f"{start + 1}–{end} of {total}"
+                header = f"Documents {span} (page {page}/{total_pages}):"
+                result = _with_dedup_header(
+                    deduplicated_across_runs,
+                    f"{header}\n" + "\n".join(lines) + footer,
+                )
+
             rag_tokens = count_tokens(result)
-            # Total output budget includes metadata and headers, not just summaries.
             runtime.context.total_tokens_spent += rag_tokens
             logger.info("%s list page=%d: tokens=%d, total_tokens_spent=%d", tool_name, page, rag_tokens, runtime.context.total_tokens_spent)
             return result

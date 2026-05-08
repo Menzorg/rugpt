@@ -9,6 +9,7 @@ import logging
 from typing import Any, List, Optional
 
 from langchain.agents import create_agent
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
@@ -17,6 +18,38 @@ from ..result import AgentResult, ToolCall
 from ...utils.token_logger import log_llm_tokens, log_token_summary
 
 logger = logging.getLogger("rugpt.agents.graphs.simple")
+
+
+class ReasoningLoggerCallback(BaseCallbackHandler):
+    def on_llm_end(self, response, **_kwargs):
+        try:
+            for gen_list in response.generations:
+                for gen in gen_list:
+                    info = gen.generation_info or {}
+                    msg = getattr(gen, "message", None)
+                    ak = getattr(msg, "additional_kwargs", {}) if msg else {}
+                    rm = getattr(msg, "response_metadata", {}) if msg else {}
+
+                    # Reasoning may come from generation_info, additional_kwargs,
+                    # or response_metadata depending on provider/vLLM parser.
+                    reasoning = info.get("reasoning") or ak.get("reasoning") or rm.get("reasoning")
+                    if reasoning:
+                        logger.info("reasoning: %s", reasoning.strip())
+                    else:
+                        logger.info("reasoning: none")
+
+                    for tc in getattr(msg, "tool_calls", None) or []:
+                        logger.info(
+                            "tool_call: name=%s args=%s id=%s",
+                            tc.get("name"), tc.get("args"), tc.get("id"),
+                        )
+
+                    logger.debug(
+                        "generation_info: %r | additional_kwargs: %r",
+                        info, ak,
+                    )
+        except Exception as e:
+            logger.warning("ReasoningLoggerCallback error: %s", e)
 
 
 async def run_simple_agent(
@@ -49,6 +82,9 @@ async def run_simple_agent(
             lc_messages.append({"role": "assistant", "content": content})
         # system messages already handled above
 
+    _reasoning_cb = ReasoningLoggerCallback()
+    config.setdefault("callbacks", []).append(_reasoning_cb)
+    
     if not tools:
         # Direct LLM call — no tools, no agent overhead
         return await _direct_llm_call(llm, lc_messages)
@@ -56,9 +92,10 @@ async def run_simple_agent(
         llm_think = llm.bind(
             extra_body={
                 "chat_template_kwargs": {
-                    "enable_thinking": True,
+                    "enable_thinking": True
                 }
             })
+        
         # ReAct agent with tools
         return await _react_agent_call(
             llm_think,
