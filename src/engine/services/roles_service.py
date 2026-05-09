@@ -5,7 +5,8 @@ Business logic for AI role management.
 Roles are predefined (created via migrations/seeds), not via API.
 Admin can only view roles and assign them to users.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
@@ -14,8 +15,7 @@ from ..storage.role_storage import RoleStorage
 from ..storage.user_storage import UserStorage
 from .prompt_cache import PromptCache
 
-logger = logging.getLogger("rugpt.services.roles")
-
+logger = get_logger("services")
 
 class RolesService:
     """Service for AI role management (read-only + prompt cache)"""

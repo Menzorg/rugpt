@@ -3,7 +3,8 @@ Agent Run Storage
 
 PostgreSQL CRUD for agent_runs table (item 10 / async agent execution idempotency).
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.agent_run import AgentRun
 
-logger = logging.getLogger("rugpt.storage.agent_run")
-
+logger = get_logger("storage")
 
 class AgentRunStorage(BaseStorage):
 

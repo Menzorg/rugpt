@@ -3,7 +3,8 @@ Users Routes
 
 Endpoints for user management.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
@@ -14,9 +15,8 @@ from ..services.engine_service import get_engine_service
 from ..services.users_service import UsersService
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.users")
+logger = get_logger("routes")
 router = APIRouter(prefix="/users", tags=["users"])
-
 
 # ============================================
 # Request/Response Models
@@ -32,7 +32,6 @@ class CreateUserRequest(BaseModel):
     role_id: Optional[str] = None
     department_id: Optional[str] = None
 
-
 class UpdateUserRequest(BaseModel):
     """Update user request"""
     name: Optional[str] = None
@@ -43,17 +42,14 @@ class UpdateUserRequest(BaseModel):
     role_id: Optional[str] = None  # Assign/unassign role
     department_id: Optional[str] = None
 
-
 class ChangePasswordRequest(BaseModel):
     """Change password request"""
     current_password: str
     new_password: str
 
-
 class AssignRoleRequest(BaseModel):
     """Assign role to user request"""
     role_id: Optional[str] = None  # None to unassign
-
 
 class UserResponse(BaseModel):
     """User response"""
@@ -74,7 +70,6 @@ class UserResponse(BaseModel):
     created_at: str
     updated_at: str
     last_seen_at: Optional[str]
-
 
 # ============================================
 # Routes
@@ -110,7 +105,6 @@ async def get_system_users(current_user: dict = Depends(get_current_user)):
 
     return result
 
-
 @router.get("", response_model=List[UserResponse])
 @router.get("/", response_model=List[UserResponse])
 async def list_users(current_user: dict = Depends(get_current_user)):
@@ -141,7 +135,6 @@ async def list_users(current_user: dict = Depends(get_current_user)):
         data["role_name"] = role_names.get(u.role_id) if u.role_id else None
         result.append(UserResponse(**data))
     return result
-
 
 @router.post("", response_model=UserResponse)
 @router.post("/", response_model=UserResponse)
@@ -191,7 +184,6 @@ async def create_user(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: str,
@@ -230,7 +222,6 @@ async def get_user(
 
     return UserResponse(**data)
 
-
 @router.get("/username/{username}", response_model=UserResponse)
 async def get_user_by_username(
     username: str,
@@ -259,7 +250,6 @@ async def get_user_by_username(
         data["role_name"] = None
 
     return UserResponse(**data)
-
 
 @router.patch("/{user_id}", response_model=UserResponse)
 async def update_user(
@@ -352,7 +342,6 @@ async def update_user(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.post("/{user_id}/password")
 async def change_password(
     user_id: str,
@@ -379,7 +368,6 @@ async def change_password(
     # Change password
     await users_service.change_password(user_uuid, request.new_password)
     return {"success": True, "message": "Password changed"}
-
 
 @router.post("/{user_id}/role")
 async def assign_role(
@@ -424,7 +412,6 @@ async def assign_role(
         raise HTTPException(status_code=404, detail="User not found")
 
     return {"success": True, "message": "Role assigned" if role_id else "Role unassigned"}
-
 
 @router.delete("/{user_id}")
 async def deactivate_user(

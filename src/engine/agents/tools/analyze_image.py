@@ -3,7 +3,8 @@ Analyze Image Tool
 
 LangChain tool for asking the LLM about an uploaded image attachment.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional
 from uuid import UUID
 
@@ -18,14 +19,12 @@ from ...storage.storage_adapter import StorageAdapter
 from ...storage.user_file_storage import UserFileStorage
 from ...utils.image_parser import image_bytes_to_data_url
 
-logger = logging.getLogger("rugpt.agents.tools.analyze_image")
+logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
-
 
 class AnalyzeImageInput(BaseModel):
     query: str = Field(description="Question or instruction for analyzing the image")
     file_id: str = Field(description="UUID of the uploaded image file")
-
 
 def create_analyze_image_tool(
     file_storage: UserFileStorage,

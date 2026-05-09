@@ -4,7 +4,8 @@ Roles Routes
 Endpoints for AI role management.
 Roles are predefined — only GET endpoints and admin cache management.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
@@ -15,9 +16,8 @@ from ..services.engine_service import get_engine_service
 from ..services.roles_service import RolesService
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.roles")
+logger = get_logger("routes")
 router = APIRouter(prefix="/roles", tags=["roles"])
-
 
 # ============================================
 # Response Models
@@ -41,7 +41,6 @@ class RoleResponse(BaseModel):
     created_at: str
     updated_at: str
 
-
 # ============================================
 # Helper
 # ============================================
@@ -55,7 +54,6 @@ def _get_roles_service() -> RolesService:
         engine.prompt_cache,
     )
 
-
 # ============================================
 # Routes: Read-only
 # ============================================
@@ -67,7 +65,6 @@ async def list_roles(current_user: dict = Depends(get_current_user)):
     roles_service = _get_roles_service()
     roles = await roles_service.list_roles(current_user["org_id"])
     return [RoleResponse(**r.to_dict()) for r in roles]
-
 
 @router.get("/{role_id}", response_model=RoleResponse)
 async def get_role(
@@ -91,7 +88,6 @@ async def get_role(
 
     return RoleResponse(**role.to_dict())
 
-
 @router.get("/code/{code}", response_model=RoleResponse)
 async def get_role_by_code(
     code: str,
@@ -105,7 +101,6 @@ async def get_role_by_code(
         raise HTTPException(status_code=404, detail="Role not found")
 
     return RoleResponse(**role.to_dict())
-
 
 @router.get("/{role_id}/users")
 async def get_role_users(
@@ -141,7 +136,6 @@ async def get_role_users(
         "users": [u.to_dict() for u in users]
     }
 
-
 # ============================================
 # Routes: Admin — Prompt Cache Management
 # ============================================
@@ -161,7 +155,6 @@ async def clear_all_prompt_cache(
     roles_service.clear_prompt_cache()
 
     return {"success": True, "message": "All prompt caches cleared"}
-
 
 @router.post("/admin/cache/prompts/clear/{role_code}")
 async def clear_role_prompt_cache(

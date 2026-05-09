@@ -11,7 +11,8 @@ timezone from the organizations table (IANA, e.g. "Europe/Moscow").
 from __future__ import annotations
 
 import asyncio
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime, timedelta, timezone
 from typing import Optional, TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -34,13 +35,11 @@ if TYPE_CHECKING:
     from .ai_service import AIService
     from .in_app_notification_service import InAppNotificationService
 
-logger = logging.getLogger("rugpt.services.scheduler")
-
+logger = get_logger("services")
 
 # Per-poll cooldown between consecutive poll_initial retry attempts. Spaces
 # out the 3-attempt budget so a transient outage doesn't burn it in 90s.
 POLL_RETRY_COOLDOWN_MINUTES = 5
-
 
 class SchedulerService:
     """

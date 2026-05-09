@@ -4,7 +4,8 @@ Department Service
 Business logic for departments and visibility.
 Central method: get_visible_user_ids() used by all other services.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List, Set
 from uuid import UUID
 
@@ -12,8 +13,7 @@ from ..models.department import Department, DepartmentVisibility
 from ..storage.department_storage import DepartmentStorage
 from ..storage.user_storage import UserStorage
 
-logger = logging.getLogger("rugpt.services.department")
-
+logger = get_logger("services")
 
 class DepartmentService:
 

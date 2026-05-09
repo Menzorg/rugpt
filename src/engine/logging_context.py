@@ -35,10 +35,19 @@ correlation_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
     "correlation_id", default="-"
 )
 
+user_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(                                                                                                                                                                                                  
+    "user_id", default=None                                                                                                                                                                                                                                                
+)
 
 def get_correlation_id() -> str:
     return correlation_id_var.get()
 
+def get_user_id() -> str | None:                                                                                                                                                                                                                                         
+    return user_id_var.get()
+                                                                                                                                                                                                                                                                            
+
+def set_user_id(value: str | None) -> None:                                                                                                                                                                                                                                
+    user_id_var.set(value)     
 
 def bind_correlation_id(value: Optional[str]) -> contextvars.Token:
     """Bind a correlation_id to the current context. Returns a token — caller
@@ -82,7 +91,16 @@ class CorrelationIDMiddleware(BaseHTTPMiddleware):
             correlation_id_var.reset(token)
 
 
-_request_logger = logging.getLogger("rugpt.request")
+# Lazy init для обхода циркулярного импорта (unified_logger зависит от этого модуля).
+_request_logger = None
+
+
+def _get_request_logger():
+    global _request_logger
+    if _request_logger is None:
+        from src.engine.unified_logger import get_logger
+        _request_logger = get_logger("request")
+    return _request_logger
 
 # Paths excluded from request logging to avoid flooding on high-frequency polls.
 _SKIP_PATHS = {
@@ -103,7 +121,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         method = request.method
-        _request_logger.info(f"--> {method} {path}")
+        _get_request_logger().info(f"--> {method} {path}")
         started = time.perf_counter()
         status = 500
         try:
@@ -112,4 +130,4 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             duration_ms = (time.perf_counter() - started) * 1000
-            _request_logger.info(f"<-- {method} {path} {status} ({duration_ms:.1f}ms)")
+            _get_request_logger().info(f"<-- {method} {path} {status} ({duration_ms:.1f}ms)")

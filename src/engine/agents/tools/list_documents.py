@@ -8,7 +8,8 @@ plus `is_public` files within the same org.
 
 Service lifecycle: call init_document_service(storage) once during engine startup.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -23,7 +24,7 @@ from ..runtime import ListDocumentsRuntimeData, RuntimeContext
 from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
 
-logger = logging.getLogger("rugpt.agents.tools.document")
+logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _TRUNCATED_LIMIT = 500
@@ -32,7 +33,6 @@ _SUMMARY_CHARS_BUDGET = 20000
 
 _user_file_storage: Optional[UserFileStorage] = None
 _rag_service: Optional[RAGService] = None
-
 
 def init_document_service(
     storage: UserFileStorage,
@@ -43,7 +43,6 @@ def init_document_service(
     _user_file_storage = storage
     _rag_service = rag_service
     logger.info("Document tool storage initialized")
-
 
 def _format_user_file(f: UserFile, summary_max_chars: int) -> str:
     if f.rag_status == "indexed" and f.summary:
@@ -58,7 +57,6 @@ def _format_user_file(f: UserFile, summary_max_chars: int) -> str:
         f"is_table={f.is_table}, size={f.file_size / 1_000_000:.2f}MB, {summary_part})"
     )
 
-
 def _is_image_file(f: UserFile) -> bool:
     file_type = (f.file_type or "").lower()
     if file_type in IMAGE_TYPES:
@@ -66,17 +64,14 @@ def _is_image_file(f: UserFile) -> bool:
     filename = (f.original_filename or "").lower()
     return any(filename.endswith(f".{ext}") for ext in IMAGE_TYPES)
 
-
 def _with_dedup_header(deduplicated_across_runs: bool, result: str) -> str:
     if not deduplicated_across_runs:
         return result
     return "DOCS FOUND IN PREVIOUS TOOL CALLS WERE DEDUPLICATED\n" + result
 
-
 def _remember_seen_documents(runsession: object, files: list[UserFile]) -> None:
     if isinstance(runsession, ListDocumentsRuntimeData):
         runsession.seen_ids.update(str(f.id) for f in files)
-
 
 @tool(response_format="content")
 async def list_documents(

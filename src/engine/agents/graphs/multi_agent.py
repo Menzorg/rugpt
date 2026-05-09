@@ -7,7 +7,8 @@ Enables complex workflows with conditional routing between nodes.
 This is the most advanced agent type — Phase 5 will add UI for editing.
 For now, the graph config is a JSON structure defining nodes and edges.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import List, Optional, TypedDict, Annotated
 import operator
 
@@ -19,15 +20,13 @@ from langgraph.graph import StateGraph, END
 
 from ..result import AgentResult
 
-logger = logging.getLogger("rugpt.agents.graphs.multi_agent")
-
+logger = get_logger("agents")
 
 class MultiAgentState(TypedDict):
     """State passed between graph nodes"""
     messages: Annotated[list[BaseMessage], operator.add]
     current_output: str
     step_outputs: dict
-
 
 async def run_multi_agent(
     llm: ChatOpenAI,
@@ -141,7 +140,6 @@ async def run_multi_agent(
             finish_reason="error",
             error=str(e),
         )
-
 
 def _make_node_fn(llm: ChatOpenAI, system_prompt: str, instruction: str):
     """Create an async node function for the StateGraph"""

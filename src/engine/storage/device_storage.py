@@ -3,14 +3,14 @@ Device Storage
 
 CRUD operations for user_devices table (Zero Trust).
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 
 from .base import BaseStorage
 
-logger = logging.getLogger("rugpt.storage.device")
-
+logger = get_logger("storage")
 
 class DeviceStorage(BaseStorage):
     """Storage for user device public keys"""

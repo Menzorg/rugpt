@@ -4,12 +4,12 @@ Role Call Tool
 LangChain tool for calling another role from within an agent.
 Enables multi-agent delegation.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from langchain_core.tools import tool
 
-logger = logging.getLogger("rugpt.agents.tools.role_call")
+logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
-
 
 @tool
 def role_call(role_code: str, message: str) -> str:

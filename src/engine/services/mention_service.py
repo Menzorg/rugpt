@@ -3,7 +3,8 @@ Mention Service
 
 Parses @ and @@ mentions from message content.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 import re
 from typing import List, Optional, Tuple
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from ..models.message import Mention, MentionType
 from ..storage.user_storage import UserStorage
 
-logger = logging.getLogger("rugpt.services.mention")
-
+logger = get_logger("services")
 
 class MentionService:
     """Service for parsing and resolving mentions"""

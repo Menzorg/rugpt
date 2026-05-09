@@ -5,13 +5,14 @@ In-memory cache for role prompt files.
 Reads prompts from disk on first access, caches in memory.
 Supports cache clear without restart.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger("rugpt.services.prompt_cache")
+logger = get_logger("services")
 
 _RU_WEEKDAYS = [
     "понедельник", "вторник", "среда", "четверг",
@@ -22,7 +23,6 @@ _RU_MONTHS = [
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 ]
 
-
 def _today_ru() -> str:
     now = datetime.now()
     return (
@@ -30,7 +30,6 @@ def _today_ru() -> str:
         f"{now.day} {_RU_MONTHS[now.month - 1]} {now.year} "
         f"(ISO: {now.date().isoformat()})"
     )
-
 
 class PromptCache:
     """

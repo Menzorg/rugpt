@@ -13,7 +13,8 @@ Endpoints:
 
 The router is created here but NOT mounted on app — that's Task 19.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional
 from uuid import UUID
 
@@ -25,9 +26,8 @@ from ..models.support_ticket import SupportTicketCategory, SupportTicketStatus
 from ..services.engine_service import get_engine_service
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.support")
+logger = get_logger("routes")
 router = APIRouter(prefix="/support", tags=["support"])
-
 
 # ============================================
 # Request bodies
@@ -37,7 +37,6 @@ class CreateTicketRequest(BaseModel):
     """POST /support/tickets body."""
     category: str  # "how_to" | "bug" | "other"
     initial_message: str
-
 
 # ============================================
 # Helpers
@@ -55,14 +54,12 @@ def _map_value_error(exc: ValueError) -> HTTPException:
         return HTTPException(status_code=404, detail=msg)
     return HTTPException(status_code=400, detail=msg)
 
-
 async def _load_user_or_404(engine, current_user: dict):
     """Resolve current_user dict → User object, 404 if missing."""
     user = await engine.user_storage.get_by_id(current_user["user_id"])
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     return user
-
 
 # ============================================
 # POST /support/tickets
@@ -104,7 +101,6 @@ async def create_ticket(
     )
     return {"ticket": ticket.to_dict(), "chat_id": str(chat.id)}
 
-
 # ============================================
 # GET /support/tickets/my
 # ============================================
@@ -132,7 +128,6 @@ async def list_my_tickets(
         current_user["user_id"], status=status_enum, limit=limit,
     )
     return [t.to_dict() for t in tickets]
-
 
 # ============================================
 # GET /support/tickets/{ticket_id}
@@ -185,7 +180,6 @@ async def get_ticket(
 
     return payload
 
-
 # ============================================
 # POST /support/tickets/{ticket_id}/escalate
 # ============================================
@@ -208,7 +202,6 @@ async def escalate(
         raise _map_value_error(e)
 
     return ticket.to_dict()
-
 
 # ============================================
 # POST /support/tickets/{ticket_id}/close
@@ -233,17 +226,14 @@ async def close_ticket(
 
     return ticket.to_dict()
 
-
 # ============================================================
 # Operator routes (Task 15)
 # ============================================================
-
 
 def _require_operator(current_user: dict) -> None:
     """Raise 403 if the caller is not a member of the RuGPT Support org."""
     if current_user["org_id"] != Config.RUGPT_SUPPORT_ORG_ID:
         raise HTTPException(status_code=403, detail="Operator access only")
-
 
 @router.get("/queue")
 async def get_queue(
@@ -255,7 +245,6 @@ async def get_queue(
     engine = get_engine_service()
     tickets = await engine.support_ticket_storage.list_queue(limit)
     return [t.to_dict() for t in tickets]
-
 
 @router.post("/tickets/{ticket_id}/take")
 async def take_ticket(
@@ -280,7 +269,6 @@ async def take_ticket(
         raise HTTPException(status_code=400, detail=msg)
     return ticket.to_dict()
 
-
 @router.get("/operator/my")
 async def get_operator_my(
     limit: int = Query(100, ge=1, le=500),
@@ -294,11 +282,9 @@ async def get_operator_my(
     )
     return [t.to_dict() for t in tickets]
 
-
 # ============================================================
 # Common routes (Task 16)
 # ============================================================
-
 
 def _require_ticket_access(ticket, current_user: dict) -> None:
     """Raise 403 if caller is neither requester nor a RuGPT Support operator."""
@@ -306,7 +292,6 @@ def _require_ticket_access(ticket, current_user: dict) -> None:
     is_operator = current_user["org_id"] == Config.RUGPT_SUPPORT_ORG_ID
     if not (is_requester or is_operator):
         raise HTTPException(status_code=403, detail="Access denied")
-
 
 @router.get("/tickets/{ticket_id}/chat")
 async def get_ticket_chat(
@@ -323,7 +308,6 @@ async def get_ticket_chat(
     if chat is None:
         raise HTTPException(status_code=404, detail="Chat not found for ticket")
     return {"chat_id": str(chat.id)}
-
 
 @router.get("/tickets/{ticket_id}/events")
 async def get_ticket_events(

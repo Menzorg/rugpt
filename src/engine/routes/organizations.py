@@ -3,7 +3,8 @@ Organizations Routes
 
 Endpoints for organization management (admin only).
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
@@ -14,9 +15,8 @@ from ..services.engine_service import get_engine_service
 from ..services.org_service import OrgService
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.organizations")
+logger = get_logger("routes")
 router = APIRouter(prefix="/organizations", tags=["organizations"])
-
 
 # ============================================
 # Request/Response Models
@@ -29,7 +29,6 @@ class CreateOrgRequest(BaseModel):
     description: Optional[str] = None
     timezone: Optional[str] = "Europe/Moscow"
 
-
 class UpdateOrgRequest(BaseModel):
     """Update organization request"""
     name: Optional[str] = None
@@ -37,7 +36,6 @@ class UpdateOrgRequest(BaseModel):
     description: Optional[str] = None
     timezone: Optional[str] = None
     org_context: Optional[str] = None
-
 
 class OrgResponse(BaseModel):
     """Organization response"""
@@ -50,7 +48,6 @@ class OrgResponse(BaseModel):
     is_active: bool
     created_at: str
     updated_at: str
-
 
 # ============================================
 # Routes
@@ -87,7 +84,6 @@ async def create_organization(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.get("", response_model=List[OrgResponse])
 @router.get("/", response_model=List[OrgResponse])
 async def list_organizations(current_user: dict = Depends(get_current_user)):
@@ -102,7 +98,6 @@ async def list_organizations(current_user: dict = Depends(get_current_user)):
     org_service = OrgService(engine.org_storage)
     orgs = await org_service.list_organizations()
     return [OrgResponse(**org.to_dict()) for org in orgs]
-
 
 @router.get("/{org_id}", response_model=OrgResponse)
 async def get_organization(
@@ -123,7 +118,6 @@ async def get_organization(
         raise HTTPException(status_code=404, detail="Organization not found")
 
     return OrgResponse(**org.to_dict())
-
 
 @router.patch("/{org_id}", response_model=OrgResponse)
 async def update_organization(
@@ -161,7 +155,6 @@ async def update_organization(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.delete("/{org_id}")
 async def deactivate_organization(
     org_id: str,
@@ -187,7 +180,6 @@ async def deactivate_organization(
         raise HTTPException(status_code=404, detail="Organization not found")
 
     return {"success": True, "message": "Organization deactivated"}
-
 
 @router.post("/{org_id}/context/upload")
 async def upload_org_context(

@@ -9,17 +9,18 @@ If Config.KAFKA_ENABLED is false, send() becomes a no-op so tests and
 environments without Kafka keep working.
 """
 import json
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Any, Optional
 from uuid import UUID
 
 from ..config import Config
-from ..logging_context import get_correlation_id
+from ..logging_context import get_correlation_id, get_user_id
 
-logger = logging.getLogger("rugpt.kafka.producer")
+logger = get_logger("kafka")
 
 _CORRELATION_FIELD = "_correlation_id"
-
+_USER_FIELD = "_user_id"
 
 def _json_default(o: Any) -> Any:
     """JSON default encoder — handles UUID and datetime-like objects."""
@@ -28,7 +29,6 @@ def _json_default(o: Any) -> Any:
     if hasattr(o, "isoformat"):
         return o.isoformat()
     raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
-
 
 class KafkaProducerService:
     def __init__(self, bootstrap_servers: Optional[str] = None, enabled: Optional[bool] = None):
@@ -71,5 +71,7 @@ class KafkaProducerService:
             return
         if _CORRELATION_FIELD not in value:
             value = {**value, _CORRELATION_FIELD: get_correlation_id()}
+        if _USER_FIELD not in value:
+            value = {**value, _USER_FIELD: get_user_id()}
         logger.info(f"Kafka send: topic={topic} key={key}")
         await self._producer.send_and_wait(topic, value=value, key=key)

@@ -212,7 +212,27 @@ PostgreSQL, база `rugpt`. Таблицы:
 
 ## Логи
 
-`/root/rugpt/logs/` (если настроено через logging config)
+`logs/engine/<YYYY-MM-DD>/<component>.jsonl` — JSON Lines, один файл на компонент, автоматическая ротация по дням. Компоненты: `routes`, `services`, `storage`, `agents`, `kafka`, `notifications`, `tasks`, `app`, `request`.
+
+Использование:
+```python
+from src.engine.unified_logger import get_logger
+logger = get_logger("services")
+logger.info("user logged in", user_id=42)   # **kwargs → metadata в JSON
+```
+
+- `correlation_id` — ставится `CorrelationIDMiddleware` на каждый HTTP-запрос (header `X-Correlation-ID`, query `correlation_id`, или generated UUID), читается через `get_correlation_id()`
+- `user_id` — ставится в `routes/auth.py:get_current_user` после JWT-валидации, читается через `get_user_id()`
+- `SafeJSONEncoder` — сериализует UUID/datetime/Decimal/set, fallback на `str(obj)`
+- Ротация — thread-safe через `threading.Lock` + double-checked locking
+
+Архитектура:
+- `unified_logger/base.py`: `BaseUnifiedLogger` (ABC), `StructuredFormatter`, `SafeJSONEncoder`, `_check_and_rotate_handlers`
+- `unified_logger/eng.py`: `EngUnifiedLogger` — путь `logs/engine/<date>/`, префикс `rugpt.<component>`
+- `unified_logger/__init__.py`: фабрика `get_logger(component)` с кэшем экземпляров
+- `logging_context.py`: `correlation_id_var` / `user_id_var` (ContextVar) + middleware (`CorrelationIDMiddleware`, `RequestLoggingMiddleware`)
+
+Сторонние логи (uvicorn, asyncpg, httpx, aiokafka) — в stdout через `logging.basicConfig` в `app.py`/`run.py`, в файлы не пишутся.
 
 ## Связанные проекты
 

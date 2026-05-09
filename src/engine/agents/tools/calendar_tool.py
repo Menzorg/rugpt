@@ -8,7 +8,8 @@ Tools are async — invoked directly in the running event loop, so we just
 `await` service calls. Avoids the event-loop gymnastics and the
 `There is no current event loop` errors on worker-thread invocations.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -16,9 +17,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool, InjectedToolArg
 from pydantic import BaseModel, Field
 
-logger = logging.getLogger("rugpt.agents.tools.calendar")
+logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
-
 
 # ============================================
 # Tool input schemas
@@ -29,10 +29,8 @@ class CalendarCreateInput(BaseModel):
     description: str = Field(default="", description="Event description")
     date: str = Field(default="", description="Date/time in ISO format (e.g. 2025-03-15T10:00:00)")
 
-
 class CalendarQueryInput(BaseModel):
     query: str = Field(default="", description="Optional filter query")
-
 
 # ============================================
 # Factory: create tools wired to CalendarService

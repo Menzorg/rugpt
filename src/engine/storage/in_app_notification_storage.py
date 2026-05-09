@@ -3,7 +3,8 @@ In-App Notification Storage
 
 PostgreSQL CRUD for in_app_notifications table.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.in_app_notification import InAppNotification
 
-logger = logging.getLogger("rugpt.storage.in_app_notification")
-
+logger = get_logger("storage")
 
 class InAppNotificationStorage(BaseStorage):
 

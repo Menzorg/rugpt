@@ -3,7 +3,8 @@ Project Storage
 
 PostgreSQL CRUD for projects table.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Dict, List, Optional
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.project import Project
 
-logger = logging.getLogger("rugpt.storage.project")
-
+logger = get_logger("storage")
 
 class ProjectStorage(BaseStorage):
 

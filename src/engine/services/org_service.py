@@ -3,7 +3,8 @@ Organization Service
 
 Business logic for organization management.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 import re
 from typing import Optional, List
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from ..models.organization import Organization
 from ..storage.org_storage import OrgStorage
 
-logger = logging.getLogger("rugpt.services.org")
-
+logger = get_logger("services")
 
 class OrgService:
     """Service for organization management"""

@@ -4,15 +4,15 @@ In-App Notification Service
 Business logic for bell icon notifications.
 Used by task_service, task_poll_service, task_report_service, mention_service.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
 from ..models.in_app_notification import InAppNotification
 from ..storage.in_app_notification_storage import InAppNotificationStorage
 
-logger = logging.getLogger("rugpt.services.in_app_notification")
-
+logger = get_logger("services")
 
 class InAppNotificationService:
 

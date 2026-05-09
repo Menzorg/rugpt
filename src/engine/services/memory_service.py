@@ -6,7 +6,7 @@ deciding when a re-summarisation is needed.
 """
 from __future__ import annotations
 
-import logging
+from src.engine.unified_logger import get_logger
 from pathlib import Path
 from typing import List, Optional, TYPE_CHECKING
 from uuid import UUID
@@ -20,7 +20,7 @@ from ..storage.message_storage import MessageStorage
 if TYPE_CHECKING:
     from ..agents.executor import AgentExecutor
 
-logger = logging.getLogger("rugpt.services.memory")
+logger = get_logger("services")
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 _SUMMARY_SYSTEM_PROMPT = (_PROMPTS_DIR / "memory_summary.md").read_text(encoding="utf-8").strip()
@@ -31,7 +31,6 @@ _SUMMARY_REQUEST = "Составь краткое резюме приведён�
 _RESUMMARY_CHECK_LIMIT = 15
 # How many of those messages must share the chat's current mem_id to trigger re-summarisation
 _RESUMMARY_THRESHOLD = 10
-
 
 class MemoryService:
     """

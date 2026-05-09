@@ -3,7 +3,8 @@ Chat Service
 
 Business logic for chats and messages.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -23,7 +24,6 @@ if TYPE_CHECKING:
     from ..storage.user_file_storage import UserFileStorage
     from ..storage.message_attachment_storage import MessageAttachmentStorage
 
-
 def _can_see_task(task: "Task", user: "User") -> bool:
     """Strict task visibility: creator, current assignee, or same-org admin."""
     if task.org_id != user.org_id and not user.is_admin:
@@ -35,7 +35,6 @@ def _can_see_task(task: "Task", user: "User") -> bool:
     if user.is_admin and task.org_id == user.org_id:
         return True
     return False
-
 
 def filter_sidebar_task_chats(
     chats: List[Chat],
@@ -56,7 +55,6 @@ def filter_sidebar_task_chats(
         out.append(chat)
     return out
 
-
 def filter_sidebar_project_chats(
     chats: List[Chat],
     projects_by_id: dict,
@@ -75,8 +73,7 @@ def filter_sidebar_project_chats(
         out.append(chat)
     return out
 
-logger = logging.getLogger("rugpt.services.chat")
-
+logger = get_logger("services")
 
 class ChatService:
     """Service for chat operations"""

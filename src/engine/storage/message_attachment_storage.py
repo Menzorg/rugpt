@@ -4,7 +4,8 @@ MessageAttachmentStorage — junction queries.
 Stores message ↔ file links with position. Hydrates UserFile on read so callers
 get one object per attachment with everything UI needs.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Dict, List, Optional
 from uuid import UUID
 
@@ -12,8 +13,7 @@ from .base import BaseStorage
 from ..models.message_attachment import MessageAttachment
 from ..models.user_file import UserFile
 
-logger = logging.getLogger("rugpt.storage.message_attachment")
-
+logger = get_logger("storage")
 
 class MessageAttachmentStorage(BaseStorage):
     """Storage for message ↔ user_file junction rows."""

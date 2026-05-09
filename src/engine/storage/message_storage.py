@@ -4,7 +4,8 @@ Message Storage
 PostgreSQL storage for messages.
 """
 import json
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID
@@ -15,8 +16,7 @@ from ..models.message import Message, Mention, SenderType, MentionType
 if TYPE_CHECKING:
     from .message_attachment_storage import MessageAttachmentStorage
 
-logger = logging.getLogger("rugpt.storage.message")
-
+logger = get_logger("storage")
 
 class MessageStorage(BaseStorage):
     """Storage for Message entities"""

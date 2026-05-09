@@ -4,7 +4,8 @@ Task Poll Storage
 PostgreSQL CRUD for task_polls table.
 """
 import json
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime, date
 from typing import Optional, List
 from uuid import UUID
@@ -12,8 +13,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.task_poll import TaskPoll
 
-logger = logging.getLogger("rugpt.storage.task_poll")
-
+logger = get_logger("storage")
 
 class TaskPollStorage(BaseStorage):
 

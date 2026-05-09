@@ -3,7 +3,8 @@ Chat Storage
 
 PostgreSQL storage for chats.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.chat import Chat, ChatType, _coerce_chat_type
 
-logger = logging.getLogger("rugpt.storage.chat")
-
+logger = get_logger("storage")
 
 class ChatStorage(BaseStorage):
     """Storage for Chat entities"""

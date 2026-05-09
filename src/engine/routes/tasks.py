@@ -4,7 +4,8 @@ Task Management Routes
 CRUD endpoints for employee tasks.
 Item 9: ownership, prioritization, status transitions, deadline negotiation.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
@@ -16,9 +17,8 @@ from ..services.engine_service import get_engine_service
 from ..services.task_service import ParticipantAlreadyExists
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.tasks")
+logger = get_logger("routes")
 router = APIRouter(prefix="/tasks", tags=["tasks"])
-
 
 class CreateTaskRequest(BaseModel):
     title: str
@@ -29,10 +29,8 @@ class CreateTaskRequest(BaseModel):
     priority: Optional[int] = None  # 1..3; default derived from creator's role
     participant_user_ids: Optional[list[str]] = None
 
-
 class AddParticipantRequest(BaseModel):
     user_id: str
-
 
 class UpdateTaskRequest(BaseModel):
     title: Optional[str] = None
@@ -45,18 +43,14 @@ class UpdateTaskRequest(BaseModel):
     detach_project: bool = False
     priority: Optional[int] = None  # 1..3
 
-
 class DeadlineRequest(BaseModel):
     deadline: str  # ISO 8601
-
 
 class ProposeDeadlineRequest(BaseModel):
     proposed_deadline: str  # ISO 8601
 
-
 class RejectRequest(BaseModel):
     comment: Optional[str] = None
-
 
 def _serialize_entry(entry: dict) -> dict:
     """Serialize a {task, creator?, assignee?} entry to dict for API response."""
@@ -79,11 +73,9 @@ def _serialize_entry(entry: dict) -> dict:
     ]
     return out
 
-
 async def _load_user(engine, user_id: UUID):
     """Helper: load user object from storage (for permission checks)."""
     return await engine.user_storage.get_by_id(user_id)
-
 
 async def _hydrate_participants(engine, entries: list) -> list:
     """Bulk-fetch active participants for entries and attach as entry['participants']."""
@@ -94,7 +86,6 @@ async def _hydrate_participants(engine, entries: list) -> list:
     for e in entries:
         e["participants"] = by_task.get(e["task"].id, [])
     return entries
-
 
 # ============================================
 # Lists
@@ -134,7 +125,6 @@ async def list_tasks(
 
     return [t.to_dict() for t in tasks]
 
-
 @router.get("/my")
 async def list_my_tasks(
     project_id: Optional[str] = Query(None),
@@ -154,7 +144,6 @@ async def list_my_tasks(
         entries = [e for e in entries if e["task"].project_id == pid]
     entries = await _hydrate_participants(engine, entries)
     return [_serialize_entry(e) for e in entries]
-
 
 @router.get("/created-by-me")
 async def list_created_by_me(
@@ -176,7 +165,6 @@ async def list_created_by_me(
     entries = await _hydrate_participants(engine, entries)
     return [_serialize_entry(e) for e in entries]
 
-
 @router.get("/archive")
 async def list_archive(
     limit: int = Query(200, ge=1, le=1000),
@@ -191,7 +179,6 @@ async def list_archive(
     )
     entries = await _hydrate_participants(engine, entries)
     return [_serialize_entry(e) for e in entries]
-
 
 @router.get("/participating")
 async def list_participating(
@@ -212,7 +199,6 @@ async def list_participating(
     entries = await _hydrate_participants(engine, entries)
     return [_serialize_entry(e) for e in entries]
 
-
 @router.get("/done")
 async def list_done(current_user: dict = Depends(get_current_user)):
     """All status='done' tasks where user is creator OR assignee OR participant."""
@@ -220,7 +206,6 @@ async def list_done(current_user: dict = Depends(get_current_user)):
     entries = await engine.task_service.list_done(current_user["user_id"])
     entries = await _hydrate_participants(engine, entries)
     return [_serialize_entry(e) for e in entries]
-
 
 # ============================================
 # Create / Get / Update / Delete
@@ -284,7 +269,6 @@ async def create_task(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.get("/{task_id}")
 async def get_task(task_id: str, current_user: dict = Depends(get_current_user)):
     """Get a single task by ID. Visible to creator, assignee, participants, or admin."""
@@ -310,7 +294,6 @@ async def get_task(task_id: str, current_user: dict = Depends(get_current_user))
         for p in await engine.task_participant_storage.list_active_user_dicts(task_uuid)
     ]
     return out
-
 
 @router.patch("/{task_id}")
 async def update_task(
@@ -394,7 +377,6 @@ async def update_task(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.delete("/{task_id}")
 async def deactivate_task(task_id: str, current_user: dict = Depends(get_current_user)):
     """Soft-delete a task (only creator)."""
@@ -417,7 +399,6 @@ async def deactivate_task(task_id: str, current_user: dict = Depends(get_current
     user = await _load_user(engine, current_user["user_id"])
     await engine.task_service.deactivate(task_uuid, user=user)
     return {"success": True, "message": "Task deactivated"}
-
 
 # ============================================
 # Status transitions
@@ -444,7 +425,6 @@ async def take_task(task_id: str, current_user: dict = Depends(get_current_user)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.post("/{task_id}/mark-done")
 async def mark_done(task_id: str, current_user: dict = Depends(get_current_user)):
     """Assignee marks task done: in_progress → awaiting_review."""
@@ -466,7 +446,6 @@ async def mark_done(task_id: str, current_user: dict = Depends(get_current_user)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.post("/{task_id}/accept")
 async def accept_task(task_id: str, current_user: dict = Depends(get_current_user)):
     """Creator accepts: awaiting_review → done."""
@@ -487,7 +466,6 @@ async def accept_task(task_id: str, current_user: dict = Depends(get_current_use
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
 
 @router.post("/{task_id}/reject")
 async def reject_task(
@@ -513,7 +491,6 @@ async def reject_task(
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
 
 # ============================================
 # Deadline
@@ -548,7 +525,6 @@ async def set_deadline(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.post("/{task_id}/deadline-proposal")
 async def propose_deadline(
     task_id: str,
@@ -578,7 +554,6 @@ async def propose_deadline(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.post("/{task_id}/deadline-proposal/accept")
 async def accept_proposed_deadline(task_id: str, current_user: dict = Depends(get_current_user)):
     """Creator accepts proposed deadline."""
@@ -599,7 +574,6 @@ async def accept_proposed_deadline(task_id: str, current_user: dict = Depends(ge
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
 
 @router.post("/{task_id}/deadline-proposal/reject")
 async def reject_proposed_deadline(task_id: str, current_user: dict = Depends(get_current_user)):
@@ -622,7 +596,6 @@ async def reject_proposed_deadline(task_id: str, current_user: dict = Depends(ge
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 # ============================================
 # Task chat & events (item 11)
 # ============================================
@@ -641,7 +614,6 @@ async def _can_see_task_async(task, user, engine) -> bool:
     if user.id in parts:
         return True
     return False
-
 
 @router.get("/{task_id}/chat")
 async def get_task_chat(task_id: str, current_user: dict = Depends(get_current_user)):
@@ -666,7 +638,6 @@ async def get_task_chat(task_id: str, current_user: dict = Depends(get_current_u
     if chat is None:
         raise HTTPException(status_code=404, detail="Task chat not found")
     return chat.to_dict()
-
 
 @router.get("/{task_id}/events")
 async def list_task_events(
@@ -693,7 +664,6 @@ async def list_task_events(
 
     events = await engine.task_event_service.list_for_task(task_uuid, limit)
     return [e.to_dict() for e in events]
-
 
 # ============================================
 # Participants
@@ -733,7 +703,6 @@ async def add_participant(
         raise HTTPException(status_code=400, detail=str(e))
 
     return {"id": str(result["id"]), "name": result["name"]}
-
 
 @router.delete("/{task_id}/participants/{user_id}", status_code=204)
 async def remove_participant(

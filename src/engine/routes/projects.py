@@ -4,7 +4,8 @@ Project Routes
 CRUD endpoints for projects + project chat resolution.
 Item 11: projects group tasks; chat is lazily created on first linked task.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional
 from uuid import UUID
 
@@ -14,23 +15,19 @@ from pydantic import BaseModel
 from ..services.engine_service import get_engine_service
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.projects")
+logger = get_logger("routes")
 router = APIRouter(prefix="/projects", tags=["projects"])
-
 
 class CreateProjectRequest(BaseModel):
     name: str
     description: Optional[str] = None
 
-
 class UpdateProjectRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
 
-
 async def _load_user(engine, user_id: UUID):
     return await engine.user_storage.get_by_id(user_id)
-
 
 @router.get("")
 async def list_projects(
@@ -43,7 +40,6 @@ async def list_projects(
         current_user["org_id"], include_archived,
     )
     return [p.to_dict() for p in projects]
-
 
 @router.post("")
 async def create_project(
@@ -68,7 +64,6 @@ async def create_project(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.get("/{project_id}")
 async def get_project(
     project_id: str,
@@ -89,7 +84,6 @@ async def get_project(
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return project.to_dict()
-
 
 @router.patch("/{project_id}")
 async def update_project(
@@ -124,7 +118,6 @@ async def update_project(
             raise HTTPException(status_code=404, detail=msg)
         raise HTTPException(status_code=400, detail=msg)
 
-
 @router.delete("/{project_id}")
 async def delete_project(
     project_id: str,
@@ -151,7 +144,6 @@ async def delete_project(
     if not ok:
         raise HTTPException(status_code=404, detail="Project not found")
     return {"success": True, "message": "Project archived"}
-
 
 @router.get("/{project_id}/chat")
 async def get_project_chat(

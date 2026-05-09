@@ -4,15 +4,15 @@ TaskEvent Storage
 Audit trail for task changes.
 """
 import json
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import List
 from uuid import UUID
 
 from .base import BaseStorage
 from ..models.task_event import TaskEvent
 
-logger = logging.getLogger("rugpt.storage.task_event")
-
+logger = get_logger("storage")
 
 class TaskEventStorage(BaseStorage):
 

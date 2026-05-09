@@ -3,7 +3,8 @@ Organization Storage
 
 PostgreSQL storage for organizations.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.organization import Organization
 
-logger = logging.getLogger("rugpt.storage.org")
-
+logger = get_logger("storage")
 
 class OrgStorage(BaseStorage):
     """Storage for Organization entities"""

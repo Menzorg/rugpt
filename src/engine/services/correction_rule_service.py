@@ -6,7 +6,7 @@ async extraction of the lesson from the correction text via LLM.
 """
 from __future__ import annotations
 
-import logging
+from src.engine.unified_logger import get_logger
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -23,7 +23,7 @@ from .chat_service import ChatService
 if TYPE_CHECKING:
     from ..agents.executor import AgentExecutor
 
-logger = logging.getLogger("rugpt.services.correction_rule")
+logger = get_logger("services")
 
 LESSON_EXTRACTION_SYSTEM_PROMPT = (
                 "Ты — ассистент, извлекающий полезные уроки из исправлений AI-ответов.\n"
@@ -121,7 +121,6 @@ class CorrectionRuleService:
             )
 
         await self.message_storage.reject(ai_message_id)
-
 
         lesson = await self._extract_lesson(
             src_ai_response_id=ai_message_id,

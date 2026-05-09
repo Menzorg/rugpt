@@ -12,7 +12,8 @@ Submission no longer takes a `responses[]` body — task statuses are derived by
 poll-summary AI from the chat dialog. Completion is signalled to the frontend
 asynchronously via the chat.events WS broadcast (Kafka -> NestJS).
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import date as _date
 from typing import Optional, List
 from uuid import UUID
@@ -24,13 +25,11 @@ from ..config import Config
 from ..services.engine_service import get_engine_service
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.task_polls")
+logger = get_logger("routes")
 router = APIRouter(prefix="/task-polls", tags=["task-polls"])
-
 
 # poll_interviewer_ai system user lives in the RuGPT system org (migration 029).
 _POLL_INTERVIEWER_USERNAME = "poll_interviewer_ai"
-
 
 class TaskPollResponse(BaseModel):
     id: str
@@ -43,12 +42,10 @@ class TaskPollResponse(BaseModel):
     completed_at: Optional[str]
     expires_at: Optional[str]
 
-
 class TodayPollChatResponse(BaseModel):
     chat_id: str
     poll_id: str
     status: str
-
 
 @router.get("/today", response_model=Optional[TaskPollResponse])
 async def get_today_poll(current_user: dict = Depends(get_current_user)):
@@ -58,7 +55,6 @@ async def get_today_poll(current_user: dict = Depends(get_current_user)):
     if not poll:
         return None
     return TaskPollResponse(**poll.to_dict())
-
 
 @router.get("/today/chat", response_model=TodayPollChatResponse)
 async def get_today_chat(current_user: dict = Depends(get_current_user)):
@@ -97,7 +93,6 @@ async def get_today_chat(current_user: dict = Depends(get_current_user)):
         status=poll.status,
     )
 
-
 @router.get("", response_model=List[TaskPollResponse])
 async def list_polls(
     include_completed: bool = Query(False),
@@ -116,7 +111,6 @@ async def list_polls(
         polls = [p for p in polls if p.status == "pending"]
     return [TaskPollResponse(**p.to_dict()) for p in polls]
 
-
 @router.get("/{poll_id}", response_model=TaskPollResponse)
 async def get_poll(poll_id: str, current_user: dict = Depends(get_current_user)):
     """Get a specific poll by ID"""
@@ -133,7 +127,6 @@ async def get_poll(poll_id: str, current_user: dict = Depends(get_current_user))
         raise HTTPException(status_code=403, detail="Access denied")
 
     return TaskPollResponse(**poll.to_dict())
-
 
 @router.post("/{poll_id}/submit")
 async def submit_poll(

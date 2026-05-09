@@ -4,7 +4,8 @@ Task Poll Service
 Business logic for daily morning polls.
 Creates polls, processes responses, expires stale polls.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime, date, timedelta
 from typing import Optional, List
 from uuid import UUID
@@ -16,15 +17,13 @@ from ..storage.task_poll_storage import TaskPollStorage
 from .task_service import TaskService
 from .in_app_notification_service import InAppNotificationService
 
-logger = logging.getLogger("rugpt.services.task_poll")
-
+logger = get_logger("services")
 
 # poll_interviewer_ai system user lives in the RuGPT system org (migration 029).
 # Duplicated here (rather than imported from ai_service) to avoid pulling the
 # heavy AIService import chain into TaskPollService at module load.
 _RUGPT_SYSTEM_ORG_ID = UUID("00000000-0000-0000-0000-000000000000")
 _POLL_INTERVIEWER_USERNAME = "poll_interviewer_ai"
-
 
 class TaskPollService:
 

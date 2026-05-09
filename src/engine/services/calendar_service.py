@@ -4,7 +4,8 @@ Calendar Service
 Business logic for calendar event management.
 Handles creation, triggering, and cron-based recurrence.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime, timezone
 from typing import Optional, List
 from uuid import UUID
@@ -14,8 +15,7 @@ from croniter import croniter
 from ..models.calendar_event import CalendarEvent
 from ..storage.calendar_storage import CalendarStorage
 
-logger = logging.getLogger("rugpt.services.calendar")
-
+logger = get_logger("services")
 
 class CalendarService:
     """Service for calendar event operations"""

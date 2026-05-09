@@ -4,7 +4,8 @@ Role Storage
 PostgreSQL storage for AI roles.
 """
 import json
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
@@ -12,8 +13,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.role import Role
 
-logger = logging.getLogger("rugpt.storage.role")
-
+logger = get_logger("storage")
 
 class RoleStorage(BaseStorage):
     """Storage for Role entities"""

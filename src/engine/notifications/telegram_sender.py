@@ -3,17 +3,17 @@ Telegram Sender
 
 Sends notifications via Telegram Bot API using httpx.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional
 
 import httpx
 
 from .base_sender import BaseSender, SendResult
 
-logger = logging.getLogger("rugpt.notifications.telegram")
+logger = get_logger("notifications")
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
-
 
 class TelegramSender(BaseSender):
     """Send messages via Telegram Bot API"""

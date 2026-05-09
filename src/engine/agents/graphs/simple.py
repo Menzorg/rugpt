@@ -5,7 +5,8 @@ Two modes:
 - No tools: prompt -> LLM -> response (direct LLM call)
 - With tools: ReAct agent (LLM decides when to call tools)
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Any, List, Optional
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
@@ -16,8 +17,7 @@ from langgraph.prebuilt import create_react_agent
 
 from ..result import AgentResult, ToolCall
 
-logger = logging.getLogger("rugpt.agents.graphs.simple")
-
+logger = get_logger("agents")
 
 async def run_simple_agent(
     llm: ChatOpenAI,
@@ -80,7 +80,6 @@ async def run_simple_agent(
             context_schema,
         )
 
-
 async def _direct_llm_call(
     llm: ChatOpenAI,
     messages: list,
@@ -105,7 +104,6 @@ async def _direct_llm_call(
             finish_reason="error",
             error=str(e),
         )
-
 
 async def _react_agent_call(
     llm: ChatOpenAI,

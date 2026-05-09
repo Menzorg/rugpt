@@ -3,15 +3,14 @@ Health Check Routes
 
 Endpoints for service health monitoring.
 """
-import logging
-
 import httpx
 from fastapi import APIRouter
 from datetime import datetime
 
 from ..config import Config
+from src.engine.unified_logger import get_logger    
 
-logger = logging.getLogger("rugpt.routes.health")
+logger = get_logger("routes")  
 
 router = APIRouter(prefix="/health", tags=["health"])
 

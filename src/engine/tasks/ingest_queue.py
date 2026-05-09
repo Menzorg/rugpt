@@ -15,14 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import logging
+
+from src.engine.unified_logger import get_logger
 from uuid import UUID
 
-logger = logging.getLogger("rugpt.tasks.ingest_queue")
+logger = get_logger("tasks")
 
 # Max concurrent Tika + Ollama jobs. CPU-bound — raise when migrating to GPU workers.
 _MAX_WORKERS = 3
-
 
 def _run_ingest_sync(
     file_id: UUID,
@@ -78,7 +78,6 @@ def _run_ingest_sync(
             await file_storage.close()
 
     asyncio.run(_run())
-
 
 class IngestQueue:
     """Bounded task queue for RAG ingestion jobs.
@@ -140,7 +139,6 @@ class IngestQueue:
         """
         self._executor.shutdown(wait=wait, cancel_futures=True)
         logger.info("IngestQueue shut down")
-
 
 # Module-level singleton — imported by routes and app shutdown hook
 ingest_queue = IngestQueue()

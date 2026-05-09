@@ -1,13 +1,13 @@
 """TaskParticipant Storage — CRUD for task_participants table."""
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Dict, List, Optional
 from uuid import UUID
 
 from .base import BaseStorage
 from ..models.task_participant import TaskParticipant
 
-logger = logging.getLogger("rugpt.storage.task_participant")
-
+logger = get_logger("storage")
 
 class TaskParticipantStorage(BaseStorage):
 

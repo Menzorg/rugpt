@@ -4,15 +4,15 @@ Tool Registry
 Central registry mapping tool names to LangChain tool functions.
 Tools are registered at startup; agents resolve them by name from role.tools list.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from pathlib import Path
 from typing import Dict, List, Optional
 from langchain_core.tools import BaseTool
 
-logger = logging.getLogger("rugpt.agents.tools.registry")
+logger = get_logger("agents")
 
 _TOOLS_DOCS_DIR = Path(__file__).parent.parent.parent / "prompts" / "tools"
-
 
 class ToolRegistry:
     """
