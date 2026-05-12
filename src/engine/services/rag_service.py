@@ -22,6 +22,8 @@ from ..storage.rag_store import RAG_store
 from ..storage.user_file_storage import UserFileStorage
 
 logger = logging.getLogger("rugpt.services.rag")
+_ABSTRACT_SEARCH_MIN_WORDS = 5
+_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 
 def _safe_tika_file_name(file_name: str | None) -> str:
@@ -33,6 +35,10 @@ def _normalize_cell(value: Any) -> str:
     if value is None:
         return ""
     return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _query_word_count(query: str) -> int:
+    return len(_WORD_RE.findall(query))
 
 
 def _extract_tika_content(parsed: Any) -> str:
@@ -441,6 +447,21 @@ class RAGService:
         tsv_weight: Optional[float] = 1,
     ) -> list[ChunkSearchResult]:
         """Return top-k concrete matches inside one file."""
+        word_count = _query_word_count(query)
+        if word_count >= _ABSTRACT_SEARCH_MIN_WORDS:
+            logger.info(
+                "rag search_concrete_in_doc: using abstract search for long query "
+                "(words=%d, top_k=%d, file_id=%s)",
+                word_count,
+                top_k,
+                file_id,
+            )
+            return await self.search_abstract_in_doc(
+                file_id=file_id,
+                query=query,
+                top_k=top_k,
+            )
+
         qwen_query = ("Instruct: Given a web search query, retrieve relevant passages that answer the query"
                 f"Query: {query}")
         query_embedding = self._embed_query(qwen_query)

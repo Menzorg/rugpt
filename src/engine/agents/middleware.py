@@ -266,6 +266,20 @@ class HistoryCompactionMiddleware(AgentMiddleware):
         log_token_summary("middleware.history_compaction_summary", total, logger=logger)
         return str(result.content).strip()
 
+    def _prepend_latest_human_if_missing(
+        self,
+        loop_messages: list[BaseMessage],
+        to_keep: list[BaseMessage],
+    ) -> list[BaseMessage]:
+        if any(isinstance(m, HumanMessage) for m in to_keep):
+            return to_keep
+
+        for m in reversed(loop_messages):
+            if isinstance(m, HumanMessage):
+                return [m, *to_keep]
+
+        return to_keep
+
     async def abefore_model(self, state, runtime) -> dict[str, Any] | None:
         messages: list = state["messages"]
         loop_messages = [m for m in messages if not isinstance(m, SystemMessage)]
@@ -276,7 +290,7 @@ class HistoryCompactionMiddleware(AgentMiddleware):
 
         keep = self._keep_last
         to_summarise = loop_messages[:-keep]
-        to_keep = loop_messages[-keep:]
+        to_keep = self._prepend_latest_human_if_missing(loop_messages, loop_messages[-keep:])
 
         if not to_summarise:
             return None
@@ -285,7 +299,7 @@ class HistoryCompactionMiddleware(AgentMiddleware):
 
         logger.info(
             "compaction middleware: %d tokens [source=%s] >= %d, summarising %d messages, keeping %d",
-            token_count, token_source, self._trigger_tokens, len(to_summarise), keep,
+            token_count, token_source, self._trigger_tokens, len(to_summarise), len(to_keep),
         )
         try:
             summary_text = await self._acreate_summary(to_summarise)

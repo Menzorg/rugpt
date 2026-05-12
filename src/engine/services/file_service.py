@@ -129,26 +129,42 @@ class FileService:
         )
         return created
 
-    async def index_for_rag(self, file_id: UUID, requesting_user_id: UUID) -> tuple[UserFile, "asyncio.Future | None"]:
-        """Owner-initiated: enqueue file for RAG indexing.
+    async def index_for_rag(
+        self,
+        file_id: UUID,
+        requesting_user_id: UUID,
+        requesting_org_id: UUID | None = None,
+        requesting_is_admin: bool = False,
+    ) -> tuple[UserFile, "asyncio.Future | None"]:
+        """Owner/admin-initiated: enqueue file for RAG indexing.
 
         Idempotent: if already pending/indexing/indexed, returns the file unchanged
         without re-enqueuing.
 
         Args:
             file_id: file to index
-            requesting_user_id: must be the file owner
+            requesting_user_id: file owner, or an org admin when indexing another user's file.
+            requesting_org_id: required for admin cross-owner indexing; must match the file org.
+            requesting_is_admin: whether the requesting user is an org admin.
 
         Raises:
             FileNotFoundError: file does not exist or is inactive.
-            PermissionError: requesting_user_id is not the owner.
+            PermissionError: requester is neither the owner nor a same-org admin.
             ValueError: file type is not RAG-compatible (e.g. image).
         """
         file = await self.file_storage.get_by_id(file_id)
         if file is None or not file.is_active:
             raise FileNotFoundError(f"File {file_id} not found")
-        if file.user_id != requesting_user_id:
-            raise PermissionError("Only the file owner can index it for RAG")
+
+        is_owner = file.user_id == requesting_user_id
+        is_same_org_admin = (
+            requesting_is_admin
+            and requesting_org_id is not None
+            and file.org_id == requesting_org_id
+        )
+        if not (is_owner or is_same_org_admin):
+            raise PermissionError("Only the file owner or an organization admin can index it for RAG")
+
         if file.file_type not in RAG_COMPATIBLE_TYPES:
             raise ValueError(f"File type '{file.file_type}' is not supported by RAG")
         if file.rag_status == "indexed":
@@ -201,7 +217,7 @@ class FileService:
             raise
         logger.info(
             f"Enqueued file {file.id} for RAG indexing "
-            f"(owner={requesting_user_id}, type={file.file_type})"
+            f"(requester={requesting_user_id}, owner={file.user_id}, admin={requesting_is_admin}, type={file.file_type})"
         )
         return file, future
 

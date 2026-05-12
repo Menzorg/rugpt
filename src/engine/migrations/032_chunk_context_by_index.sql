@@ -10,7 +10,7 @@ CREATE OR REPLACE FUNCTION search_concrete_chunks(
   p_query text,
   p_query_emb vector(1024),
   p_top_k integer,
-  p_tsv_weight double precision DEFAULT 1.0
+  p_tsv_weight double precision DEFAULT 2.0
 )
 RETURNS TABLE (
   chunk_id uuid,

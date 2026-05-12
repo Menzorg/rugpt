@@ -191,6 +191,8 @@ async def index_file_for_rag(
         updated, _future = await engine.file_service.index_for_rag(
             file_id=file_uuid,
             requesting_user_id=current_user["user_id"],
+            requesting_org_id=current_user["org_id"],
+            requesting_is_admin=bool(current_user.get("is_admin")),
         )
         return FileResponse(**updated.to_dict())
     except FileNotFoundError as e:
