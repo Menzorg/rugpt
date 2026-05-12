@@ -433,7 +433,7 @@ class AIService:
         result = await self.agent_executor.execute(
             role=role,
             messages=conv_messages,
-            temperature=0.7,
+            temperature=0.3,
             max_tokens=256,
             user_id=user_id,
             chat_id=chat_id,
