@@ -220,7 +220,7 @@ class EngineService:
             llm_api_key=Config.LLM_API_KEY,
             chunk_size=Config.RAG_CHUNK_SIZE,
             chunk_overlap=Config.RAG_CHUNK_OVERLAP,
-            summary_input_max_chars=Config.RAG_SUMMARY_INPUT_MAX_CHARS,
+            summary_input_max_tokens=Config.RAG_SUMMARY_INPUT_MAX_TOKENS,
             file_storage=self.user_file_storage,  # для обновления rag_status при индексации
         )
 
@@ -448,6 +448,10 @@ class EngineService:
         await self.memory_snapshot_storage.init()
 
         await self.rag_store.init()
+
+        # Load local tokenizer files; tiktoken fallback requires no init
+        from ..utils.token_counter import init_token_counter
+        init_token_counter()
 
         # Wire the shared RAGService into the RAG tool
         from ..agents.tools.rag_tool import init_rag_service
