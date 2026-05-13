@@ -61,6 +61,7 @@ class FileService:
         filename: str,
         data: bytes,
         is_public: bool = False,
+        folder_id: Optional[UUID] = None,
     ) -> UserFile:
         """
         Upload a file for an employee.
@@ -102,6 +103,7 @@ class FileService:
         # Create metadata record.
         # rag_status is explicitly "not_indexed": upload no longer auto-enqueues
         # RAG indexing — owner must opt in via FileService.index_for_rag.
+        # folder_id is trusted: routes call folder_service.verify_folder_owner before upload.
         file_record = UserFile(
             user_id=user_id,
             org_id=org_id,
@@ -113,6 +115,7 @@ class FileService:
             is_public=is_public,
             is_table=is_table,
             rag_status="not_indexed",
+            folder_id=folder_id,
         )
 
         # Generate storage key: {org_id}/{user_id}/{file_id}.{ext}
@@ -333,6 +336,25 @@ class FileService:
         if result:
             logger.info(f"Deleted file {file_id} ({file_record.original_filename})")
         return result
+
+    async def move_to_folder(
+        self, file_id: UUID, new_folder_id: Optional[UUID],
+        actor_user_id: UUID, actor_is_admin: bool, actor_org_id: UUID,
+    ) -> Optional[UserFile]:
+        """Move a file to a different folder (or to root if new_folder_id is None).
+
+        Authorization: actor must be the file owner, or admin of the same org.
+        Caller MUST verify new_folder_id (if not None) belongs to file owner via
+        folder_service.verify_folder_owner before calling.
+        """
+        file_record = await self.file_storage.get_by_id(file_id)
+        if file_record is None:
+            return None
+        is_owner = file_record.user_id == actor_user_id
+        is_admin_same_org = actor_is_admin and file_record.org_id == actor_org_id
+        if not (is_owner or is_admin_same_org):
+            raise PermissionError("Only the file owner or admin can move this file")
+        return await self.file_storage.move_to_folder(file_id, new_folder_id)
 
     async def change_public(self, file_id: UUID, is_public: bool) -> Optional[UserFile]:
         """Set the is_public visibility flag on a file."""

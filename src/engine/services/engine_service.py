@@ -25,6 +25,7 @@ from ..storage.task_participant_storage import TaskParticipantStorage
 from ..storage.task_poll_storage import TaskPollStorage
 from ..storage.task_report_storage import TaskReportStorage
 from ..storage.user_file_storage import UserFileStorage
+from ..storage.user_file_folder_storage import UserFileFolderStorage
 from ..storage.correction_rule_storage import CorrectionRuleStorage
 from ..storage.device_storage import DeviceStorage
 from ..storage.department_storage import DepartmentStorage
@@ -53,6 +54,7 @@ from .task_service import TaskService
 from .task_poll_service import TaskPollService
 from .task_report_service import TaskReportService
 from .file_service import FileService
+from .folder_service import FolderService
 from .correction_rule_service import CorrectionRuleService
 from .memory_service import MemoryService
 from .department_service import DepartmentService
@@ -103,6 +105,7 @@ class EngineService:
         self.task_poll_storage = TaskPollStorage(self.postgres_dsn)
         self.task_report_storage = TaskReportStorage(self.postgres_dsn)
         self.user_file_storage = UserFileStorage(self.postgres_dsn)
+        self.user_file_folder_storage = UserFileFolderStorage(self.postgres_dsn)
         self.correction_rule_storage = CorrectionRuleStorage(self.postgres_dsn)
         self.device_storage = DeviceStorage(self.postgres_dsn)
         self.department_storage = DepartmentStorage(self.postgres_dsn)
@@ -217,8 +220,16 @@ class EngineService:
             llm_api_key=Config.LLM_API_KEY,
             chunk_size=Config.RAG_CHUNK_SIZE,
             chunk_overlap=Config.RAG_CHUNK_OVERLAP,
-            summary_input_max_tokens=Config.RAG_SUMMARY_INPUT_MAX_TOKENS,
+            summary_input_max_chars=Config.RAG_SUMMARY_INPUT_MAX_CHARS,
             file_storage=self.user_file_storage,  # для обновления rag_status при индексации
+        )
+
+        # Folder service — depends on folder storage, file storage, rag_service, storage_adapter.
+        self.folder_service = FolderService(
+            folder_storage=self.user_file_folder_storage,
+            file_storage=self.user_file_storage,
+            rag_service=self.rag_service,
+            storage_adapter=self.storage_adapter,
         )
 
         # Initialize notification service
@@ -425,6 +436,7 @@ class EngineService:
         await self.task_poll_storage.init()
         await self.task_report_storage.init()
         await self.user_file_storage.init()
+        await self.user_file_folder_storage.init()
         await self.correction_rule_storage.init()
         await self.device_storage.init()
         await self.department_storage.init()
@@ -436,10 +448,6 @@ class EngineService:
         await self.memory_snapshot_storage.init()
 
         await self.rag_store.init()
-
-        # Load local tokenizer files; tiktoken fallback requires no init
-        from ..utils.token_counter import init_token_counter
-        init_token_counter()
 
         # Wire the shared RAGService into the RAG tool
         from ..agents.tools.rag_tool import init_rag_service
@@ -490,6 +498,7 @@ class EngineService:
         await self.task_poll_storage.close()
         await self.task_report_storage.close()
         await self.user_file_storage.close()
+        await self.user_file_folder_storage.close()
         await self.correction_rule_storage.close()
         await self.device_storage.close()
         await self.department_storage.close()

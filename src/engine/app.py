@@ -41,6 +41,7 @@ from .routes import (
     projects_router,
     support_router,
     corrections_router,
+    folders_router,
 )
 
 # Configure logging with correlation_id in every record
@@ -141,6 +142,7 @@ app.include_router(tasks_router, prefix="/api/v1", tags=["tasks"])
 app.include_router(task_polls_router, prefix="/api/v1", tags=["task-polls"])
 app.include_router(task_reports_router, prefix="/api/v1", tags=["task-reports"])
 app.include_router(files_router, prefix="/api/v1", tags=["files"])
+app.include_router(folders_router, prefix="/api/v1", tags=["folders"])
 app.include_router(rag_router, prefix="/api/v1", tags=["rag"])
 app.include_router(departments_router, prefix="/api/v1", tags=["departments"])
 app.include_router(projects_router, prefix="/api/v1", tags=["projects"])

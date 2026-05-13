@@ -23,8 +23,8 @@ class UserFileStorage(BaseStorage):
                 (id, user_id, org_id, uploaded_by_user_id,
                  storage_key, original_filename, file_type,
                  file_size, content_hash, summary, is_table, is_public, rag_status,
-                 is_active, cloned_from_file_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                 is_active, cloned_from_file_id, folder_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             RETURNING *
         """
         row = await self.fetchrow(
@@ -32,7 +32,7 @@ class UserFileStorage(BaseStorage):
             file.id, file.user_id, file.org_id, file.uploaded_by_user_id,
             file.storage_key, file.original_filename, file.file_type,
             file.file_size, file.content_hash, file.summary, file.is_table, file.is_public, file.rag_status,
-            file.is_active, file.cloned_from_file_id, file.created_at, file.updated_at,
+            file.is_active, file.cloned_from_file_id, file.folder_id, file.created_at, file.updated_at,
         )
         return self._row_to_file(row)
 
@@ -239,6 +239,67 @@ class UserFileStorage(BaseStorage):
         )
         return self._row_to_file(row) if row else None
 
+    async def list_by_user_in_folder(
+        self, user_id: UUID, folder_id: Optional[UUID],
+    ) -> List[UserFile]:
+        """List active files of a user inside a specific folder. folder_id=None → root."""
+        rows = await self.fetch(
+            """
+            SELECT * FROM user_files
+            WHERE user_id = $1
+              AND folder_id IS NOT DISTINCT FROM $2
+              AND is_active = true
+            ORDER BY created_at DESC
+            """,
+            user_id, folder_id,
+        )
+        return [self._row_to_file(r) for r in rows]
+
+    async def list_by_folder_ids(
+        self, folder_ids: List[UUID],
+    ) -> List[UserFile]:
+        """List active files in any of the given folders. Used by cascade-delete."""
+        if not folder_ids:
+            return []
+        rows = await self.fetch(
+            """
+            SELECT * FROM user_files
+            WHERE folder_id = ANY($1::uuid[]) AND is_active = true
+            """,
+            list(folder_ids),
+        )
+        return [self._row_to_file(r) for r in rows]
+
+    async def move_to_folder(
+        self, file_id: UUID, folder_id: Optional[UUID],
+    ) -> Optional[UserFile]:
+        """Set folder_id on a file. folder_id=None → move to root."""
+        row = await self.fetchrow(
+            """
+            UPDATE user_files
+            SET folder_id = $2, updated_at = $3
+            WHERE id = $1 AND is_active = true
+            RETURNING *
+            """,
+            file_id, folder_id, datetime.utcnow(),
+        )
+        return self._row_to_file(row) if row else None
+
+    async def deactivate_by_folder_ids(self, folder_ids: List[UUID]) -> List[UUID]:
+        """Soft-delete all active files whose folder_id is in the set. Returns affected file_ids."""
+        if not folder_ids:
+            return []
+        rows = await self.fetch(
+            """
+            UPDATE user_files
+            SET is_active = false, updated_at = $2
+            WHERE folder_id = ANY($1::uuid[]) AND is_active = true
+            RETURNING id
+            """,
+            list(folder_ids), datetime.utcnow(),
+        )
+        return [r["id"] for r in rows]
+
     def _row_to_file(self, row) -> UserFile:
         """Map asyncpg Record to UserFile"""
         keys = set(row.keys())
@@ -260,6 +321,7 @@ class UserFileStorage(BaseStorage):
             indexed_at=row["indexed_at"],
             is_active=row["is_active"],
             cloned_from_file_id=row["cloned_from_file_id"] if "cloned_from_file_id" in keys else None,
+            folder_id=row["folder_id"] if "folder_id" in keys else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

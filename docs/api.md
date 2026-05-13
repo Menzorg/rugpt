@@ -860,3 +860,38 @@ TSV-first поиск внутри документа.
   "detail": "Error message"
 }
 ```
+
+### Folders (`/api/v1/folders`)
+| Endpoint | Описание |
+|----------|----------|
+| `POST /` | Создать папку (body `{name, parent_folder_id?}`) |
+| `GET /` | Плоский список папок юзера |
+| `GET /tree` | Уже собранное дерево с `children: []` |
+| `GET /{id}` | Метаданные папки |
+| `PATCH /{id}` | Rename и/или move (body `{name?, parent_folder_id?}`; `parent_folder_id: null` → в корень) |
+| `DELETE /{id}` | Каскадный soft-delete (response `{success, deleted_folders, deleted_files}`) |
+| `GET /{id}/files` | Файлы непосредственно в папке |
+
+Admin может передать `?user_id=<uuid>` чтобы работать с папками другого юзера в своей орге.
+
+### Files (`/api/v1/files`) — обновления
+
+- `POST /upload` принимает form-поле `folder_id` (опционально)
+- `GET /` принимает query `?folder_id=` (`null` для корня, UUID, либо опустить для всего списка)
+- `PATCH /{file_id}/folder` — переместить файл (body `{folder_id: UUID | null}`)
+
+### Folder errors
+
+Все 4xx ошибки folder-операций возвращают `detail: {code, message}`:
+
+| code | status | сценарий |
+|---|---|---|
+| EMPTY_NAME | 400 | пустое или whitespace-only имя |
+| NAME_TOO_LONG | 400 | имя длиннее 255 символов |
+| MAX_DEPTH_EXCEEDED | 400 | глубина результирующей папки > 10 уровней |
+| CYCLIC_MOVE | 400 | new_parent ∈ subtree(folder) или new_parent == folder_id |
+| INVALID_PARENT_OWNER | 400 | parent.user_id != self.user_id |
+| FORBIDDEN | 403 | actor не owner и не admin того же org |
+| FOLDER_NOT_FOUND | 404 | папка не существует или is_active=false |
+| PARENT_NOT_FOUND | 404 | parent_folder_id указан, но папки нет |
+| DUPLICATE_NAME | 409 | имя дублируется в одном parent (case-insensitive) |

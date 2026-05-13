@@ -18,6 +18,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from ..services.engine_service import get_engine_service
+from ..services.folder_service import FolderError
 from ..constants import CONTENT_TYPES
 from .auth import get_current_user
 
@@ -44,6 +45,7 @@ class FileResponse(BaseModel):
     created_at: str
     updated_at: str
     cloned_from_file_id: Optional[str] = None
+    folder_id: Optional[str] = None
 
 
 @router.post("/upload", response_model=FileResponse)
@@ -51,12 +53,13 @@ async def upload_file(
     file: UploadFile = File(...),
     user_id: Optional[str] = Form(None, description="Employee UUID who owns this file (defaults to authenticated user)"),
     is_public: bool = Form(False, description="Make file visible to all org users"),
+    folder_id: Optional[str] = Form(None, description="Target folder UUID (defaults to root)"),
     current_user: dict = Depends(get_current_user),
 ):
     """Upload a file for an employee (manager action)"""
     engine = get_engine_service()
 
-    
+
     try:
         user_uuid = UUID(user_id) if user_id else current_user["user_id"]
     except ValueError:
@@ -64,6 +67,22 @@ async def upload_file(
 
     if not current_user.get("is_admin") and user_uuid != current_user["user_id"]:
         raise HTTPException(status_code=403, detail="You can only upload files for yourself")
+
+    folder_uuid: Optional[UUID] = None
+    if folder_id:
+        try:
+            folder_uuid = UUID(folder_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid folder_id")
+        try:
+            await engine.folder_service.verify_folder_owner(
+                folder_id=folder_uuid, user_id=user_uuid, org_id=current_user["org_id"],
+            )
+        except FolderError as e:
+            raise HTTPException(
+                status_code={"FOLDER_NOT_FOUND": 404, "INVALID_PARENT_OWNER": 400}.get(e.code, 400),
+                detail={"code": e.code, "message": e.message},
+            )
 
     data = await file.read()
     logger.info("Can read file. Trying to ingest")
@@ -76,6 +95,7 @@ async def upload_file(
             filename=file.filename or "unnamed",
             data=data,
             is_public=is_public,
+            folder_id=folder_uuid,
         )
         return FileResponse(**created.to_dict())
     except ValueError as e:
@@ -85,11 +105,20 @@ async def upload_file(
 
 @router.get("", response_model=List[FileResponse])
 async def list_files(
+    folder_id: Optional[str] = Query(None, description="Filter by folder. 'null'=root, UUID=specific, omit=all"),
     current_user: dict = Depends(get_current_user),
 ):
-    """List files. Admin видит весь орг, обычный юзер — только свои."""
     engine = get_engine_service()
-    if current_user.get("is_admin"):
+    if folder_id is not None:
+        if folder_id == "null":
+            folder_uuid = None
+        else:
+            try:
+                folder_uuid = UUID(folder_id)
+            except ValueError:
+                raise HTTPException(status_code=422, detail="Invalid folder_id")
+        files = await engine.user_file_storage.list_by_user_in_folder(current_user["user_id"], folder_uuid)
+    elif current_user.get("is_admin"):
         files = await engine.file_service.list_by_org(current_user["org_id"])
     else:
         files = await engine.file_service.list_by_user(current_user["user_id"])
@@ -288,3 +317,59 @@ async def set_file_public(
     if not updated:
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(**updated.to_dict())
+
+
+class MoveFileBody(BaseModel):
+    folder_id: Optional[str] = None
+
+
+@router.patch("/{file_id}/folder", response_model=FileResponse)
+async def move_file_to_folder(
+    file_id: str,
+    body: MoveFileBody,
+    current_user: dict = Depends(get_current_user),
+):
+    """Move file to a different folder. body.folder_id=null → move to root."""
+    engine = get_engine_service()
+    try:
+        file_uuid = UUID(file_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid file ID")
+
+    file_record = await engine.file_service.get(file_uuid)
+    if not file_record:
+        raise HTTPException(status_code=404, detail="File not found")
+    if file_record.org_id != current_user["org_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    new_folder_uuid: Optional[UUID] = None
+    if body.folder_id:
+        try:
+            new_folder_uuid = UUID(body.folder_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid folder_id")
+        try:
+            await engine.folder_service.verify_folder_owner(
+                folder_id=new_folder_uuid,
+                user_id=file_record.user_id,
+                org_id=file_record.org_id,
+            )
+        except FolderError as e:
+            raise HTTPException(
+                status_code={"FOLDER_NOT_FOUND": 404, "INVALID_PARENT_OWNER": 400}.get(e.code, 400),
+                detail={"code": e.code, "message": e.message},
+            )
+
+    try:
+        moved = await engine.file_service.move_to_folder(
+            file_id=file_uuid,
+            new_folder_id=new_folder_uuid,
+            actor_user_id=current_user["user_id"],
+            actor_is_admin=current_user.get("is_admin", False),
+            actor_org_id=current_user["org_id"],
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if not moved:
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(**moved.to_dict())

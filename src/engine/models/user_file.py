@@ -36,6 +36,7 @@ class UserFile:
     indexed_at: Optional[datetime] = None
     is_active: bool = True
     cloned_from_file_id: Optional[UUID] = None  # if non-null, metadata-only clone of source file_id
+    folder_id: Optional[UUID] = None  # NULL = root level; folder.user_id must equal self.user_id
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -59,6 +60,7 @@ class UserFile:
             "indexed_at": self.indexed_at.isoformat() if self.indexed_at else None,
             "is_active": self.is_active,
             "cloned_from_file_id": str(self.cloned_from_file_id) if self.cloned_from_file_id else None,
+            "folder_id": str(self.folder_id) if self.folder_id else None,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
