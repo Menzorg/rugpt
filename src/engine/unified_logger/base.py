@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import threading
+import traceback
 
 from abc import ABC, abstractmethod
 from datetime import datetime, date, timezone
@@ -148,32 +149,43 @@ class BaseUnifiedLogger(ABC):
     # запись с **kwargs в JSON-поле `metadata`.
     # Авто-обогащение на ERROR+ нужно, чтобы при упавшем запросе сразу было видно
     # «откуда упало», не ныряя в traceback. Если caller сам передал `handler=...` — не трогаем.
-    def _log(self, level: int, message: str, **kwargs) -> None:
+    def _log(self, level: int, message: str, *args, **kwargs) -> None:
         self._check_and_rotate_handlers()
         # На ERROR+ автоматически обогащаем kwargs информацией о caller'е,
         # если её ещё не передали явно — для быстрой ориентации в логах.
+        exc_info = kwargs.pop("exc_info", None)
+        if exc_info:
+            if exc_info is True:
+                exc_info = sys.exc_info()
+            elif isinstance(exc_info, BaseException):
+                exc_info = (type(exc_info), exc_info, exc_info.__traceback__)
+            if exc_info[0] is not None:
+                kwargs["traceback"] = "".join(traceback.format_exception(*exc_info))
         if level >= logging.ERROR and "handler" not in kwargs:
             kwargs.update(_get_caller_handler_info())
         extra = {"metadata": kwargs} if kwargs else None
-        self.logger.log(level, message, extra=extra)
+        self.logger.log(level, message, *args, extra=extra)
 
     # DEBUG; **kwargs → JSON-поле `metadata`.
-    def debug(self, message: str, **kwargs) -> None:
-        self._log(logging.DEBUG, message, **kwargs)
+    def debug(self, message: str, *args, **kwargs) -> None:
+        self._log(logging.DEBUG, message, *args, **kwargs)
 
     # INFO; **kwargs → JSON-поле `metadata`.
-    def info(self, message: str, **kwargs) -> None:
-        self._log(logging.INFO, message, **kwargs)
+    def info(self, message: str, *args, **kwargs) -> None:
+        self._log(logging.INFO, message, *args, **kwargs)
 
     # WARNING; **kwargs → JSON-поле `metadata`.
-    def warning(self, message: str, **kwargs) -> None:
-        self._log(logging.WARNING, message, **kwargs)
+    def warning(self, message: str, *args, **kwargs) -> None:
+        self._log(logging.WARNING, message, *args, **kwargs)
 
     # ERROR; **kwargs → JSON-поле `metadata`, плюс автоматически добавляется
     # caller-инфа (см. `_log`).
-    def error(self, message: str, **kwargs) -> None:
-        self._log(logging.ERROR, message, **kwargs)
+    def error(self, message: str, *args, **kwargs) -> None:
+        self._log(logging.ERROR, message, *args, **kwargs)
 
+    def exception(self, message: str, *args, **kwargs) -> None:
+        kwargs["exc_info"] = True
+        self._log(logging.ERROR, message, *args, **kwargs)
     # На смене даты закрывает старый FileHandler и открывает новый
     # в `<new_date>/<component>.jsonl`.
     # Double-checked locking:
