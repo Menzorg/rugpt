@@ -271,6 +271,9 @@ class EngineService:
         from ..agents.tools.list_documents import list_global_documents, list_own_documents
         from ..agents.tools.user_tool import create_user_tools
         from ..agents.tools.analyze_image import create_analyze_image_tool
+        from ..agents.tools.helper_registry import HelperRegistry
+        from ..agents.helper_executor import HelperExecutor
+        from ..agents.tools.call_helper_tool import call_helper, init_call_helper_tool
 
         # Create calendar tools wired to CalendarService
         cal_create_tool, cal_query_tool = create_calendar_tools(self.calendar_service)
@@ -306,6 +309,19 @@ class EngineService:
             department_service=self.department_service,
         )
         self.tool_registry.register("user_search", user_search_tool)
+
+        # HelperRegistry resolves helper tool-name lists using the now-complete ToolRegistry.
+        # HelperExecutor is wired to it and shared with call_helper tool.
+        self.helper_registry = HelperRegistry(self.tool_registry)
+        self.helper_executor = HelperExecutor(
+            base_url=Config.LLM_BASE_URL,
+            api_key=Config.LLM_API_KEY,
+            default_model=Config.DEFAULT_MODEL,
+            prompt_cache=self.prompt_cache,
+            helper_registry=self.helper_registry,
+        )
+        init_call_helper_tool(self.helper_executor)
+        self.tool_registry.register("call_helper", call_helper)
 
         # MemoryService needs AgentExecutor, so it is created after it.
         # AgentExecutor receives memory_service via setter below to break the chicken-egg.
