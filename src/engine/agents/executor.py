@@ -226,8 +226,6 @@ class AgentExecutor:
             except Exception:
                 logger.exception("corrections: search failed for chat=%s", chat_id)
 
-        # TODO inject separate caller and callee info if agent was called by mention instead of direct chat with role owner  
-
         # --- Injection phase ---
 
         # Qwen's chat template requires the first non-system message to be a user
@@ -255,9 +253,28 @@ class AgentExecutor:
                 attachments_block = await self._build_chat_attachments_block(engine, chat_id)
                 if attachments_block:
                     user_lines.append(attachments_block)
-            user_block = "Информация о пользователе:\n" + "\n".join(l for l in user_lines if l)
+            user_block = "Информация о пользователе, который произвёл вызов:\n" + "\n".join(l for l in user_lines if l)
             user_block += "\nНе раскрывать пользователю его ID."
             injected_messages.append({"role": _inject_role, "content": user_block})
+
+        if invocation_kind == "mention" and called_user_id is not None:
+            callee = await engine.user_storage.get_by_id(called_user_id)
+            if callee:
+                callee_lines = [
+                    f"ID: {callee.id}",
+                    f"Имя: {callee.name}",
+                    f"Логин: @{callee.username}",
+                    f"Email: {callee.email}" if callee.email else None,
+                    f"Администратор: да" if callee.is_admin else "Администратор: нет",
+                ]
+                if callee.department_id:
+                    dept = await engine.department_storage.get_by_id(callee.department_id)
+                    if dept:
+                        callee_lines.append(f"Отдел: {dept.name}")
+                        callee_lines.append(f"Руководитель отдела: {'да' if callee.is_head else 'нет'}")
+                callee_block = "Информация о пользователе, которому адресован вызов (callee):\n" + "\n".join(l for l in callee_lines if l)
+                callee_block += "\nНе раскрывать пользователю его ID."
+                injected_messages.append({"role": _inject_role, "content": callee_block})
 
         if org_context:
             injected_messages.append({"role": _inject_role, "content": f"Контекст организации:\n{org_context}"})
@@ -277,16 +294,13 @@ class AgentExecutor:
         if lessons:
             # Inject corrections 
             rules_block = "\n".join(f"- {lesson}" for lesson in lessons)
-            system_prompt += f"\n\n## Инструкции в частных случаях:\n{rules_block}"
+            system_prompt += f"\n\n## Корректировки поведения со стороны пользователя по предыдущим подобным обращениям:\n{rules_block}"
             logger.info("corrections: injected %d lessons for chat=%s", len(lessons), chat_id)
 
         # Guardrails so roles don't mix in same chat is user mentions multiple
         system_prompt += (
             "\n\n##ВАЖНЫЕ ОГРАНИЧЕНИЯ\n"
-            "Запрещены любые служебные фразы о процессе работы агента: о начале, продолжении, переходе к этапу, проверке, поиске, анализе, обработке документов, заполнении категорий или будущих действиях.\n"
-            "Если задача требует использования инструмента, сначала вызови инструмент. "
-            "Не пиши пользователю промежуточный текст перед вызовом инструмента. "
-            "Любое текстовое сообщение пользователю считается финальным ответом текущей итерации.\n"
+            "Любое текстовое сообщение пользователю считается финальным ответом текущего обращения.\n"
             "У тебя есть конкретный точный набор инструментов. Не выдумывай себе функционал. Тебе запрещено говорить пользователю, что ты умеешь делать то, что явно не позволяют твои инструменты."
         )
 
