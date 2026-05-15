@@ -120,6 +120,9 @@ class AgentExecutor:
         temperature: float = 0.7,
         max_tokens: int = 2048,
         user_id: Optional[UUID] = None,
+        caller_user_id: Optional[UUID] = None,
+        called_user_id: Optional[UUID] = None,
+        invocation_kind: str = "direct",
         chat_id: Optional[UUID] = None,
     ) -> AgentResult:
         """
@@ -130,7 +133,10 @@ class AgentExecutor:
             messages: Conversation as [{"role": "user"/"assistant", "content": "..."}]
             temperature: Sampling temperature
             max_tokens: Max tokens in response
-            user_id: User ID for RAG scope (owner of the conversation)
+            user_id: Backward-compatible alias for caller_user_id
+            caller_user_id: User ID that triggered the agent run
+            called_user_id: Mentioned/responding user ID for mention calls
+            invocation_kind: "direct" or "mention"
 
         Returns:
             AgentResult with response
@@ -140,6 +146,9 @@ class AgentExecutor:
         # Fetch org_context for message injection
         from ..services.engine_service import get_engine_service
         engine = get_engine_service()
+        effective_caller_user_id = caller_user_id or user_id
+        if invocation_kind != "mention" or called_user_id is None:
+            invocation_kind = "direct"
 
         # Resolve the INITIATOR's org — that's the scope tools should operate in.
         # role.org_id is typically the RuGPT system org for cross-org roles (PM,
@@ -148,8 +157,8 @@ class AgentExecutor:
         # when there is no initiator (e.g. scheduler-driven calls).
         scope_org_id = role.org_id
         initiator = None
-        if user_id is not None:
-            initiator = await engine.user_storage.get_by_id(user_id)
+        if effective_caller_user_id is not None:
+            initiator = await engine.user_storage.get_by_id(effective_caller_user_id)
             if initiator and initiator.org_id:
                 scope_org_id = initiator.org_id
 
@@ -163,12 +172,15 @@ class AgentExecutor:
         runtime_context = RuntimeContext()
         runtime_context.available_tools_count = len(tools)
 
-        # RunnableConfig carries initiator's org_id/user_id for tools.
+        # RunnableConfig carries initiator/called identity for tools.
         config = RunnableConfig(
             max_concurrency=2,
             configurable={
                 "org_id": str(scope_org_id) if scope_org_id else "",
-                "user_id": str(user_id) if user_id else "",
+                "user_id": str(effective_caller_user_id) if effective_caller_user_id else "",
+                "caller_user_id": str(effective_caller_user_id) if effective_caller_user_id else "",
+                "called_user_id": str(called_user_id) if called_user_id else "",
+                "invocation_kind": invocation_kind,
                 "is_admin": bool(initiator.is_admin) if initiator else False,
             },
         )
@@ -214,6 +226,8 @@ class AgentExecutor:
             except Exception:
                 logger.exception("corrections: search failed for chat=%s", chat_id)
 
+        # TODO inject separate caller and callee info if agent was called by mention instead of direct chat with role owner  
+
         # --- Injection phase ---
 
         # Qwen's chat template requires the first non-system message to be a user
@@ -224,7 +238,7 @@ class AgentExecutor:
 
         injected_messages: list[dict] = []
 
-        if user_id is not None and initiator:
+        if effective_caller_user_id is not None and initiator:
             user_lines = [
                 f"ID: {initiator.id}",
                 f"Имя: {initiator.name}",
@@ -314,7 +328,7 @@ class AgentExecutor:
                 "rag_search tool call limit: run_limit=%d",
                 _RAG_SEARCH_TOOL_CALL_LIMIT,
             )
-        for list_tool_name in ("list_global_documents", "list_private_documents"):
+        for list_tool_name in ("list_global_documents", "list_own_documents"):
             if any(tool.name == list_tool_name for tool in tools):
                 agent_middleware.append(
                     ToolCallLimitMiddleware(

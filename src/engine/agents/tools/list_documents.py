@@ -3,13 +3,13 @@ Document Tools
 
 Two LangChain tools for listing documents:
 
-  list_global_documents — org-wide visibility: all is_public files (excluding caller's own).
-  list_private_documents — private visibility: only files uploaded by the caller.
+  list_global_documents — org-wide visibility: all is_public files (excluding active owner's own).
+  list_own_documents — documents owned by the direct caller or mentioned user.
 
 Visibility modes
 ----------------
-  "global"  — uploaded_by_user_id != user_id  AND  (is_public OR is_admin)
-  "private" — uploaded_by_user_id == user_id  (no public files)
+  "global" — user_id != active_owner_user_id AND (is_public OR is_admin)
+  "own"    — direct: caller-owned; mention: called-user-owned, public only if caller differs
 
 Service lifecycle: call init_document_service(storage) once during engine startup.
 
@@ -32,6 +32,7 @@ How it works:
    [BUDGET EXHAUSTED] are not counted — they did not consume budget.
 """
 import logging
+from dataclasses import dataclass
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -62,6 +63,40 @@ _SUMMARY_TOKENS_BUDGET = 2000
 _user_file_storage: Optional[UserFileStorage] = None
 _user_storage: Optional[UserStorage] = None
 _rag_service: Optional[RAGService] = None
+
+
+@dataclass(frozen=True)
+class DocumentToolScope:
+    tool_name: str
+    owner_user_id: UUID
+    org_id: UUID
+    public_only_owner: bool
+    is_admin: bool
+    own_only: bool
+
+
+@dataclass(frozen=True)
+class PageSlice:
+    items: list[UserFile]
+    page: int
+    total_pages: int
+    start: int
+    end: int
+    total: int
+
+
+@dataclass(frozen=True)
+class RuntimeDedupeState:
+    seen_ids: set[str]
+    deduplicated_across_runs: bool
+
+
+class _MissingDocumentToolContext(Exception):
+    """Raised when RunnableConfig lacks identity/org fields required for document visibility."""
+
+    def __init__(self, missing_fields: list[str]):
+        self.missing_fields = missing_fields
+        super().__init__(f"missing required RunnableConfig fields: {', '.join(missing_fields)}")
 
 
 class ListDocumentsInput(BaseModel):
@@ -142,8 +177,8 @@ async def _resolve_owner_names(
     if _user_storage is None:
         return cache
     unknown_ids = {
-        f.uploaded_by_user_id for f in files
-        if f.uploaded_by_user_id != caller_id and f.uploaded_by_user_id not in cache
+        f.user_id for f in files
+        if f.user_id != caller_id and f.user_id not in cache
     }
     for uid in unknown_ids:
         user: Optional[User] = await _user_storage.get_by_id(uid)
@@ -152,10 +187,10 @@ async def _resolve_owner_names(
 
 
 def _owner_label(f: UserFile, caller_id: UUID, owner_cache: dict[UUID, str]) -> str:
-    # Private listings are caller-owned, so owner is only useful for global results.
-    if f.uploaded_by_user_id == caller_id:
+    # Own listings are scoped to this owner, so owner is only useful for global results.
+    if f.user_id == caller_id:
         return ""
-    name = owner_cache.get(f.uploaded_by_user_id, str(f.uploaded_by_user_id))
+    name = owner_cache.get(f.user_id, str(f.user_id))
     return f", owner={name}"
 
 
@@ -261,36 +296,294 @@ def _format_single_doc(f: UserFile) -> str:
 
 def _apply_visibility(
     files: list[UserFile],
-    user_id: UUID,
-    private_only: bool,
+    owner_user_id: UUID,
+    own_only: bool,
+    public_only_owner: bool,
     is_admin: bool = False,
 ) -> list[UserFile]:
     """Filter *files* by visibility mode, excluding images in both cases."""
-    if private_only:
-        # Private mode is strictly caller-owned documents; public files do not leak in.
+    if own_only:
+        # When another user calls an owner by mention, only that owner's public docs are visible.
         return [
             f for f in files
-            if f.uploaded_by_user_id == user_id
+            if f.user_id == owner_user_id
+            and (not public_only_owner or f.is_public)
             and not _is_image_file(f)
         ]
-    # Global mode is other users' visible documents; admins may see non-public files.
+    # Global mode is other owners' visible documents; admins may see non-public files.
     return [
         f for f in files
-        if (f.uploaded_by_user_id != user_id and (f.is_public or is_admin))
+        if (f.user_id != owner_user_id and (f.is_public or is_admin))
         and not _is_image_file(f)
     ]
+
+
+def _can_see_file(
+    f: UserFile,
+    owner_user_id: UUID,
+    own_only: bool,
+    public_only_owner: bool,
+    is_admin: bool = False,
+) -> bool:
+    return f in _apply_visibility([f], owner_user_id, own_only, public_only_owner, is_admin)
+
+
+def _resolve_tool_identity(configurable: dict) -> tuple[str, str, bool]:
+    caller_user_id = configurable.get("caller_user_id") or configurable.get("user_id", "")
+    org_id = configurable.get("org_id", "")
+    called_user_id = configurable.get("called_user_id", "")
+    invocation_kind = configurable.get("invocation_kind", "direct")
+    owner_user_id = called_user_id if invocation_kind == "mention" and called_user_id else caller_user_id
+    public_only_owner = bool(called_user_id and called_user_id != caller_user_id)
+    return owner_user_id, org_id, public_only_owner
+
+
+def _build_scope(config: RunnableConfig, own_only: bool) -> DocumentToolScope:
+    """Build the immutable visibility scope from injected RunnableConfig.
+
+    Required fields:
+    - configurable.org_id: organization whose documents may be listed
+    - configurable.caller_user_id or configurable.user_id: direct caller identity
+
+    Optional mention fields choose the active document owner:
+    - configurable.called_user_id + invocation_kind="mention" scopes own-doc tools to the called user
+    - if caller and called differ, only the called user's public own documents are visible
+    """
+    configurable = config.get("configurable", {})
+    owner_user_id_str, org_id_str, public_only_owner = _resolve_tool_identity(configurable)
+    # Tools cannot enforce visibility without the active document owner and org scope.
+    missing_fields = []
+    if not owner_user_id_str or not org_id_str:
+        if not owner_user_id_str:
+            missing_fields.append("configurable.caller_user_id or configurable.user_id")
+        if not org_id_str:
+            missing_fields.append("configurable.org_id")
+        raise _MissingDocumentToolContext(missing_fields)
+    return DocumentToolScope(
+        tool_name="list_own_documents" if own_only else "list_global_documents",
+        owner_user_id=UUID(owner_user_id_str),
+        org_id=UUID(org_id_str),
+        public_only_owner=public_only_owner,
+        is_admin=bool(configurable.get("is_admin", False)),
+        own_only=own_only,
+    )
+
+
+async def _get_visible_files(scope: DocumentToolScope) -> list[UserFile]:
+    all_files = await _user_file_storage.list_by_org(scope.org_id)
+    return _apply_visibility(
+        all_files,
+        scope.owner_user_id,
+        scope.own_only,
+        scope.public_only_owner,
+        is_admin=scope.is_admin,
+    )
+
+
+async def _get_single_document(file_id: str, scope: DocumentToolScope) -> str:
+    f = await _user_file_storage.get_by_id(UUID(file_id.strip()))
+    if f is None:
+        return f"Document {file_id} not found."
+    if not _can_see_file(
+        f,
+        scope.owner_user_id,
+        scope.own_only,
+        scope.public_only_owner,
+        scope.is_admin,
+    ):
+        return f"Document {file_id} not found or not visible to you."
+    return _format_single_doc(f)
+
+
+def _has_search_queries(name_query: Optional[str], summary_query: Optional[str]) -> bool:
+    return bool(name_query and name_query.strip()) or bool(summary_query and summary_query.strip())
+
+
+async def _search_visible_files(
+    scope: DocumentToolScope,
+    visible: list[UserFile],
+    name_query: Optional[str],
+    summary_query: Optional[str],
+) -> tuple[list[UserFile], Optional[str]]:
+    if _rag_service is None:
+        return [], f"{scope.tool_name}: search unavailable (RAG service not initialized)."
+
+    matched_ids: set[str] = set()
+    org_id = str(scope.org_id)
+    owner_user_id = str(scope.owner_user_id)
+
+    if name_query and name_query.strip():
+        docs: list[RelatedDoc] = await _rag_service.find_docs(
+            org_id=org_id,
+            user_id=owner_user_id,
+            query=name_query.strip(),
+            top_k=_MAX_RESULTS,
+        )
+        matched_ids.update(d.file_id for d in docs)
+
+    if summary_query and summary_query.strip():
+        docs = await _rag_service.find_docs(
+            org_id=org_id,
+            user_id=owner_user_id,
+            query=summary_query.strip(),
+            top_k=_MAX_RESULTS,
+        )
+        matched_ids.update(d.file_id for d in docs)
+
+    results = [f for f in visible if str(f.id) in matched_ids]
+    return results[:_MAX_RESULTS], None
+
+
+def _get_dedupe_state(runtimedata: object) -> RuntimeDedupeState:
+    seen_ids = (
+        runtimedata.seen_ids
+        if isinstance(runtimedata, ListDocumentsRuntimeData)
+        else set()
+    )
+    return RuntimeDedupeState(
+        seen_ids=seen_ids,
+        deduplicated_across_runs=bool(seen_ids),
+    )
+
+
+def _page_files(files: list[UserFile], page: int) -> PageSlice:
+    total = len(files)
+    page = max(1, page)
+    total_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    page = min(page, total_pages)
+    start = (page - 1) * _PAGE_SIZE
+    end = min(start + _PAGE_SIZE, total)
+    return PageSlice(
+        items=files[start:end],
+        page=page,
+        total_pages=total_pages,
+        start=start,
+        end=end,
+        total=total,
+    )
+
+
+def _blocked_listing_message() -> str:
+    return (
+        "[DOCUMENT LISTING IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+        "USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO LIST DOCUMENTS]"
+    )
+
+
+async def _dedupe_and_page(
+    runtime: ToolRuntime[RuntimeContext],
+    files: list[UserFile],
+    page: int,
+    scope: DocumentToolScope,
+    empty_message: str,
+) -> tuple[RuntimeDedupeState, Optional[PageSlice], Optional[str]]:
+    async with runtime.context.lock:
+        runtimedata = runtime.context.list_documents_runtime_data
+        dedupe_state = _get_dedupe_state(runtimedata)
+
+        if dedupe_state.deduplicated_across_runs:
+            files = [f for f in files if str(f.id) not in dedupe_state.seen_ids]
+
+        if not files:
+            return (
+                dedupe_state,
+                None,
+                _with_dedup_header(dedupe_state.deduplicated_across_runs, empty_message),
+            )
+
+        if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
+            logger.info(
+                "%s: blocked — total_tokens_spent=%d >= %d",
+                scope.tool_name,
+                runtime.context.total_tokens_spent,
+                runtime.context.critical_tokens_cap,
+            )
+            return dedupe_state, None, _blocked_listing_message()
+
+        return dedupe_state, _page_files(files, page), None
+
+
+def _format_page(
+    page_slice: PageSlice,
+    runtimedata: ListDocumentsRuntimeData,
+    owner_user_id: UUID,
+    owner_cache: dict[UUID, str],
+    compact_on_budget_exhausted: bool,
+) -> tuple[str, int]:
+    if len(page_slice.items) == 1:
+        return _format_single_doc(page_slice.items[0]), 0
+
+    budget_exhausted = (
+        compact_on_budget_exhausted
+        and runtimedata.spent_summary_tokens >= _SUMMARY_TOKENS_BUDGET
+    )
+    if budget_exhausted:
+        lines = _format_compact_batch(page_slice.items, owner_user_id, owner_cache)
+        footer = "\n[SUMMARY BUDGET EXHAUSTED FROM PREVIOUS CALLS. USE FILTERS TO NARROW RESULTS AND SEE SUMMARIES.]"
+        tokens_spent = 0
+    else:
+        lines, tokens_spent = _format_full_batch(
+            page_slice.items,
+            runtimedata,
+            owner_user_id,
+            owner_cache,
+        )
+        footer = ""
+
+    span = f"{page_slice.start + 1}–{page_slice.end} of {page_slice.total}"
+    header = f"Documents {span} (page {page_slice.page}/{page_slice.total_pages}):"
+    return f"{header}\n" + "\n".join(lines) + footer, tokens_spent
+
+
+async def _format_and_commit_page(
+    runtime: ToolRuntime[RuntimeContext],
+    page_slice: PageSlice,
+    scope: DocumentToolScope,
+    dedupe_state: RuntimeDedupeState,
+    compact_on_budget_exhausted: bool,
+) -> str:
+    owner_cache = await _resolve_owner_names(page_slice.items, scope.owner_user_id)
+
+    async with runtime.context.lock:
+        runtimedata = runtime.context.list_documents_runtime_data
+        _remember_seen_documents(runtimedata, page_slice.items)
+
+        result_body, tokens_spent = _format_page(
+            page_slice,
+            runtimedata,
+            scope.owner_user_id,
+            owner_cache,
+            compact_on_budget_exhausted,
+        )
+        if isinstance(runtimedata, ListDocumentsRuntimeData):
+            runtimedata.spent_summary_tokens += tokens_spent
+
+        result = _with_dedup_header(
+            dedupe_state.deduplicated_across_runs,
+            result_body,
+        )
+        rag_tokens = count_tokens(result)
+        runtime.context.total_tokens_spent += rag_tokens
+        logger.info(
+            "%s page=%d: tokens=%d, total_tokens_spent=%d",
+            scope.tool_name,
+            page_slice.page,
+            rag_tokens,
+            runtime.context.total_tokens_spent,
+        )
+        return result
 
 
 async def _list_documents_impl(
     config: Annotated[RunnableConfig, InjectedToolArg],
     runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg],
-    private_only: bool,
+    own_only: bool,
     name_query: Optional[str] = None,
     summary_query: Optional[str] = None,
     file_id: Optional[str] = None,
     page: int = 1,
 ) -> str:
-    tool_name = "list_private_documents" if private_only else "list_global_documents"
+    tool_name = "list_own_documents" if own_only else "list_global_documents"
     logger.info(
         "tool %s: name_query=%r, summary_query=%r, file_id=%r, page=%d",
         tool_name, name_query, summary_query, file_id, page,
@@ -301,218 +594,47 @@ async def _list_documents_impl(
         return f"{tool_name} unavailable: storage not initialized."
 
     try:
-        configurable = config.get("configurable", {})
-        user_id_str = configurable.get("user_id", "")
-        org_id_str = configurable.get("org_id", "")
-        is_admin = bool(configurable.get("is_admin", False))
-
-        if not user_id_str or not org_id_str:
-            return f"{tool_name} unavailable: missing context."
-
-        user_id = UUID(user_id_str)
-        org_id = UUID(org_id_str)
+        scope = _build_scope(config, own_only)
 
         # --- Single-document lookup: bypasses pagination, deduplication, and budgets ---
         if file_id and file_id.strip():
-            f = await _user_file_storage.get_by_id(UUID(file_id.strip()))
-            if f is None:
-                return f"Document {file_id} not found."
-            if private_only and f.uploaded_by_user_id != user_id:
-                return f"Document {file_id} not found or not visible to you."
-            if (
-                not private_only
-                and f.uploaded_by_user_id != user_id
-                and not (f.is_public or is_admin)
-            ):
-                return f"Document {file_id} not found or not visible to you."
-            return _format_single_doc(f)
+            return await _get_single_document(file_id, scope)
 
-        has_name_query = bool(name_query and name_query.strip())
-        has_summary_query = bool(summary_query and summary_query.strip())
+        visible = await _get_visible_files(scope)
 
-        all_files = await _user_file_storage.list_by_org(org_id)
+        if _has_search_queries(name_query, summary_query):
+            files, error = await _search_visible_files(scope, visible, name_query, summary_query)
+            if error:
+                return error
+            empty_message = "No documents matched your query."
+            compact_on_budget_exhausted = False
+        else:
+            files = visible
+            empty_message = "No documents in your scope."
+            compact_on_budget_exhausted = True
 
-        # Establish the visibility scope before applying search or pagination.
-        visible: list[UserFile] = _apply_visibility(all_files, user_id, private_only, is_admin=False)
+        dedupe_state, page_slice, early_result = await _dedupe_and_page(
+            runtime,
+            files,
+            page,
+            scope,
+            empty_message,
+        )
+        if early_result is not None:
+            return early_result
 
-        if not visible and not private_only and is_admin:
-            # Admin fallback: include non-public files of other users too.
-            visible = _apply_visibility(all_files, user_id, private_only, is_admin=is_admin)
+        return await _format_and_commit_page(
+            runtime,
+            page_slice,
+            scope,
+            dedupe_state,
+            compact_on_budget_exhausted,
+        )
 
-        # --- Search mode: one or both queries provided ---
-        if has_name_query or has_summary_query:
-            if _rag_service is None:
-                return f"{tool_name}: search unavailable (RAG service not initialized)."
-
-            # Search can combine filename/keyword and summary-vector matches.
-            matched_ids: set[str] = set()
-
-            if has_name_query:
-                # Name search uses the same RAG index but the query is expected to be filename-like.
-                docs: list[RelatedDoc] = await _rag_service.find_docs(
-                    org_id=org_id_str,
-                    user_id=user_id_str,
-                    query=name_query.strip(),
-                    top_k=_MAX_RESULTS
-                )
-                for d in docs:
-                    matched_ids.add(d.file_id)
-
-            if has_summary_query:
-                # Summary search is content-oriented and unions with name search results.
-                docs = await _rag_service.find_docs(
-                    org_id=org_id_str,
-                    user_id=user_id_str,
-                    query=summary_query.strip(),
-                    top_k=_MAX_RESULTS
-                )
-                for d in docs:
-                    matched_ids.add(d.file_id)
-
-            # Intersect raw search hits with tool visibility and cap the output set.
-            results: list[UserFile] = [
-                f for f in visible
-                if str(f.id) in matched_ids
-            ][:_MAX_RESULTS]
-
-            async with runtime.context.lock:
-                # Shared run state is read under lock so parallel tool calls dedupe consistently.
-                runtimedata = runtime.context.list_documents_runtime_data
-                seen_ids = (
-                    runtimedata.seen_ids
-                    if isinstance(runtimedata, ListDocumentsRuntimeData)
-                    else set()
-                )
-                deduplicated_across_runs = bool(seen_ids)
-                if deduplicated_across_runs:
-                    # Omit documents already returned by earlier calls in this same run.
-                    results = [f for f in results if str(f.id) not in seen_ids]
-
-                if not results:
-                    return _with_dedup_header(
-                        deduplicated_across_runs,
-                        "No documents matched your query.",
-                    )
-
-                # --- Retrieval-output budget guard ---
-                if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
-                    logger.info(
-                        "%s: blocked — total_tokens_spent=%d >= %d",
-                        tool_name, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
-                    )
-                    return (
-                        "[DOCUMENT LISTING IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
-                        "USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO LIST DOCUMENTS]"
-                    )
-
-                total = len(results)
-                # Search results are still paginated because the union may be large.
-                page = max(1, page)
-                total_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
-                page = min(page, total_pages)
-                start = (page - 1) * _PAGE_SIZE
-                end = min(start + _PAGE_SIZE, total)
-                page_results = results[start:end]
-
-            # Owner lookup may hit storage, so keep it outside the runtime-state lock.
-            owner_cache: dict[UUID, str] = await _resolve_owner_names(page_results, user_id)
-
-            async with runtime.context.lock:
-                # Re-enter the lock for summary-budget spending and seen-id mutations.
-                runtimedata = runtime.context.list_documents_runtime_data
-                _remember_seen_documents(runtimedata, page_results)
-
-                if len(page_results) == 1:
-                    # Single result — return full summary without budget cap so the model
-                    # gets complete context and doesn't need a follow-up file_id lookup.
-                    result = _with_dedup_header(deduplicated_across_runs, _format_single_doc(page_results[0]))
-                else:
-                    lines, tokens_spent = _format_full_batch(page_results, runtimedata, user_id, owner_cache)
-                    runtimedata.spent_summary_tokens += tokens_spent
-                    span = f"{start + 1}–{end} of {total}"
-                    header = f"Documents {span} (page {page}/{total_pages}):"
-                    result = _with_dedup_header(
-                        deduplicated_across_runs,
-                        f"{header}\n" + "\n".join(lines),
-                    )
-
-                rag_tokens = count_tokens(result)
-                runtime.context.total_tokens_spent += rag_tokens
-                logger.info("%s search page=%d: tokens=%d, total_tokens_spent=%d", tool_name, page, rag_tokens, runtime.context.total_tokens_spent)
-                return result
-
-        # --- List mode: paginated, ordered by creation date (storage already orders DESC) ---
-        async with runtime.context.lock:
-            # List mode has no search hits, so dedupe the whole visible scope before paging.
-            runtimedata = runtime.context.list_documents_runtime_data
-            seen_ids = (
-                runtimedata.seen_ids
-                if isinstance(runtimedata, ListDocumentsRuntimeData)
-                else set()
-            )
-            deduplicated_across_runs = bool(seen_ids)
-            if deduplicated_across_runs:
-                # Page numbers apply to the not-yet-shown remainder of the listing.
-                visible = [f for f in visible if str(f.id) not in seen_ids]
-
-            if not visible:
-                return _with_dedup_header(
-                    deduplicated_across_runs,
-                    "No documents in your scope.",
-                )
-
-            total = len(visible)
-            # Clamp requested page into the available range after deduplication.
-            page = max(1, page)
-            total_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
-            page = min(page, total_pages)
-            start = (page - 1) * _PAGE_SIZE
-            end = min(start + _PAGE_SIZE, total)
-            page_files = visible[start:end]
-
-            # --- Retrieval-output budget guard ---
-            if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
-                logger.info(
-                    "%s: blocked — total_tokens_spent=%d >= %d",
-                    tool_name, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
-                )
-                return (
-                    "[DOCUMENT LISTING IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
-                    "USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO LIST DOCUMENTS]"
-                )
-
-        # Owner lookup is independent of runtime counters and does not need the lock.
-        owner_cache = await _resolve_owner_names(page_files, user_id)
-
-        async with runtime.context.lock:
-            runtimedata = runtime.context.list_documents_runtime_data
-            _remember_seen_documents(runtimedata, page_files)
-
-            if len(page_files) == 1:
-                # Single result — return full summary without budget cap so the model
-                # gets complete context and doesn't need a follow-up file_id lookup.
-                result = _with_dedup_header(deduplicated_across_runs, _format_single_doc(page_files[0]))
-            else:
-                budget_exhausted = runtimedata.spent_summary_tokens >= _SUMMARY_TOKENS_BUDGET
-                if budget_exhausted:
-                    lines = _format_compact_batch(page_files, user_id, owner_cache)
-                    footer = "\n[SUMMARY BUDGET EXHAUSTED FROM PREVIOUS CALLS. USE FILTERS TO NARROW RESULTS AND SEE SUMMARIES.]"
-                else:
-                    lines, tokens_spent = _format_full_batch(page_files, runtimedata, user_id, owner_cache)
-                    runtimedata.spent_summary_tokens += tokens_spent
-                    footer = ""
-                span = f"{start + 1}–{end} of {total}"
-                header = f"Documents {span} (page {page}/{total_pages}):"
-                result = _with_dedup_header(
-                    deduplicated_across_runs,
-                    f"{header}\n" + "\n".join(lines) + footer,
-                )
-
-            rag_tokens = count_tokens(result)
-            runtime.context.total_tokens_spent += rag_tokens
-            logger.info("%s list page=%d: tokens=%d, total_tokens_spent=%d", tool_name, page, rag_tokens, runtime.context.total_tokens_spent)
-            return result
-
+    except _MissingDocumentToolContext as e:
+        missing = ", ".join(e.missing_fields)
+        logger.error("%s unavailable: missing required tool context fields: %s", tool_name, missing)
+        return f"{tool_name} unavailable: missing required tool context fields: {missing}."
     except Exception as e:
         logger.error(f"{tool_name} failed: {e}", exc_info=True)
         if isinstance(e, ValueError) and "badly formed hexadecimal UUID string" in str(e):
@@ -528,12 +650,12 @@ async def _list_global_documents_async(
     file_id: Optional[str] = None,
     page: int = 1,
 ) -> str:
-    return await _list_documents_impl(config, runtime, private_only=False,
+    return await _list_documents_impl(config, runtime, own_only=False,
                                       name_query=name_query, summary_query=summary_query,
                                       file_id=file_id, page=page)
 
 
-async def _list_private_documents_async(
+async def _list_own_documents_async(
     config: Annotated[RunnableConfig, InjectedToolArg],
     runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg],
     name_query: Optional[str] = None,
@@ -541,7 +663,7 @@ async def _list_private_documents_async(
     file_id: Optional[str] = None,
     page: int = 1,
 ) -> str:
-    return await _list_documents_impl(config, runtime, private_only=True,
+    return await _list_documents_impl(config, runtime, own_only=True,
                                       name_query=name_query, summary_query=summary_query,
                                       file_id=file_id, page=page)
 
@@ -558,11 +680,12 @@ list_global_documents = StructuredTool.from_function(
     args_schema=ListDocumentsInput,
 )
 
-list_private_documents = StructuredTool.from_function(
-    coroutine=_list_private_documents_async,
-    name="list_private_documents",
+list_own_documents = StructuredTool.from_function(
+    coroutine=_list_own_documents_async,
+    name="list_own_documents",
     description=(
-        "List only documents uploaded by the caller — no public or other users' files are included. "
+        "List documents owned by the active agent user. In direct chat this includes the caller's private and public own documents; "
+        "when the agent is called by another user through a mention, this includes only the called user's public own documents. "
         "Use name_query or summary_query to search; omit both for paginated listing. "
         "Use file_id to fetch full info for a single document bypassing all budgets. "
         "Use page to navigate pages (50 items per page, ordered by creation date)."
