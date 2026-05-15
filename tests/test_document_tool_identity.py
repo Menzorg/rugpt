@@ -66,14 +66,13 @@ def _file(owner_id, org_id, name, *, is_public=False):
     )
 
 
-def _config(caller_id, org_id, *, called_id=None):
+def _config(caller_id, org_id, *, callee_id=None):
     return {
         "configurable": {
             "org_id": str(org_id),
-            "user_id": str(caller_id),
             "caller_user_id": str(caller_id),
-            "called_user_id": str(called_id) if called_id else "",
-            "invocation_kind": "mention" if called_id else "direct",
+            "callee_user_id": str(callee_id if callee_id else caller_id),
+            "invocation_kind": "mention" if callee_id else "direct",
             "is_admin": False,
         }
     }
@@ -110,17 +109,17 @@ async def test_list_own_documents_direct_includes_caller_private_and_public(monk
 async def test_list_own_documents_mention_includes_only_called_user_public(monkeypatch):
     org_id = uuid4()
     caller_id = uuid4()
-    called_id = uuid4()
+    callee_id = uuid4()
     files = [
         _file(caller_id, org_id, "a-private.pdf"),
         _file(caller_id, org_id, "a-public.pdf", is_public=True),
-        _file(called_id, org_id, "b-private.pdf"),
-        _file(called_id, org_id, "b-public.pdf", is_public=True),
+        _file(callee_id, org_id, "b-private.pdf"),
+        _file(callee_id, org_id, "b-public.pdf", is_public=True),
     ]
     monkeypatch.setattr(list_documents, "_user_file_storage", FakeFileStorage(files))
 
     result = await _list_documents_impl(
-        _config(caller_id, org_id, called_id=called_id),
+        _config(caller_id, org_id, callee_id=callee_id),
         _runtime(),
         own_only=True,
     )
@@ -135,12 +134,12 @@ async def test_list_own_documents_mention_includes_only_called_user_public(monke
 async def test_file_id_lookup_uses_same_mention_visibility(monkeypatch):
     org_id = uuid4()
     caller_id = uuid4()
-    called_id = uuid4()
-    private_file = _file(called_id, org_id, "b-private.pdf")
+    callee_id = uuid4()
+    private_file = _file(callee_id, org_id, "b-private.pdf")
     monkeypatch.setattr(list_documents, "_user_file_storage", FakeFileStorage([private_file]))
 
     result = await _list_documents_impl(
-        _config(caller_id, org_id, called_id=called_id),
+        _config(caller_id, org_id, callee_id=callee_id),
         _runtime(),
         own_only=True,
         file_id=str(private_file.id),
@@ -153,30 +152,30 @@ async def test_file_id_lookup_uses_same_mention_visibility(monkeypatch):
 async def test_rag_search_access_denies_called_user_private_in_mention(monkeypatch):
     org_id = uuid4()
     caller_id = uuid4()
-    called_id = uuid4()
-    private_file = _file(called_id, org_id, "b-private.pdf")
-    public_file = _file(called_id, org_id, "b-public.pdf", is_public=True)
+    callee_id = uuid4()
+    private_file = _file(callee_id, org_id, "b-private.pdf")
+    public_file = _file(callee_id, org_id, "b-public.pdf", is_public=True)
 
     monkeypatch.setattr(rag_tool, "_user_file_storage", FakeFileStorage([private_file, public_file]))
 
     assert not await _can_access_file(
         str(private_file.id),
         str(org_id),
-        str(called_id),
+        str(callee_id),
         public_only_owner=True,
         is_admin=False,
     )
     assert await _can_access_file(
         str(public_file.id),
         str(org_id),
-        str(called_id),
+        str(callee_id),
         public_only_owner=True,
         is_admin=False,
     )
     assert await _can_access_file(
         str(private_file.id),
         str(org_id),
-        str(called_id),
+        str(callee_id),
         public_only_owner=False,
         is_admin=False,
     )

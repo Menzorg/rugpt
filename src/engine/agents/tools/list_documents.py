@@ -91,13 +91,6 @@ class RuntimeDedupeState:
     deduplicated_across_runs: bool
 
 
-class _MissingDocumentToolContext(Exception):
-    """Raised when RunnableConfig lacks identity/org fields required for document visibility."""
-
-    def __init__(self, missing_fields: list[str]):
-        self.missing_fields = missing_fields
-        super().__init__(f"missing required RunnableConfig fields: {', '.join(missing_fields)}")
-
 
 class ListDocumentsInput(BaseModel):
     name_query: Optional[str] = Field(
@@ -329,13 +322,12 @@ def _can_see_file(
 
 
 def _resolve_tool_identity(configurable: dict) -> tuple[str, str, bool]:
-    caller_user_id = configurable.get("caller_user_id") or configurable.get("user_id", "")
+    caller_user_id = configurable.get("caller_user_id", "")
     org_id = configurable.get("org_id", "")
-    called_user_id = configurable.get("called_user_id", "")
-    invocation_kind = configurable.get("invocation_kind", "direct")
-    owner_user_id = called_user_id if invocation_kind == "mention" and called_user_id else caller_user_id
-    public_only_owner = bool(called_user_id and called_user_id != caller_user_id)
-    return owner_user_id, org_id, public_only_owner
+    # callee_user_id == caller_user_id in direct calls (always set by executor).
+    callee_user_id = configurable.get("callee_user_id", "")
+    public_only_owner = bool(callee_user_id and callee_user_id != caller_user_id)
+    return callee_user_id or caller_user_id, org_id, public_only_owner
 
 
 def _build_scope(config: RunnableConfig, own_only: bool) -> DocumentToolScope:
@@ -343,22 +335,11 @@ def _build_scope(config: RunnableConfig, own_only: bool) -> DocumentToolScope:
 
     Required fields:
     - configurable.org_id: organization whose documents may be listed
-    - configurable.caller_user_id or configurable.user_id: direct caller identity
-
-    Optional mention fields choose the active document owner:
-    - configurable.called_user_id + invocation_kind="mention" scopes own-doc tools to the called user
-    - if caller and called differ, only the called user's public own documents are visible
+    - configurable.caller_user_id: direct caller identity
+    - configurable.callee_user_id: document owner (equals caller in direct calls, set by executor)
     """
     configurable = config.get("configurable", {})
     owner_user_id_str, org_id_str, public_only_owner = _resolve_tool_identity(configurable)
-    # Tools cannot enforce visibility without the active document owner and org scope.
-    missing_fields = []
-    if not owner_user_id_str or not org_id_str:
-        if not owner_user_id_str:
-            missing_fields.append("configurable.caller_user_id or configurable.user_id")
-        if not org_id_str:
-            missing_fields.append("configurable.org_id")
-        raise _MissingDocumentToolContext(missing_fields)
     return DocumentToolScope(
         tool_name="list_own_documents" if own_only else "list_global_documents",
         owner_user_id=UUID(owner_user_id_str),
@@ -631,10 +612,6 @@ async def _list_documents_impl(
             compact_on_budget_exhausted,
         )
 
-    except _MissingDocumentToolContext as e:
-        missing = ", ".join(e.missing_fields)
-        logger.error("%s unavailable: missing required tool context fields: %s", tool_name, missing)
-        return f"{tool_name} unavailable: missing required tool context fields: {missing}."
     except Exception as e:
         logger.error(f"{tool_name} failed: {e}", exc_info=True)
         if isinstance(e, ValueError) and "badly formed hexadecimal UUID string" in str(e):

@@ -279,7 +279,7 @@ class EngineService:
         cal_create_tool, cal_query_tool = create_calendar_tools(self.calendar_service)
 
         # Create task tools wired to TaskService
-        task_create_tool, task_query_tool, task_update_tool, task_deadline_proposal_tool = create_task_tools(self.task_service)
+        task_create_tool, task_query_tool, task_update_tool, task_deadline_proposal_tool, get_own_tasks_tool = create_task_tools(self.task_service)
         expand_chunk_tool = create_expand_chunk_tool(self.rag_service, self.user_file_storage)
         analyze_image_tool = create_analyze_image_tool(
             self.user_file_storage,
@@ -294,6 +294,7 @@ class EngineService:
         self.tool_registry.register("task_query", task_query_tool)
         self.tool_registry.register("task_update", task_update_tool)
         self.tool_registry.register("task_deadline_proposal", task_deadline_proposal_tool)
+        self.tool_registry.register("get_own_tasks", get_own_tasks_tool)
         self.tool_registry.register("rag_search", rag_search)
         self.tool_registry.register("expand_chunk", expand_chunk_tool)
         self.tool_registry.register("table_rows_search", table_rows_search)

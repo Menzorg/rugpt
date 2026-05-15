@@ -117,11 +117,10 @@ class AgentExecutor:
         self,
         role: Role,
         messages: List[dict],
+        caller_user_id: UUID,
+        callee_user_id: Optional[UUID] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
-        user_id: Optional[UUID] = None,
-        caller_user_id: Optional[UUID] = None,
-        called_user_id: Optional[UUID] = None,
+        max_tokens: int = 2048, # For now it breaks tool calls if set too low, so keeping it high and relying on individual tool limits and HistoryCompactionMiddleware to control token usage.
         invocation_kind: str = "direct",
         chat_id: Optional[UUID] = None,
     ) -> AgentResult:
@@ -133,9 +132,8 @@ class AgentExecutor:
             messages: Conversation as [{"role": "user"/"assistant", "content": "..."}]
             temperature: Sampling temperature
             max_tokens: Max tokens in response
-            user_id: Backward-compatible alias for caller_user_id
             caller_user_id: User ID that triggered the agent run
-            called_user_id: Mentioned/responding user ID for mention calls
+            callee_user_id: Mentioned/responding user ID for mention calls; defaults to caller when absent
             invocation_kind: "direct" or "mention"
 
         Returns:
@@ -146,21 +144,17 @@ class AgentExecutor:
         # Fetch org_context for message injection
         from ..services.engine_service import get_engine_service
         engine = get_engine_service()
-        effective_caller_user_id = caller_user_id or user_id
-        if invocation_kind != "mention" or called_user_id is None:
+        if invocation_kind != "mention" or callee_user_id is None:
             invocation_kind = "direct"
+        # In direct calls callee == caller so tools always have a valid target without None checks.
+        effective_callee_user_id = callee_user_id if invocation_kind == "mention" else caller_user_id
 
         # Resolve the INITIATOR's org — that's the scope tools should operate in.
-        # role.org_id is typically the RuGPT system org for cross-org roles (PM,
-        # reasoner, doc_search, web_search) and would point tools at the wrong
-        # place (no real users / files there). Fall back to role.org_id only
-        # when there is no initiator (e.g. scheduler-driven calls).
+        # so tools don't try to run in system org scope because role_org for system roles is 00000000-0000-0000-0000-000000000000.
         scope_org_id = role.org_id
-        initiator = None
-        if effective_caller_user_id is not None:
-            initiator = await engine.user_storage.get_by_id(effective_caller_user_id)
-            if initiator and initiator.org_id:
-                scope_org_id = initiator.org_id
+        initiator = await engine.user_storage.get_by_id(caller_user_id)
+        if initiator and initiator.org_id:
+            scope_org_id = initiator.org_id
 
         org = await engine.org_storage.get_by_id(scope_org_id)
         org_context = org.org_context if org else ""
@@ -177,9 +171,8 @@ class AgentExecutor:
             max_concurrency=2,
             configurable={
                 "org_id": str(scope_org_id) if scope_org_id else "",
-                "user_id": str(effective_caller_user_id) if effective_caller_user_id else "",
-                "caller_user_id": str(effective_caller_user_id) if effective_caller_user_id else "",
-                "called_user_id": str(called_user_id) if called_user_id else "",
+                "caller_user_id": str(caller_user_id),
+                "callee_user_id": str(effective_callee_user_id),
                 "invocation_kind": invocation_kind,
                 "is_admin": bool(initiator.is_admin) if initiator else False,
             },
@@ -236,7 +229,7 @@ class AgentExecutor:
 
         injected_messages: list[dict] = []
 
-        if effective_caller_user_id is not None and initiator:
+        if initiator:
             user_lines = [
                 f"ID: {initiator.id}",
                 f"Имя: {initiator.name}",
@@ -257,8 +250,8 @@ class AgentExecutor:
             user_block += "\nНе раскрывать пользователю его ID."
             injected_messages.append({"role": _inject_role, "content": user_block})
 
-        if invocation_kind == "mention" and called_user_id is not None:
-            callee = await engine.user_storage.get_by_id(called_user_id)
+        if invocation_kind == "mention":
+            callee = await engine.user_storage.get_by_id(effective_callee_user_id)
             if callee:
                 callee_lines = [
                     f"ID: {callee.id}",

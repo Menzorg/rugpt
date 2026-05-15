@@ -56,6 +56,14 @@ class TaskDeadlineProposalInput(BaseModel):
     accept: bool = Field(description="True to accept the proposed deadline, False to reject it")
 
 
+class GetOwnTasksInput(BaseModel):
+    status: Literal["done", "created", "in_progress"] | None = Field(
+        default=None,
+        description="Filter by status: created, in_progress, done (empty = all active tasks, excluding done and overdue older than 30 days)",
+    )
+    page: int = Field(default=1, description="Page number (default 1, page size is 50)")
+
+
 class TaskUpdateInput(BaseModel):
     task_id: str = Field(description="UUID of the task to update")
     status: str = Field(default="", description="New status: created, in_progress, awaiting_review, done. Transitions are role-restricted — the tool will return an error if the caller is not permitted.")
@@ -64,6 +72,45 @@ class TaskUpdateInput(BaseModel):
     deadline: Optional[str] = Field(default=None, description="New deadline in ISO format (e.g. 2025-03-15T18:00:00). Only the task creator or admin can set this.")
     new_participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of task participants to add")
     delete_participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of task participants to remove")
+
+
+def _check_status_transition(
+    current: str,
+    new: str,
+    is_creator: bool,
+    is_assignee: bool,
+) -> Optional[str]:
+    if new == current:
+        return f"Task is already in status '{new}'. No change needed."
+    if current == "done":
+        return "Task is already done and cannot be changed."
+    if new == "awaiting_review" and not is_assignee:
+        return "Only the task assignee can set status to 'awaiting_review'. "
+    if current == "in_progress" and new == "done":
+        return "You can't change status directly from 'in_progress' to 'done'. Assignee must set it to 'awaiting_review' first."
+    if current == "awaiting_review":
+        if not is_creator:
+            return (
+                "Only the task creator can act on a task in 'awaiting_review' status. "
+                "You are not the creator of this task."
+            )
+        if new not in ("in_progress", "done"):
+            return (
+                f"Cannot change status from 'awaiting_review' to '{new}'. "
+                "Allowed transitions: 'in_progress' (send back for rework) or 'done' (accept)."
+            )
+    elif current == "created":
+        if not is_assignee:
+            return (
+                "Only the task assignee can update the status of a task in 'created' status. "
+                "You are not the assignee of this task."
+            )
+        if new != "in_progress":
+            return (
+                f"Cannot change status from 'created' to '{new}'. "
+                "The only allowed transition is to 'in_progress'."
+            )
+    return None
 
 
 # ============================================
@@ -400,47 +447,8 @@ def create_task_tools(
                 )
 
             if has_status_update:
-                current = existing_task.status
-                
-
-                
-                if status == current:
-                    return f"Task is already in status '{status}'. No change needed."
-
-                if status == "awaiting_review":
-                    if not is_assignee:
-                        return "Only the task assignee can set status to 'awaiting_review'. "
-
-                if current == "done":
-                    return "Task is already done and cannot be changed."
-
-                if current == "in_progress" and status == "done":
-                    return "You can't change status directly from 'in_progress' to 'done'. Assignee must set it to 'awaiting_review' first."
-
-
-                if current == "awaiting_review":
-                    if not is_creator:
-                        return (
-                            "Only the task creator can act on a task in 'awaiting_review' status. "
-                            "You are not the creator of this task."
-                        )
-                    if status not in ("in_progress", "done"):
-                        return (
-                            f"Cannot change status from 'awaiting_review' to '{status}'. "
-                            "Allowed transitions: 'in_progress' (send back for rework) or 'done' (accept)."
-                        )
-
-                elif current == "created":
-                    if not is_assignee:
-                        return (
-                            "Only the task assignee can update the status of a task in 'created' status. "
-                            "You are not the assignee of this task."
-                        )
-                    if status != "in_progress":
-                        return (
-                            f"Cannot change status from 'created' to '{status}'. "
-                            "The only allowed transition is to 'in_progress'."
-                        )
+                if err := _check_status_transition(existing_task.status, status, is_creator, is_assignee):
+                    return err
 
             if deadline_dt and existing_task.status == "overdue":
                 return "Cannot change the deadline of an overdue task."
@@ -602,4 +610,97 @@ def create_task_tools(
         args_schema=TaskDeadlineProposalInput,
     )
 
-    return create_tool, query_tool, update_tool, deadline_proposal_tool
+    async def _get_own_tasks_async(
+        status: Optional[Literal["done", "created", "in_progress"]] = None,
+        page: int = 1,
+        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+    ) -> str:
+        """Return tasks assigned to the role owner.
+        In a mention invocation (@@role) returns the callee's tasks; otherwise the caller's.
+        Args:
+            status: Optional status filter. Empty = all active tasks excluding done and overdue older than 30 days.
+            page: Page number (page size 50).
+        """
+        logger.info("tool get_own_tasks: status=%r page=%d", status, page)
+        try:
+            configurable = (config or {}).get("configurable", {})
+            caller_user_id = configurable.get("caller_user_id", "")
+            # callee_user_id == caller_user_id in direct calls (always set by executor).
+            target_user_id = configurable.get("callee_user_id", "") or caller_user_id
+            if not target_user_id:
+                return "SYSTEM CAN'T SEE TARGET USER ID"
+
+            tasks = await task_service.list_by_assignee(UUID(target_user_id), status or None)
+
+            # Default view: hide done tasks and overdue tasks whose deadline passed >30 days ago.
+            if status is None:
+                cutoff = datetime.now().replace(tzinfo=None)
+                filtered = []
+                for t in tasks:
+                    if t.status == "done":
+                        continue
+                    if t.status == "overdue":
+                        if t.deadline is None:
+                            continue
+                        dl = t.deadline.replace(tzinfo=None) if hasattr(t.deadline, "tzinfo") else t.deadline
+                        if (cutoff - dl).days > 30:
+                            continue
+                    filtered.append(t)
+                tasks = filtered
+
+            if not tasks:
+                return "No tasks found."
+
+            total = len(tasks)
+            page = max(1, page)
+            total_pages = max(1, (total + _TASKS_PAGE_SIZE - 1) // _TASKS_PAGE_SIZE)
+            page = min(page, total_pages)
+            start = (page - 1) * _TASKS_PAGE_SIZE
+            end = min(start + _TASKS_PAGE_SIZE, total)
+            shown = tasks[start:end]
+
+            from ...services.engine_service import get_engine_service
+            engine = get_engine_service()
+            user_ids = {t.created_by_user_id for t in shown if t.created_by_user_id}
+            users = await engine.user_storage.get_certain_users(list(user_ids))
+            name_map = {u.id: u.name for u in users}
+            participants_by_task = await engine.task_participant_storage.get_for_tasks(
+                [t.id for t in shown],
+            )
+
+            lines = []
+            for t in shown:
+                dl = f", deadline: {t.deadline.isoformat()}" if t.deadline else ""
+                if t.proposed_deadline:
+                    proposer = name_map.get(t.proposed_deadline_by, str(t.proposed_deadline_by)) if t.proposed_deadline_by else "assignee"
+                    dl += f", proposed_deadline: {t.proposed_deadline.isoformat()} (by {proposer})"
+                creator = name_map.get(t.created_by_user_id, str(t.created_by_user_id)) if t.created_by_user_id else ""
+                participant_names = [p["name"] for p in participants_by_task.get(t.id, [])]
+                participants = f", participants={', '.join(participant_names)}" if participant_names else ""
+                desc = f", description={t.description!r}" if t.description else ""
+                lines.append(
+                    f"- [{t.status}] {t.title}{dl}"
+                    f" (creator={creator}{participants}{desc})"
+                )
+
+            span = f"{start + 1}–{end} of {total}"
+            return f"Tasks {span} (page {page}/{total_pages}):\n" + "\n".join(lines)
+        except Exception as e:
+            logger.error("get_own_tasks failed: %s", e, exc_info=True)
+            if isinstance(e, ValueError) and "badly formed hexadecimal UUID string" in str(e):
+                return f"Invalid UUID in input: {e}"
+            return _TOOL_ERROR_RESULT
+
+    get_own_tasks_tool = StructuredTool.from_function(
+        coroutine=_get_own_tasks_async,
+        name="get_own_tasks",
+        description=(
+            "Get tasks assigned to the role owner. "
+            "In a mention call (@@role) returns the callee's tasks; in direct chat returns the caller's. "
+            "By default excludes done tasks and overdue tasks whose deadline passed more than 30 days ago. "
+            "Optionally filter by status: created, in_progress, done. Supports pagination via page."
+        ),
+        args_schema=GetOwnTasksInput,
+    )
+
+    return create_tool, query_tool, update_tool, deadline_proposal_tool, get_own_tasks_tool
