@@ -19,7 +19,7 @@ from typing_extensions import Annotated
 
 from ..result import AgentResult, ToolCall
 from ...models.role import Role
-from ...utils.token_logger import log_llm_tokens, log_token_summary
+from ...utils.token_logger import log_token_summary
 
 logger = logging.getLogger("rugpt.agents.graphs.supervisor")
 
@@ -155,7 +155,6 @@ async def _supervisor_agent_call(
         output_messages = result.get("messages", [])
         tool_calls = []
         final_content = ""
-        grand_total = 0
 
         for msg in output_messages:
             if hasattr(msg, "tool_calls") and msg.tool_calls:
@@ -170,19 +169,14 @@ async def _supervisor_agent_call(
             if hasattr(msg, "content") and msg.type == "ai" and not getattr(msg, "tool_calls", None):
                 final_content = msg.content
 
-            if hasattr(msg, "usage_metadata") and msg.type == "ai":
-                step_label = (
-                    f"supervisor.step[tool={'yes' if getattr(msg, 'tool_calls', None) else 'no'}]"
-                )
-                spent = log_llm_tokens(
-                    msg,
-                    label=step_label,
-                    logger=logger,
-                    running_total=grand_total,
-                )
-                grand_total += spent
+        # TODO: make sure distinct calls of subagents have distinct token counters and modify tool token budget counters to that 
+        # (they work global right and promlem is that it stays the same after subagent disappears but his tool calls accumulated in token budget counters)
 
-        log_token_summary("supervisor.agent_call", grand_total, logger=logger)
+        grand_total = log_token_summary(
+            "supervisor.agent_call",
+            logger=logger,
+            messages=output_messages,
+        )
 
         if not final_content and output_messages:
             last = output_messages[-1]

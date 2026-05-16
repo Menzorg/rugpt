@@ -53,6 +53,21 @@ def _estimate_from_response(response: Any) -> int:
     return count_tokens(text)
 
 
+def _usage_metadata(response: Any) -> dict:
+    """Return normalized usage metadata from a LangChain response, if present."""
+    meta = getattr(response, "usage_metadata", None) or {}
+    if not meta and hasattr(response, "response_metadata"):
+        # Some providers nest usage inside response_metadata.token_usage
+        nested = (response.response_metadata or {}).get("token_usage") or {}
+        if nested:
+            meta = {
+                "input_tokens": nested.get("prompt_tokens", 0),
+                "output_tokens": nested.get("completion_tokens", 0),
+                "total_tokens": nested.get("total_tokens", 0),
+            }
+    return meta
+
+
 def log_llm_tokens(
     response: Any,
     label: str,
@@ -70,16 +85,7 @@ def log_llm_tokens(
     Returns 0 when usage_metadata is absent.
     """
     lg = logger or _root_logger
-    meta = getattr(response, "usage_metadata", None) or {}
-    if not meta and hasattr(response, "response_metadata"):
-        # Some providers nest usage inside response_metadata.token_usage
-        nested = (response.response_metadata or {}).get("token_usage") or {}
-        if nested:
-            meta = {
-                "input_tokens": nested.get("prompt_tokens", 0),
-                "output_tokens": nested.get("completion_tokens", 0),
-                "total_tokens": nested.get("total_tokens", 0),
-            }
+    meta = _usage_metadata(response)
 
     api_prompt = meta.get("input_tokens", 0)
     api_completion = meta.get("output_tokens", 0)
@@ -133,13 +139,82 @@ def log_llm_tokens(
 
 def log_token_summary(
     label: str,
-    grand_total: int,
+    grand_total: int | None = None,
     logger: logging.Logger | None = None,
-) -> None:
-    """Emit a final cumulative token summary line."""
+    messages: list | None = None,
+) -> int:
+    """Emit a final cumulative token summary line.
+
+    For graph traces, pass the final message state via *messages*. In that mode
+    API-reported usage is summed as the billable total, while messages without
+    usage metadata are reported only as an estimated completion side-channel.
+    This avoids mixing prompt-inclusive API totals with estimator-only message
+    content and accidentally double-counting graph state.
+    """
     lg = logger or _root_logger
+    if messages is not None:
+        ai_messages = [
+            msg for msg in messages
+            if getattr(msg, "type", None) == "ai"
+            or (isinstance(msg, dict) and msg.get("role") == "assistant")
+        ]
+        api_prompt = 0
+        api_completion = 0
+        api_total = 0
+        api_messages = 0
+        unreported_ai_messages = 0
+        unreported_completion_estimate = 0
+
+        for msg in ai_messages:
+            meta = _usage_metadata(msg)
+            if meta:
+                prompt = meta.get("input_tokens", 0)
+                completion = meta.get("output_tokens", 0)
+                total = meta.get("total_tokens", 0) or (prompt + completion)
+                api_prompt += prompt
+                api_completion += completion
+                api_total += total
+                api_messages += 1
+            else:
+                unreported_ai_messages += 1
+                unreported_completion_estimate += _estimate_from_response(msg)
+
+        tool_call_messages = sum(
+            1 for msg in ai_messages
+            if getattr(msg, "tool_calls", None)
+        )
+        if api_messages:
+            lg.info(
+                "TOKEN_TOTAL  label=%-35s  source=api  ai_messages=%d  api_messages=%d  "
+                "prompt=%d  completion=%d  total=%d  unreported_ai_messages=%d  "
+                "unreported_completion_est=%d  tool_call_messages=%d",
+                label,
+                len(ai_messages),
+                api_messages,
+                api_prompt,
+                api_completion,
+                api_total,
+                unreported_ai_messages,
+                unreported_completion_estimate,
+                tool_call_messages,
+            )
+            return api_total
+
+        grand_total = unreported_completion_estimate
+        lg.info(
+            "TOKEN_TOTAL  label=%-35s  source=estimator_completion_only  "
+            "ai_messages=%d  total=%d  tool_call_messages=%d",
+            label,
+            len(ai_messages),
+            grand_total,
+            tool_call_messages,
+        )
+        return grand_total
+
+    total = grand_total or 0
     lg.info(
         "TOKEN_TOTAL  label=%-35s  grand_total=%d",
         label,
-        grand_total,
+        total,
     )
+    return total
