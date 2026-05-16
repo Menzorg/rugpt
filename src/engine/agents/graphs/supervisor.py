@@ -236,7 +236,10 @@ async def _build_subagents(
             ]
             if part
         )
-        subagent_llm = engine.agent_executor._create_llm(role.model_name)
+        subagent_llm = engine.agent_executor._create_llm(role.model_name,             
+            model_kwargs=(
+                {"parallel_tool_calls": role.agent_type != "supervisor"} # Well... in case if supervisor tries to call other supervisors
+            ),)
         subagents.append(
             create_agent(
                 model=subagent_llm,
