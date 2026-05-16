@@ -38,13 +38,12 @@ def init_rag_service(service: RAGService, file_storage: Optional[UserFileStorage
 
 
 def _resolve_tool_identity(configurable: dict) -> tuple[str, str, bool]:
-    caller_user_id = configurable.get("caller_user_id") or configurable.get("user_id", "")
+    caller_user_id = configurable.get("caller_user_id", "")
     org_id = configurable.get("org_id", "")
-    called_user_id = configurable.get("called_user_id", "")
-    invocation_kind = configurable.get("invocation_kind", "direct")
-    owner_user_id = called_user_id if invocation_kind == "mention" and called_user_id else caller_user_id
-    public_only_owner = bool(called_user_id and called_user_id != caller_user_id)
-    return owner_user_id, org_id, public_only_owner
+    # callee_user_id == caller_user_id in direct calls (always set by executor).
+    callee_user_id = configurable.get("callee_user_id", "")
+    public_only_owner = bool(callee_user_id and callee_user_id != caller_user_id)
+    return callee_user_id or caller_user_id, org_id, public_only_owner
 
 
 async def _can_access_file(

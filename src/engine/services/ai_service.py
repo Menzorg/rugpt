@@ -379,7 +379,7 @@ class AIService:
                 role,
                 conv_messages,
                 caller_user_id=message.sender_id,
-                called_user_id=responder_id if is_mention_call else None,
+                callee_user_id=responder_id if is_mention_call else None,
                 invocation_kind="mention" if is_mention_call else "direct",
                 chat_id=message.chat_id,
             )
@@ -444,9 +444,8 @@ class AIService:
         self,
         role: Role,
         conv_messages: List[dict],
-        user_id: Optional[UUID] = None,
-        caller_user_id: Optional[UUID] = None,
-        called_user_id: Optional[UUID] = None,
+        caller_user_id: UUID,
+        callee_user_id: Optional[UUID] = None,
         invocation_kind: str = "direct",
         chat_id: Optional[UUID] = None,
     ) -> Optional[str]:
@@ -454,15 +453,12 @@ class AIService:
         if not self.agent_executor:
             logger.error("AIService has no agent_executor — cannot generate response")
             return None
-        effective_caller_user_id = caller_user_id or user_id
         result = await self.agent_executor.execute(
             role=role,
             messages=conv_messages,
             temperature=0.3,
-            max_tokens=256,
-            user_id=effective_caller_user_id,
-            caller_user_id=effective_caller_user_id,
-            called_user_id=called_user_id,
+            caller_user_id=caller_user_id,
+            callee_user_id=callee_user_id,
             invocation_kind=invocation_kind,
             chat_id=chat_id,
         )
@@ -657,7 +653,7 @@ class AIService:
             messages=[{"role": "user", "content": user_input}],
             temperature=0.5,
             max_tokens=1024,
-            user_id=poll.assignee_user_id,
+            caller_user_id=poll.assignee_user_id,
         )
 
         if not (result and result.content and result.content.strip()):
@@ -779,7 +775,7 @@ class AIService:
             messages=[{"role": "user", "content": user_input}],
             temperature=0.3,
             max_tokens=2048,
-            user_id=poll.assignee_user_id,
+            caller_user_id=poll.assignee_user_id,
         )
 
         if not (result and result.content and result.content.strip()):

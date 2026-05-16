@@ -117,11 +117,10 @@ class AgentExecutor:
         self,
         role: Role,
         messages: List[dict],
+        caller_user_id: UUID,
+        callee_user_id: Optional[UUID] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
-        user_id: Optional[UUID] = None,
-        caller_user_id: Optional[UUID] = None,
-        called_user_id: Optional[UUID] = None,
+        max_tokens: int = 2048, # For now it breaks tool calls if set too low, so keeping it high and relying on individual tool limits and HistoryCompactionMiddleware to control token usage.
         invocation_kind: str = "direct",
         chat_id: Optional[UUID] = None,
     ) -> AgentResult:
@@ -133,9 +132,8 @@ class AgentExecutor:
             messages: Conversation as [{"role": "user"/"assistant", "content": "..."}]
             temperature: Sampling temperature
             max_tokens: Max tokens in response
-            user_id: Backward-compatible alias for caller_user_id
             caller_user_id: User ID that triggered the agent run
-            called_user_id: Mentioned/responding user ID for mention calls
+            callee_user_id: Mentioned/responding user ID for mention calls; defaults to caller when absent
             invocation_kind: "direct" or "mention"
 
         Returns:
@@ -146,21 +144,17 @@ class AgentExecutor:
         # Fetch org_context for message injection
         from ..services.engine_service import get_engine_service
         engine = get_engine_service()
-        effective_caller_user_id = caller_user_id or user_id
-        if invocation_kind != "mention" or called_user_id is None:
+        if invocation_kind != "mention" or callee_user_id is None:
             invocation_kind = "direct"
+        # In direct calls callee == caller so tools always have a valid target without None checks.
+        effective_callee_user_id = callee_user_id if invocation_kind == "mention" else caller_user_id
 
         # Resolve the INITIATOR's org — that's the scope tools should operate in.
-        # role.org_id is typically the RuGPT system org for cross-org roles (PM,
-        # reasoner, doc_search, web_search) and would point tools at the wrong
-        # place (no real users / files there). Fall back to role.org_id only
-        # when there is no initiator (e.g. scheduler-driven calls).
+        # so tools don't try to run in system org scope because role_org for system roles is 00000000-0000-0000-0000-000000000000.
         scope_org_id = role.org_id
-        initiator = None
-        if effective_caller_user_id is not None:
-            initiator = await engine.user_storage.get_by_id(effective_caller_user_id)
-            if initiator and initiator.org_id:
-                scope_org_id = initiator.org_id
+        initiator = await engine.user_storage.get_by_id(caller_user_id)
+        if initiator and initiator.org_id:
+            scope_org_id = initiator.org_id
 
         org = await engine.org_storage.get_by_id(scope_org_id)
         org_context = org.org_context if org else ""
@@ -177,9 +171,8 @@ class AgentExecutor:
             max_concurrency=2,
             configurable={
                 "org_id": str(scope_org_id) if scope_org_id else "",
-                "user_id": str(effective_caller_user_id) if effective_caller_user_id else "",
-                "caller_user_id": str(effective_caller_user_id) if effective_caller_user_id else "",
-                "called_user_id": str(called_user_id) if called_user_id else "",
+                "caller_user_id": str(caller_user_id),
+                "callee_user_id": str(effective_callee_user_id),
                 "invocation_kind": invocation_kind,
                 "is_admin": bool(initiator.is_admin) if initiator else False,
             },
@@ -226,8 +219,6 @@ class AgentExecutor:
             except Exception:
                 logger.exception("corrections: search failed for chat=%s", chat_id)
 
-        # TODO inject separate caller and callee info if agent was called by mention instead of direct chat with role owner  
-
         # --- Injection phase ---
 
         # Qwen's chat template requires the first non-system message to be a user
@@ -238,7 +229,7 @@ class AgentExecutor:
 
         injected_messages: list[dict] = []
 
-        if effective_caller_user_id is not None and initiator:
+        if initiator:
             user_lines = [
                 f"ID: {initiator.id}",
                 f"Имя: {initiator.name}",
@@ -255,9 +246,28 @@ class AgentExecutor:
                 attachments_block = await self._build_chat_attachments_block(engine, chat_id)
                 if attachments_block:
                     user_lines.append(attachments_block)
-            user_block = "Информация о пользователе:\n" + "\n".join(l for l in user_lines if l)
+            user_block = "Информация о пользователе, который произвёл вызов:\n" + "\n".join(l for l in user_lines if l)
             user_block += "\nНе раскрывать пользователю его ID."
             injected_messages.append({"role": _inject_role, "content": user_block})
+
+        if invocation_kind == "mention":
+            callee = await engine.user_storage.get_by_id(effective_callee_user_id)
+            if callee:
+                callee_lines = [
+                    f"ID: {callee.id}",
+                    f"Имя: {callee.name}",
+                    f"Логин: @{callee.username}",
+                    f"Email: {callee.email}" if callee.email else None,
+                    f"Администратор: да" if callee.is_admin else "Администратор: нет",
+                ]
+                if callee.department_id:
+                    dept = await engine.department_storage.get_by_id(callee.department_id)
+                    if dept:
+                        callee_lines.append(f"Отдел: {dept.name}")
+                        callee_lines.append(f"Руководитель отдела: {'да' if callee.is_head else 'нет'}")
+                callee_block = "Информация о пользователе, которому адресован вызов (callee):\n" + "\n".join(l for l in callee_lines if l)
+                callee_block += "\nНе раскрывать пользователю его ID."
+                injected_messages.append({"role": _inject_role, "content": callee_block})
 
         if org_context:
             injected_messages.append({"role": _inject_role, "content": f"Контекст организации:\n{org_context}"})
@@ -277,16 +287,13 @@ class AgentExecutor:
         if lessons:
             # Inject corrections 
             rules_block = "\n".join(f"- {lesson}" for lesson in lessons)
-            system_prompt += f"\n\n## Инструкции в частных случаях:\n{rules_block}"
+            system_prompt += f"\n\n## Корректировки поведения со стороны пользователя по предыдущим подобным обращениям:\n{rules_block}"
             logger.info("corrections: injected %d lessons for chat=%s", len(lessons), chat_id)
 
         # Guardrails so roles don't mix in same chat is user mentions multiple
         system_prompt += (
             "\n\n##ВАЖНЫЕ ОГРАНИЧЕНИЯ\n"
-            "Запрещены любые служебные фразы о процессе работы агента: о начале, продолжении, переходе к этапу, проверке, поиске, анализе, обработке документов, заполнении категорий или будущих действиях.\n"
-            "Если задача требует использования инструмента, сначала вызови инструмент. "
-            "Не пиши пользователю промежуточный текст перед вызовом инструмента. "
-            "Любое текстовое сообщение пользователю считается финальным ответом текущей итерации.\n"
+            "Любое текстовое сообщение пользователю считается финальным ответом текущего обращения.\n"
             "У тебя есть конкретный точный набор инструментов. Не выдумывай себе функционал. Тебе запрещено говорить пользователю, что ты умеешь делать то, что явно не позволяют твои инструменты."
         )
 

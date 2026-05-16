@@ -271,12 +271,15 @@ class EngineService:
         from ..agents.tools.list_documents import list_global_documents, list_own_documents
         from ..agents.tools.user_tool import create_user_tools
         from ..agents.tools.analyze_image import create_analyze_image_tool
+        from ..agents.tools.helper_registry import HelperRegistry
+        from ..agents.helper_executor import HelperExecutor
+        from ..agents.tools.call_helper_tool import call_helper, init_call_helper_tool
 
         # Create calendar tools wired to CalendarService
         cal_create_tool, cal_query_tool = create_calendar_tools(self.calendar_service)
 
         # Create task tools wired to TaskService
-        task_create_tool, task_query_tool, task_update_tool, task_deadline_proposal_tool = create_task_tools(self.task_service)
+        task_create_tool, task_query_tool, task_update_tool, task_deadline_proposal_tool, get_own_tasks_tool = create_task_tools(self.task_service)
         expand_chunk_tool = create_expand_chunk_tool(self.rag_service, self.user_file_storage)
         analyze_image_tool = create_analyze_image_tool(
             self.user_file_storage,
@@ -291,6 +294,7 @@ class EngineService:
         self.tool_registry.register("task_query", task_query_tool)
         self.tool_registry.register("task_update", task_update_tool)
         self.tool_registry.register("task_deadline_proposal", task_deadline_proposal_tool)
+        self.tool_registry.register("get_own_tasks", get_own_tasks_tool)
         self.tool_registry.register("rag_search", rag_search)
         self.tool_registry.register("expand_chunk", expand_chunk_tool)
         self.tool_registry.register("table_rows_search", table_rows_search)
@@ -306,6 +310,19 @@ class EngineService:
             department_service=self.department_service,
         )
         self.tool_registry.register("user_search", user_search_tool)
+
+        # HelperRegistry resolves helper tool-name lists using the now-complete ToolRegistry.
+        # HelperExecutor is wired to it and shared with call_helper tool.
+        self.helper_registry = HelperRegistry(self.tool_registry)
+        self.helper_executor = HelperExecutor(
+            base_url=Config.LLM_BASE_URL,
+            api_key=Config.LLM_API_KEY,
+            default_model=Config.DEFAULT_MODEL,
+            prompt_cache=self.prompt_cache,
+            helper_registry=self.helper_registry,
+        )
+        init_call_helper_tool(self.helper_executor)
+        self.tool_registry.register("call_helper", call_helper)
 
         # MemoryService needs AgentExecutor, so it is created after it.
         # AgentExecutor receives memory_service via setter below to break the chicken-egg.
