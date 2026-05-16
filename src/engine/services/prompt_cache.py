@@ -44,12 +44,14 @@ class PromptCache:
         self._cache: dict[str, str] = {}
         self._prompts_dir = prompts_dir
         self._helpers_dir = os.path.join(prompts_dir, "helpers")
+        self._subagents_dir = os.path.join(prompts_dir, "subagents")
 
-    def get_prompt(self, role, org_context: str = "") -> str:
+    def get_prompt(self, role, org_context: str = "", is_subagent: bool = False) -> str:
         """
         Get system prompt for a role.
 
         Priority:
+        0. prompts/subagents/<prompt_file> when is_subagent=True
         1. prompt_file (from file on disk, cached in memory)
         2. system_prompt (from DB, backward compatibility)
 
@@ -58,22 +60,38 @@ class PromptCache:
         Args:
             role: Role object with prompt_file and system_prompt attributes
             org_context: Organization context to prepend to the prompt
+            is_subagent: Prefer prompts/subagents/<prompt_file> before root prompts
 
         Returns:
             System prompt text
         """
         role_prompt = ""
         if role.prompt_file:
-            if role.prompt_file not in self._cache:
-                path = os.path.join(self._prompts_dir, role.prompt_file)
+            prompt_file = role.prompt_file
+            cache_key = f"subagents/{prompt_file}" if is_subagent else prompt_file
+            path = (
+                os.path.join(self._subagents_dir, prompt_file)
+                if is_subagent
+                else os.path.join(self._prompts_dir, prompt_file)
+            )
+            if cache_key not in self._cache:
                 try:
-                    self._cache[role.prompt_file] = Path(path).read_text(encoding="utf-8")
-                    logger.info(f"Loaded prompt from file: {role.prompt_file}")
+                    self._cache[cache_key] = Path(path).read_text(encoding="utf-8")
+                    logger.info("Loaded prompt from file: %s", cache_key)
                 except FileNotFoundError:
-                    logger.warning(f"Prompt file not found: {path}")
-                    role_prompt = role.system_prompt or ""
+                    if is_subagent:
+                        root_path = os.path.join(self._prompts_dir, prompt_file)
+                        try:
+                            self._cache[prompt_file] = Path(root_path).read_text(encoding="utf-8")
+                            logger.info("Loaded prompt from file: %s", prompt_file)
+                        except FileNotFoundError:
+                            logger.warning("Prompt file not found: %s", root_path)
+                            role_prompt = role.system_prompt or ""
+                    else:
+                        logger.warning(f"Prompt file not found: {path}")
+                        role_prompt = role.system_prompt or ""
             if not role_prompt:
-                role_prompt = self._cache.get(role.prompt_file, "")
+                role_prompt = self._cache.get(cache_key) or self._cache.get(prompt_file, "")
         else:
             role_prompt = role.system_prompt or ""
 

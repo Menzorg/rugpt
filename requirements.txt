@@ -33,6 +33,7 @@ langchain-openai>=0.2.0
 langchain-community>=0.3.0
 langchain-text-splitters>=0.3.0
 langgraph>=0.2.0
+langgraph-supervisor>=0.0.31
 
 # Kafka event bus (item 10: PM agent notifications + async agent execution)
 aiokafka>=0.13.0

@@ -33,6 +33,7 @@ class Role:
     name: str = ""                                   # Display name: "Lawyer"
     code: str = ""                                   # Unique code: "lawyer"
     description: Optional[str] = None                # Role description
+    as_subagent_description: str = ""                # Description used when this role is exposed as a subagent
     system_prompt: str = ""                          # System prompt for the AI
     rag_collection: Optional[str] = None             # RAG collection name (for future)
     model_name: str = "qwen2.5:7b"                   # LLM model to use
@@ -52,6 +53,7 @@ class Role:
             "name": self.name,
             "code": self.code,
             "description": self.description,
+            "as_subagent_description": self.as_subagent_description,
             "system_prompt": self.system_prompt,
             "rag_collection": self.rag_collection,
             "model_name": self.model_name,
@@ -73,6 +75,7 @@ class Role:
             name=data.get("name", ""),
             code=data.get("code", ""),
             description=data.get("description"),
+            as_subagent_description=data.get("as_subagent_description") or "",
             system_prompt=data.get("system_prompt", ""),
             rag_collection=data.get("rag_collection"),
             model_name=data.get("model_name", "qwen2.5:7b"),

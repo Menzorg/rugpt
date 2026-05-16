@@ -12,6 +12,7 @@ from ..config import Config
 from ..storage.org_storage import OrgStorage
 from ..storage.user_storage import UserStorage
 from ..storage.role_storage import RoleStorage
+from ..storage.role_subagent_storage import RoleSubagentStorage
 from ..storage.chat_storage import ChatStorage
 from ..storage.message_storage import MessageStorage
 from ..storage.message_attachment_storage import MessageAttachmentStorage
@@ -61,6 +62,7 @@ from .department_service import DepartmentService
 from .rag_service import RAGService
 from .support_notification_service import SupportNotificationService
 from .support_ticket_service import SupportTicketService
+from .role_subagent_service import RoleSubagentService
 from ..storage.rag_store import RAG_store
 from ..notifications.telegram_sender import TelegramSender
 from ..notifications.email_sender import EmailSender
@@ -89,6 +91,7 @@ class EngineService:
         self.org_storage = OrgStorage(self.postgres_dsn)
         self.user_storage = UserStorage(self.postgres_dsn)
         self.role_storage = RoleStorage(self.postgres_dsn)
+        self.role_subagent_storage = RoleSubagentStorage(self.postgres_dsn)
         self.chat_storage = ChatStorage(self.postgres_dsn)
         self.message_storage = MessageStorage(self.postgres_dsn)
         self.message_attachment_storage = MessageAttachmentStorage(self.postgres_dsn)
@@ -122,6 +125,9 @@ class EngineService:
 
         # Initialize calendar service
         self.calendar_service = CalendarService(self.calendar_storage)
+
+        # Initialize supervisor subagent mapping service
+        self.role_subagent_service = RoleSubagentService(self.role_subagent_storage)
 
         # Initialize department service
         self.department_service = DepartmentService(self.department_storage, self.user_storage)
@@ -440,6 +446,7 @@ class EngineService:
         await self.org_storage.init()
         await self.user_storage.init()
         await self.role_storage.init()
+        await self.role_subagent_storage.init()
         await self.chat_storage.init()
         await self.message_storage.init()
         await self.message_attachment_storage.init()
@@ -507,6 +514,7 @@ class EngineService:
         await self.org_storage.close()
         await self.user_storage.close()
         await self.role_storage.close()
+        await self.role_subagent_storage.close()
         await self.chat_storage.close()
         await self.message_storage.close()
         await self.message_attachment_storage.close()

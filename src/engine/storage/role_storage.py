@@ -22,17 +22,17 @@ class RoleStorage(BaseStorage):
         """Create a new role"""
         query = """
             INSERT INTO roles (
-                id, org_id, name, code, description, system_prompt,
+                id, org_id, name, code, description, as_subagent_description, system_prompt,
                 rag_collection, model_name, agent_type, agent_config,
                 tools, prompt_file, is_active, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             RETURNING *
         """
         row = await self.fetchrow(
             query,
             role.id, role.org_id, role.name, role.code, role.description,
-            role.system_prompt, role.rag_collection, role.model_name,
+            role.as_subagent_description or "", role.system_prompt, role.rag_collection, role.model_name,
             role.agent_type, json.dumps(role.agent_config),
             json.dumps(role.tools), role.prompt_file,
             role.is_active, role.created_at, role.updated_at
@@ -69,16 +69,18 @@ class RoleStorage(BaseStorage):
         role.updated_at = datetime.utcnow()
         query = """
             UPDATE roles
-            SET name = $2, code = $3, description = $4, system_prompt = $5,
-                rag_collection = $6, model_name = $7, agent_type = $8,
-                agent_config = $9, tools = $10, prompt_file = $11,
-                is_active = $12, updated_at = $13
+            SET name = $2, code = $3, description = $4,
+                as_subagent_description = $5, system_prompt = $6,
+                rag_collection = $7, model_name = $8, agent_type = $9,
+                agent_config = $10, tools = $11, prompt_file = $12,
+                is_active = $13, updated_at = $14
             WHERE id = $1
             RETURNING *
         """
         row = await self.fetchrow(
             query,
-            role.id, role.name, role.code, role.description, role.system_prompt,
+            role.id, role.name, role.code, role.description,
+            role.as_subagent_description or "", role.system_prompt,
             role.rag_collection, role.model_name, role.agent_type,
             json.dumps(role.agent_config), json.dumps(role.tools),
             role.prompt_file, role.is_active, role.updated_at
@@ -122,6 +124,7 @@ class RoleStorage(BaseStorage):
             name=row["name"],
             code=row["code"],
             description=row["description"],
+            as_subagent_description=row["as_subagent_description"] or "",
             system_prompt=row["system_prompt"],
             rag_collection=row["rag_collection"],
             model_name=row["model_name"],
