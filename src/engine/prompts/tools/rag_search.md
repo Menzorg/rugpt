@@ -13,6 +13,6 @@
 Не более 15 вызовов за сессию.
 
 ### Зависимости
-`file_id` — UUID документа, получи через `list_own_documents`, `list_global_documents` или из приложенных файлов в чате.
+`file_id` — UUID документа, получи через `list_own_documents`, `list_documents` или из приложенных файлов в чате.
 
 </rag_search>

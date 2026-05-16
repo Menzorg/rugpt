@@ -9,6 +9,6 @@
 - Для получения большего количества вызывай несколько раз со смещением `row_from`/`row_to`.
 
 ### Зависимости
-`file_id` — UUID документа с `is_table=true`, получи через `list_own_documents` или `list_global_documents`.
+`file_id` — UUID документа с `is_table=true`, получи через `list_own_documents` или `list_documents`.
 
 </table_rows_search>

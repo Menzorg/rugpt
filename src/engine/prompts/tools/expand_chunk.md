@@ -9,7 +9,7 @@
 2. Когда фрагмент вырван из важного контекста.
 
 ### Зависимости
-- `file_id` — UUID документа, получи через `list_own_documents` или `list_global_documents`.
+- `file_id` — UUID документа, получи через `list_own_documents` или `list_documents`.
 - `chunk_index` — индекс фрагмента, получи из результатов `rag_search`.
 
 </expand_chunk>

@@ -76,15 +76,17 @@ class AgentExecutor:
         model_kwargs: Optional[dict] = None,
     ) -> ChatOpenAI:
         """Create a ChatOpenAI instance pointed at the LiteLLM proxy."""
-        return ChatOpenAI(
-            base_url=self.base_url,
-            api_key=self.api_key,
-            model=model,
-            temperature=temperature,
-            timeout=self.timeout,
-            model_kwargs=model_kwargs
-            #max_tokens=max_tokens,
-        )
+        kwargs = {
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "model": model,
+            "temperature": temperature,
+            "timeout": self.timeout,
+            # "max_tokens": max_tokens,
+        }
+        if model_kwargs is not None:
+            kwargs["model_kwargs"] = model_kwargs
+        return ChatOpenAI(**kwargs)
 
     async def _build_chat_attachments_block(
         self,
@@ -358,7 +360,7 @@ class AgentExecutor:
                 "rag_search tool call limit: run_limit=%d",
                 _RAG_SEARCH_TOOL_CALL_LIMIT,
             )
-        for list_tool_name in ("list_global_documents", "list_own_documents"):
+        for list_tool_name in ("list_documents", "list_own_documents"):
             if any(tool.name == list_tool_name for tool in tools):
                 agent_middleware.append(
                     ToolCallLimitMiddleware(

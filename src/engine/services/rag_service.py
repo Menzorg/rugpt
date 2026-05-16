@@ -287,13 +287,10 @@ class RAGService:
 
                 stage = "db_write"
                 logger.info(f"[{fid}] stage={stage}")
-                await self._store.insert_table_document_with_rows(
+                await self._store.insert_rows_chunks_and_update_table_summary(
                     file_id=str(file_id),
-                    doc_title=filename or str(file_id),
                     summary=summary,
                     summary_embedding=summary_embedding,
-                    org_id=org_id,
-                    user_id=user_id,
                     rows_text=table_rows,
                     row_embeddings=row_embeddings,
                 )
@@ -333,13 +330,10 @@ class RAGService:
 
             stage = "db_write"
             logger.info(f"[{fid}] stage={stage}")
-            await self._store.insert_document_with_chunks(
+            await self._store.insert_chunks_and_update_document_summary(
                 file_id=str(file_id),
-                doc_title=filename or str(file_id),
                 summary=summary,
                 summary_embedding=summary_embedding,
-                org_id=org_id,
-                user_id=user_id,
                 chunks=chunks,
                 chunk_embeddings=chunk_embeddings,
             )
@@ -402,6 +396,10 @@ class RAGService:
         user_id: str | None,
         query: str,
         top_k: int,
+        is_admin: bool = False,
+        filter_user_id: str | None = None,
+        exclude_images: bool = True,
+        search_mode: str = "abstract",
     ) -> list[RelatedDoc]:
         """Return top-k related docs in org/user scope using SQL hybrid search."""
         logger.info(
@@ -417,9 +415,13 @@ class RAGService:
         docs = await self._store.call_search_related_docs(
             org_id=org_id,
             user_id=user_id,
+            is_admin=is_admin,
             query=query,
             query_embedding=query_embedding,
             top_k=top_k,
+            filter_user_id=filter_user_id,
+            exclude_images=exclude_images,
+            search_mode=search_mode,
         )
         logger.info(f"rag find_docs: returned {len(docs)} docs")
         return docs

@@ -101,7 +101,7 @@ async def rag_search(
     runtime: ToolRuntime[RuntimeContext],
 ) -> str:
     """Search for relevant chunks within a specific document.
-    Use list_global_documents or list_own_documents first to find the document ID, then call this tool.
+    Use list_documents or list_own_documents first to find the document ID, then call this tool.
     Args:
         file_id: Document ID to search within.
         query: Search query in Russian or English.

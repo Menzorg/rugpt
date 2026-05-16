@@ -8,9 +8,14 @@ import logging
 from typing import Any, List, Optional
 
 from langchain.agents import create_agent
+from langchain_core.messages import HumanMessage, RemoveMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 from langchain_openai import ChatOpenAI
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.prebuilt import InjectedState
+from langgraph.types import Command
+from typing_extensions import Annotated
 
 from ..result import AgentResult, ToolCall
 from ...models.role import Role
@@ -85,7 +90,7 @@ async def _supervisor_agent_call(
 ) -> AgentResult:
     """Supervisor graph call with tool and future subagent support."""
     try:
-        from langgraph_supervisor import create_handoff_tool, create_supervisor
+        from langgraph_supervisor import create_supervisor
 
         context = (
             None
@@ -103,12 +108,24 @@ async def _supervisor_agent_call(
             subagent_context=subagent_context,
         )
         handoff_tools = [
-            create_handoff_tool(
+            _create_task_handoff_tool(
                 agent_name=agent.name,
                 description=subagent_descriptions.get(agent.name),
+                subagent_context=subagent_context,
             )
             for agent in subagents
         ]
+        logger.info(
+            "supervisor: creating with handoff tools=%s",
+            [
+                {
+                    "tool": tool.name,
+                    "agent": agent.name,
+                    "description": subagent_descriptions.get(agent.name, ""),
+                }
+                for tool, agent in zip(handoff_tools, subagents)
+            ],
+        )
         supervisor_tools = [*(tools or []), *handoff_tools]
         supervisor_name = (agent_config or {}).get("supervisor_name", "supervisor")
 
@@ -222,16 +239,10 @@ async def _build_subagents(
             else ([], "")
         )
         subagent_prompt = subagent_prompt.replace("{tools}", tools_doc)
-        wrapped_subagent_context = (
-            f"<context>\n{subagent_context}\n</context>"
-            if subagent_context
-            else ""
-        )
         subagent_prompt = "\n\n".join(
             part
             for part in [
                 subagent_prompt,
-                wrapped_subagent_context,
                 _SUBAGENT_DELEGATION_REMARK,
             ]
             if part
@@ -251,6 +262,57 @@ async def _build_subagents(
         )
 
     return subagents, subagent_descriptions
+
+
+def _create_task_handoff_tool(
+    *,
+    agent_name: str,
+    description: Optional[str],
+    subagent_context: str,
+) -> BaseTool:
+    """Create a handoff tool that sends only explicit task context to subagent."""
+    name = f"transfer_to_{agent_name}"
+    tool_description = (
+        f"{description or f'Ask agent {agent_name} for help'} "
+        "You must fill both `task` and `details` manually. "
+        "`task` is the exact assignment for the subagent; `details` is all relevant "
+        "context the subagent needs. The conversation history will not be sent."
+    )
+
+    @tool(name, description=tool_description)
+    def handoff_to_agent(
+        task: Annotated[str, "Exact assignment the subagent must complete."],
+        details: Annotated[str, "All relevant details needed to complete the task."],
+        state: Annotated[dict, InjectedState],
+        tool_call_id: Annotated[str, InjectedToolCallId],
+    ) -> Command:
+        del state, tool_call_id
+        handoff_message = HumanMessage(
+            content="\n\n".join(
+                part
+                for part in [
+                    f"<context>\n{subagent_context}\n</context>" if subagent_context else "",
+                    f"<task>\n{task}\n</task>",
+                    f"<details>\n{details}\n</details>",
+                ]
+                if part
+            )
+        )
+        return Command(
+            goto=agent_name,
+            graph=Command.PARENT,
+            update={
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    handoff_message,
+                ]
+            },
+        )
+
+    handoff_to_agent.metadata = {
+        "__handoff_destination": agent_name,
+    }
+    return handoff_to_agent
 
 
 def _agent_name(role_code: str) -> str:

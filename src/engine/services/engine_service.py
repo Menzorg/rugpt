@@ -274,7 +274,7 @@ class EngineService:
         from ..agents.tools.table_rows_tool import table_rows_search
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
-        from ..agents.tools.list_documents import list_global_documents, list_own_documents
+        from ..agents.tools.list_documents import list_documents, list_own_documents
         from ..agents.tools.user_tool import create_user_tools
         from ..agents.tools.analyze_image import create_analyze_image_tool
         from ..agents.tools.helper_registry import HelperRegistry
@@ -306,7 +306,7 @@ class EngineService:
         self.tool_registry.register("table_rows_search", table_rows_search)
         self.tool_registry.register("web_search", web_search)
         self.tool_registry.register("role_call", role_call)
-        self.tool_registry.register("list_global_documents", list_global_documents)
+        self.tool_registry.register("list_documents", list_documents)
         self.tool_registry.register("list_own_documents", list_own_documents)
         self.tool_registry.register("analyze_image", analyze_image_tool)
 

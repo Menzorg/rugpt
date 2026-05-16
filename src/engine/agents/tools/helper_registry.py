@@ -19,7 +19,7 @@ logger = logging.getLogger("rugpt.agents.tools.helper_registry")
 # ---------------------------------------------------------------------------
 def _declare_helpers() -> Dict[str, List[str]]:
     return {
-        "doc_search_helper": ["list_own_documents", "list_global_documents", "rag_search", "expand_chunk_context", "table_rows_search"],
+        "doc_search_helper": ["list_own_documents", "list_documents", "rag_search", "expand_chunk_context", "table_rows_search"],
     }
 
 
