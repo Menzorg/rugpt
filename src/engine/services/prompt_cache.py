@@ -43,7 +43,6 @@ class PromptCache:
     def __init__(self, prompts_dir: str):
         self._cache: dict[str, str] = {}
         self._prompts_dir = prompts_dir
-        self._helpers_dir = os.path.join(prompts_dir, "helpers")
         self._subagents_dir = os.path.join(prompts_dir, "subagents")
 
     def get_prompt(self, role, org_context: str = "", is_subagent: bool = False) -> str:
@@ -101,27 +100,6 @@ class PromptCache:
         if org_context:
             return f"{org_context}\n\n---\n\n{role_prompt}"
         return role_prompt
-
-    def get_helper_prompt(self, helper_name: str) -> str:
-        """
-        Get system prompt for a helper by name.
-
-        Reads from prompts/helpers/<helper_name>.md, cached in memory.
-        Returns empty string if the file is not found.
-        """
-        cache_key = f"helpers/{helper_name}.md"
-        if cache_key not in self._cache:
-            path = os.path.join(self._helpers_dir, f"{helper_name}.md")
-            try:
-                self._cache[cache_key] = Path(path).read_text(encoding="utf-8")
-                logger.info("Loaded helper prompt: %s", cache_key)
-            except FileNotFoundError:
-                logger.warning("Helper prompt file not found: %s", path)
-                self._cache[cache_key] = ""
-        prompt = self._cache.get(cache_key, "")
-        if "{today}" in prompt:
-            prompt = prompt.replace("{today}", _today_ru())
-        return prompt
 
     def clear(self, prompt_file: Optional[str] = None):
         """
