@@ -366,27 +366,6 @@ class AgentExecutor:
                     context_schema=runtime_context,
                     middleware=agent_middleware,
                 )
-
-            elif role.agent_type == "chain":
-                result = await run_chain_agent(
-                    llm=llm,
-                    system_prompt=system_prompt,
-                    messages=messages,
-                    agent_config=role.agent_config,
-                    tools=tools if tools else None,
-                    config=config,
-                )
-
-            elif role.agent_type == "multi_agent":
-                result = await run_multi_agent(
-                    llm=llm,
-                    system_prompt=system_prompt,
-                    messages=messages,
-                    agent_config=role.agent_config,
-                    tools=tools if tools else None,
-                    config=config,
-                )
-
             else:
                 logger.warning(f"Unknown agent_type '{role.agent_type}', falling back to simple")
                 result = await run_simple_agent(
