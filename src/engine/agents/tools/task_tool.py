@@ -132,6 +132,18 @@ def create_task_tools(
             return []
         return [UUID(v) for v in values if v]
 
+    def _log_identity(tool_name: str, configurable: dict) -> None:
+        logger.info(
+            "%s identity: user_id=%s caller_user_id=%s callee_user_id=%s org_id=%s is_admin=%s invocation=%s",
+            tool_name,
+            configurable.get("user_id", ""),
+            configurable.get("caller_user_id", ""),
+            configurable.get("callee_user_id", ""),
+            configurable.get("org_id", ""),
+            bool(configurable.get("is_admin", False)),
+            configurable.get("invocation_kind", ""),
+        )
+
     async def _task_create_async(
         title: str,
         assignee_user_id: str,
@@ -153,11 +165,17 @@ def create_task_tools(
             participant_user_ids: Optional UUIDs of additional task participants.
         """
         logger.info(
-            f"tool task_create: title={title!r} assignee={assignee_user_id} "
-            f"deadline={deadline!r} priority={priority} participants={participant_user_ids}"
+            "tool task_create: title=%r description_chars=%d assignee=%s deadline=%r priority=%s participants=%s",
+            title,
+            len(description or ""),
+            assignee_user_id,
+            deadline,
+            priority,
+            participant_user_ids,
         )
         try:
             configurable = (config or {}).get("configurable", {})
+            _log_identity("task_create", configurable)
             user_id = configurable.get("user_id", "")
             org_id = configurable.get("org_id", "")
 
@@ -166,12 +184,14 @@ def create_task_tools(
             try:
                 dl = datetime.fromisoformat(deadline) if deadline else None
             except ValueError:
+                logger.info("task_create invalid_deadline: deadline=%r", deadline)
                 return f"Invalid deadline format: {deadline!r}. Use ISO format, e.g. '2025-03-15T18:00:00'."
 
             # org_id is injected by the executor from the caller's context; absent means
             # the tool was invoked outside a proper agent run — refuse rather than guess.
             task_org_id = UUID(org_id) if org_id else None
             if task_org_id is None:
+                logger.info("task_create missing_org_id")
                 return "System can't see user's organization id"
 
             # Refuse if the caller's department visibility rules don't include the assignee.
@@ -181,16 +201,27 @@ def create_task_tools(
                 visible = await engine.department_service.check_visible(
                     UUID(user_id), assignee_uuid, UUID(org_id),
                 )
+                logger.info(
+                    "task_create permission: gate=assignee_visible assignee=%s visible=%s",
+                    assignee_uuid,
+                    visible,
+                )
                 if not visible:
                     return "Cannot assign task: user not visible to you."
                 for participant_uuid in participant_uuids:
                     participant_visible = await engine.department_service.check_visible(
                         UUID(user_id), participant_uuid, UUID(org_id),
                     )
+                    logger.info(
+                        "task_create permission: gate=participant_visible participant=%s visible=%s",
+                        participant_uuid,
+                        participant_visible,
+                    )
                     if not participant_visible:
                         return "Cannot add task participant: user not visible to you."
 
             if priority is not None and priority not in (1, 2, 3):
+                logger.info("task_create invalid_priority: priority=%s", priority)
                 return "priority must be 1 (Обычно), 2 (Важно) or 3 (Срочно)"
 
             task = await task_service.create(
@@ -202,6 +233,13 @@ def create_task_tools(
                 created_by_user_id=UUID(user_id) if user_id else None,
                 priority=priority,
                 participant_user_ids=participant_uuids,
+            )
+            logger.info(
+                "task_create done: task_id=%s status=%s assignee=%s participants=%d",
+                task.id,
+                task.status,
+                assignee_uuid,
+                len(participant_uuids),
             )
             return f"Task '{title}' created (id={task.id})"
         except Exception as e:
@@ -240,11 +278,13 @@ def create_task_tools(
         )
         try:
             configurable = (config or {}).get("configurable", {})
+            _log_identity("task_query", configurable)
             user_id = configurable.get("user_id", "")
             org_id = configurable.get("org_id", "")
 
             query_org_id = UUID(org_id) if org_id else None
             if query_org_id is None:
+                logger.info("task_query missing_org_id")
                 return "System can't see user's organization id"
 
             from ...services.engine_service import get_engine_service
@@ -270,12 +310,25 @@ def create_task_tools(
                 )
                 filter_sets.append({t.id for t in assignee_tasks})
                 _add_to_pool(assignee_tasks)
+                logger.info(
+                    "task_query filter: kind=assignee assignee=%s status=%s count=%d pool=%d",
+                    assignee_user_id,
+                    status,
+                    len(assignee_tasks),
+                    len(pool),
+                )
 
             if created_by_user_id:
                 rows = await task_service.list_tasks_created_by(UUID(created_by_user_id))
                 creator_tasks = [r["task"] for r in rows]
                 filter_sets.append({t.id for t in creator_tasks})
                 _add_to_pool(creator_tasks)
+                logger.info(
+                    "task_query filter: kind=creator creator=%s count=%d pool=%d",
+                    created_by_user_id,
+                    len(creator_tasks),
+                    len(pool),
+                )
 
             if status and not assignee_user_id:
                 # status is already passed into list_by_assignee above; only
@@ -283,11 +336,23 @@ def create_task_tools(
                 status_tasks = await task_service.list_by_org(query_org_id, status)
                 filter_sets.append({t.id for t in status_tasks})
                 _add_to_pool(status_tasks)
+                logger.info(
+                    "task_query filter: kind=status status=%s count=%d pool=%d",
+                    status,
+                    len(status_tasks),
+                    len(pool),
+                )
 
             if text_search_query:
                 search_tasks = await task_service.text_search(query_org_id, text_search_query)
                 filter_sets.append({t.id for t in search_tasks})
                 _add_to_pool(search_tasks)
+                logger.info(
+                    "task_query filter: kind=text_search query=%r count=%d pool=%d",
+                    text_search_query,
+                    len(search_tasks),
+                    len(pool),
+                )
 
             if deadline_from or deadline_to:
                 deadline_tasks = await task_service.list_by_deadline_range(
@@ -295,6 +360,13 @@ def create_task_tools(
                 )
                 filter_sets.append({t.id for t in deadline_tasks})
                 _add_to_pool(deadline_tasks)
+                logger.info(
+                    "task_query filter: kind=deadline from=%s to=%s count=%d pool=%d",
+                    deadline_from,
+                    deadline_to,
+                    len(deadline_tasks),
+                    len(pool),
+                )
 
             if created_from or created_to:
                 created_tasks = await task_service.list_by_created_range(
@@ -302,16 +374,36 @@ def create_task_tools(
                 )
                 filter_sets.append({t.id for t in created_tasks})
                 _add_to_pool(created_tasks)
+                logger.info(
+                    "task_query filter: kind=created from=%s to=%s count=%d pool=%d",
+                    created_from,
+                    created_to,
+                    len(created_tasks),
+                    len(pool),
+                )
 
             # No filter at all → return all org tasks
             if not filter_sets:
                 all_tasks = await task_service.list_by_org(query_org_id, status or None)
                 _add_to_pool(all_tasks)
                 final_ids = {t.id for t in pool}
+                logger.info(
+                    "task_query filter: kind=all_org status=%s count=%d pool=%d",
+                    status,
+                    len(all_tasks),
+                    len(pool),
+                )
             else:
                 final_ids = set.intersection(*filter_sets)
 
             tasks = [t for t in pool if t.id in final_ids]
+            before_visibility_count = len(tasks)
+            logger.info(
+                "task_query intersection: filters=%d pool=%d final=%d",
+                len(filter_sets),
+                len(pool),
+                before_visibility_count,
+            )
 
             # Strip tasks whose assignees are outside the caller's department visibility.
             if user_id and org_id:
@@ -319,8 +411,15 @@ def create_task_tools(
                     UUID(user_id), UUID(org_id),
                 )
                 tasks = [t for t in tasks if t.assignee_user_id in visible_ids]
+                logger.info(
+                    "task_query visibility: visible_users=%d before=%d after=%d",
+                    len(visible_ids),
+                    before_visibility_count,
+                    len(tasks),
+                )
 
             if not tasks:
+                logger.info("task_query done: result=empty before_visibility=%d", before_visibility_count)
                 return "No tasks found."
 
             total = len(tasks)
@@ -334,6 +433,18 @@ def create_task_tools(
             # TODO: replace char budget with token budget via a token counting service
             total_desc_chars = sum(len(t.description) for t in shown if t.description)
             include_descriptions = total_desc_chars <= Config.TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET
+            logger.info(
+                "task_query page: page=%d/%d span=%d-%d total=%d shown=%d desc_chars=%d desc_budget=%d include_desc=%s",
+                page,
+                total_pages,
+                start + 1,
+                end,
+                total,
+                len(shown),
+                total_desc_chars,
+                Config.TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET,
+                include_descriptions,
+            )
 
             # Resolve all referenced user IDs to names in one batch query.
             from ...services.engine_service import get_engine_service
@@ -375,6 +486,12 @@ def create_task_tools(
                 " SHRINK OUTPUT USING FILTERS TO CHECK DESCRIPTIONS IF YOU NEED"
                 if not include_descriptions else ""
             )
+            logger.info(
+                "task_query done: total=%d shown=%d include_desc=%s",
+                total,
+                len(shown),
+                include_descriptions,
+            )
             return header + "\n" + "\n".join(lines) + footer
         except Exception as e:
             logger.error(f"task_query failed: {e}", exc_info=True)
@@ -408,10 +525,12 @@ def create_task_tools(
         )
         try:
             configurable = (config or {}).get("configurable", {})
+            _log_identity("task_update", configurable)
             user_id = configurable.get("user_id", "")
             is_admin = configurable.get("is_admin", False)
 
             if not user_id:
+                logger.info("task_update missing_user_id: task=%s", task_id)
                 return "SYSTEM CAN'T SEE CURRENT USER ID"
 
             task_uuid = UUID(task_id)
@@ -422,6 +541,7 @@ def create_task_tools(
             try:
                 deadline_dt = datetime.fromisoformat(deadline) if deadline else None
             except ValueError:
+                logger.info("task_update invalid_deadline: task=%s deadline=%r", task_id, deadline)
                 return f"Invalid deadline format: {deadline!r}. Use ISO format, e.g. '2025-03-15T18:00:00'."
             has_status_update = bool(status)
             has_field_update = bool(
@@ -433,14 +553,29 @@ def create_task_tools(
 
             existing_task = await task_service.get(task_uuid)
             if not existing_task:
+                logger.info("task_update not_found: task=%s", task_id)
                 return f"Task {task_id} not found"
 
             caller_uuid = UUID(user_id)
             is_creator = existing_task.created_by_user_id == caller_uuid
             is_assignee = existing_task.assignee_user_id == caller_uuid
+            logger.info(
+                "task_update permission: task=%s current=%s requested=%s is_creator=%s is_assignee=%s is_admin=%s has_fields=%s deadline=%s add_participants=%d remove_participants=%d",
+                task_uuid,
+                existing_task.status,
+                status,
+                is_creator,
+                is_assignee,
+                is_admin,
+                has_field_update,
+                bool(deadline_dt),
+                len(add_participant_uuids),
+                len(remove_participant_uuids),
+            )
 
             _ALLOWED_STATUSES = ("created", "in_progress", "awaiting_review", "done")
             if has_status_update and status not in _ALLOWED_STATUSES:
+                logger.info("task_update invalid_status: task=%s requested=%s", task_uuid, status)
                 return (
                     f"'{status}' is not a valid status. "
                     f"Allowed values: {', '.join(_ALLOWED_STATUSES)}."
@@ -448,15 +583,24 @@ def create_task_tools(
 
             if has_status_update:
                 if err := _check_status_transition(existing_task.status, status, is_creator, is_assignee):
+                    logger.info(
+                        "task_update denied: task=%s reason=status_transition current=%s requested=%s",
+                        task_uuid,
+                        existing_task.status,
+                        status,
+                    )
                     return err
 
             if deadline_dt and existing_task.status == "overdue":
+                logger.info("task_update denied: task=%s reason=overdue_deadline", task_uuid)
                 return "Cannot change the deadline of an overdue task."
 
             if deadline_dt and not is_creator and not is_admin and not is_assignee:
+                logger.info("task_update denied: task=%s reason=deadline_permission", task_uuid)
                 return "Only the task creator, admin, or assignee can change the deadline."
 
             if has_field_update and not is_admin and not is_creator:
+                logger.info("task_update denied: task=%s reason=field_permission", task_uuid)
                 return "Only the task creator or an admin can update task fields (title, description, participants)."
 
             # Apply field updates before status so the final state reflects both changes.
@@ -468,19 +612,36 @@ def create_task_tools(
                 )
                 if not updated:
                     return f"Task {task_id} not found"
+                logger.info(
+                    "task_update applied: task=%s operation=fields title_set=%s description_set=%s",
+                    task_uuid,
+                    bool(title),
+                    bool(description),
+                )
 
             if deadline_dt:
                 from ...services.engine_service import get_engine_service
                 engine = get_engine_service()
                 caller_user = await engine.user_storage.get_by_id(caller_uuid)
                 if caller_user is None:
+                    logger.info("task_update caller_not_found: task=%s user=%s", task_uuid, caller_uuid)
                     return "CURRENT USER NOT FOUND"
                 if is_creator or is_admin:
                     # Creator/admin sets the deadline directly — takes effect immediately.
                     updated = await task_service.set_deadline(task_uuid, caller_user, deadline_dt)
+                    logger.info(
+                        "task_update applied: task=%s operation=set_deadline deadline=%s",
+                        task_uuid,
+                        deadline_dt.isoformat(),
+                    )
                 else:
                     # Assignee can only propose a new deadline; creator must accept it.
                     updated = await task_service.propose_deadline(task_uuid, caller_user, deadline_dt)
+                    logger.info(
+                        "task_update done: task=%s result=deadline_proposed deadline=%s",
+                        task_uuid,
+                        deadline_dt.isoformat(),
+                    )
                     return (
                         f"Deadline proposal submitted: {deadline_dt.isoformat()}. "
                         "The task creator must accept it for it to take effect."
@@ -489,12 +650,18 @@ def create_task_tools(
                 updated = await task_service.update_status(task_uuid, status)
                 if not updated:
                     return f"Task {task_id} not found"
+                logger.info(
+                    "task_update applied: task=%s operation=status status=%s",
+                    task_uuid,
+                    status,
+                )
 
             if add_participant_uuids or remove_participant_uuids:
                 from ...services.engine_service import get_engine_service
                 engine = get_engine_service()
                 initiator = await engine.user_storage.get_by_id(UUID(user_id))
                 if initiator is None:
+                    logger.info("task_update initiator_not_found: task=%s user=%s", task_uuid, user_id)
                     return "CURRENT USER NOT FOUND"
 
                 for participant_uuid in add_participant_uuids:
@@ -502,6 +669,11 @@ def create_task_tools(
                         task_uuid, participant_uuid, initiator,
                     )
                     participant_changes.append(f"added participant {participant_uuid}")
+                    logger.info(
+                        "task_update applied: task=%s operation=add_participant participant=%s",
+                        task_uuid,
+                        participant_uuid,
+                    )
 
                 for participant_uuid in remove_participant_uuids:
                     removed = await task_service.remove_participant(
@@ -511,6 +683,12 @@ def create_task_tools(
                         participant_changes.append(f"removed participant {participant_uuid}")
                     else:
                         participant_changes.append(f"participant {participant_uuid} was not present")
+                    logger.info(
+                        "task_update applied: task=%s operation=remove_participant participant=%s removed=%s",
+                        task_uuid,
+                        participant_uuid,
+                        removed,
+                    )
 
             if updated is None and participant_changes:
                 updated = await task_service.get(task_uuid)
@@ -518,6 +696,7 @@ def create_task_tools(
                     return f"Task {task_id} not found"
 
             if updated is None:
+                logger.info("task_update done: task=%s result=noop", task_uuid)
                 return (
                     "Nothing to update: no status, title, description, "
                     "participants to add, or participants to remove provided"
@@ -526,6 +705,12 @@ def create_task_tools(
             participant_suffix = (
                 f", participants: {'; '.join(participant_changes)}"
                 if participant_changes else ""
+            )
+            logger.info(
+                "task_update done: task=%s status=%s participant_changes=%d",
+                task_uuid,
+                updated.status,
+                len(participant_changes),
             )
             return (
                 f"Task '{updated.title}' updated "
@@ -546,8 +731,10 @@ def create_task_tools(
         logger.info("tool task_deadline_proposal: task=%s accept=%s", task_id, accept)
         try:
             configurable = (config or {}).get("configurable", {})
+            _log_identity("task_deadline_proposal", configurable)
             user_id = configurable.get("user_id", "")
             if not user_id:
+                logger.info("task_deadline_proposal missing_user_id: task=%s", task_id)
                 return "SYSTEM CAN'T SEE CURRENT USER ID"
 
             from ...services.engine_service import get_engine_service
@@ -555,22 +742,37 @@ def create_task_tools(
 
             caller_user = await engine.user_storage.get_by_id(UUID(user_id))
             if caller_user is None:
+                logger.info("task_deadline_proposal caller_not_found: task=%s user=%s", task_id, user_id)
                 return "CURRENT USER NOT FOUND"
 
             task_uuid = UUID(task_id)
             task = await task_service.get(task_uuid)
             if not task:
+                logger.info("task_deadline_proposal not_found: task=%s", task_uuid)
                 return f"Task {task_id} not found."
             if task.proposed_deadline is None:
+                logger.info("task_deadline_proposal no_pending: task=%s", task_uuid)
                 return "This task has no pending deadline proposal."
             if task.created_by_user_id != caller_user.id:
+                logger.info(
+                    "task_deadline_proposal denied: task=%s caller=%s creator=%s",
+                    task_uuid,
+                    caller_user.id,
+                    task.created_by_user_id,
+                )
                 return "Only the task creator can accept or reject a deadline proposal."
 
             if accept:
                 updated = await task_service.accept_proposed_deadline(task_uuid, caller_user)
+                logger.info(
+                    "task_deadline_proposal done: task=%s result=accepted deadline=%s",
+                    task_uuid,
+                    updated.deadline.isoformat() if updated.deadline else "",
+                )
                 return f"Deadline proposal accepted. New deadline: {updated.deadline.isoformat()}."
             else:
                 await task_service.reject_proposed_deadline(task_uuid, caller_user)
+                logger.info("task_deadline_proposal done: task=%s result=rejected", task_uuid)
                 return "Deadline proposal rejected."
         except Exception as e:
             logger.error("task_deadline_proposal failed: %s", e, exc_info=True)
@@ -624,13 +826,19 @@ def create_task_tools(
         logger.info("tool get_own_tasks: status=%r page=%d", status, page)
         try:
             configurable = (config or {}).get("configurable", {})
+            _log_identity("get_own_tasks", configurable)
             caller_user_id = configurable.get("caller_user_id", "")
             # callee_user_id == caller_user_id in direct calls (always set by executor).
             target_user_id = configurable.get("callee_user_id", "") or caller_user_id
             if not target_user_id:
+                logger.info("get_own_tasks missing_target_user_id")
                 return "SYSTEM CAN'T SEE TARGET USER ID"
 
             tasks = await task_service.list_by_assignee(UUID(target_user_id), status or None)
+            initial_count = len(tasks)
+            excluded_done = 0
+            excluded_old_overdue = 0
+            excluded_overdue_no_deadline = 0
 
             # Default view: hide done tasks and overdue tasks whose deadline passed >30 days ago.
             if status is None:
@@ -638,17 +846,31 @@ def create_task_tools(
                 filtered = []
                 for t in tasks:
                     if t.status == "done":
+                        excluded_done += 1
                         continue
                     if t.status == "overdue":
                         if t.deadline is None:
+                            excluded_overdue_no_deadline += 1
                             continue
                         dl = t.deadline.replace(tzinfo=None) if hasattr(t.deadline, "tzinfo") else t.deadline
                         if (cutoff - dl).days > 30:
+                            excluded_old_overdue += 1
                             continue
                     filtered.append(t)
                 tasks = filtered
+            logger.info(
+                "get_own_tasks filter: target=%s status=%s initial=%d after=%d excluded_done=%d excluded_old_overdue=%d excluded_overdue_no_deadline=%d",
+                target_user_id,
+                status,
+                initial_count,
+                len(tasks),
+                excluded_done,
+                excluded_old_overdue,
+                excluded_overdue_no_deadline,
+            )
 
             if not tasks:
+                logger.info("get_own_tasks done: target=%s result=empty", target_user_id)
                 return "No tasks found."
 
             total = len(tasks)
@@ -658,6 +880,16 @@ def create_task_tools(
             start = (page - 1) * _TASKS_PAGE_SIZE
             end = min(start + _TASKS_PAGE_SIZE, total)
             shown = tasks[start:end]
+            logger.info(
+                "get_own_tasks page: target=%s page=%d/%d span=%d-%d total=%d shown=%d",
+                target_user_id,
+                page,
+                total_pages,
+                start + 1,
+                end,
+                total,
+                len(shown),
+            )
 
             from ...services.engine_service import get_engine_service
             engine = get_engine_service()
@@ -684,6 +916,7 @@ def create_task_tools(
                 )
 
             span = f"{start + 1}–{end} of {total}"
+            logger.info("get_own_tasks done: target=%s total=%d shown=%d", target_user_id, total, len(shown))
             return f"Tasks {span} (page {page}/{total_pages}):\n" + "\n".join(lines)
         except Exception as e:
             logger.error("get_own_tasks failed: %s", e, exc_info=True)

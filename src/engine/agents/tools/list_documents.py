@@ -48,6 +48,7 @@ from ..runtime import RuntimeContext
 from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
 from ...storage.user_storage import UserStorage
+from ...utils.token_counter import count_tokens
 from .util.list_documents_dedupe import dedupe_and_page
 from .util.list_documents_formatters import (
     format_and_commit_page,
@@ -246,7 +247,7 @@ async def _search_scoped(
             matched_docs.append(doc)
 
     async def search(query: str, method: str) -> list[RelatedDoc]:
-        return await _rag_service.find_docs(
+        docs = await _rag_service.find_docs(
             org_id=org_id,
             user_id=caller_user_id,
             query=query,
@@ -256,6 +257,11 @@ async def _search_scoped(
             exclude_images=True,
             search_mode=method,
         )
+        logger.info(
+            "%s search filter: method=%s query=%r returned=%d filter_user=%s",
+            scope.tool_name, method, query, len(docs), filter_user_id,
+        )
+        return docs
 
     if name_query:
         docs: list[RelatedDoc] = await search(name_query, "concrete")
@@ -308,6 +314,8 @@ async def _list_documents_impl(
 ) -> str:
     """Shared implementation for own/global document listing tools."""
     tool_name = "list_own_documents" if own_only else "list_documents"
+    raw_name_query = name_query
+    raw_summary_query = summary_query
     logger.info(
         "tool %s: name_query=%r, summary_query=%r, file_id=%r, page=%d, user_id=%r",
         tool_name, name_query, summary_query, file_id, page, user_id,
@@ -322,10 +330,38 @@ async def _list_documents_impl(
         name_query = name_query.strip()
         summary_query = summary_query.strip()
         owner_filter_user_id = UUID(user_id.strip()) if user_id and user_id.strip() else None
+        path = "single" if file_id and file_id.strip() else ("search" if name_query or summary_query else "list")
+        async with runtime.context.lock:
+            summary_before = runtime.context.list_documents_runtime_data.spent_summary_tokens
+            tokens_before = runtime.context.total_tokens_spent
+            token_cap = runtime.context.critical_tokens_cap
+        logger.info(
+            "%s start: path=%s name_query=%r summary_query=%r file_id=%r page=%d owner_filter=%s caller=%s owner=%s public_only_owner=%s is_admin=%s summary_tokens=%d/%d total_tokens=%d/%d",
+            tool_name,
+            path,
+            raw_name_query,
+            raw_summary_query,
+            file_id,
+            page,
+            owner_filter_user_id,
+            scope.caller_user_id,
+            scope.owner_user_id,
+            scope.public_only_owner,
+            scope.is_admin,
+            summary_before,
+            _SUMMARY_TOKENS_BUDGET,
+            tokens_before,
+            token_cap,
+        )
 
         # --- Single-document lookup: bypasses pagination, deduplication, and budgets ---
         if file_id and file_id.strip():
-            return await _get_single_document(file_id, scope, owner_filter_user_id)
+            result = await _get_single_document(file_id, scope, owner_filter_user_id)
+            logger.info(
+                "%s done: path=single file_id=%s output_tokens=%d",
+                tool_name, file_id, count_tokens(result),
+            )
+            return result
 
         # --- Search by queries ---
         if name_query or summary_query:
@@ -339,12 +375,21 @@ async def _list_documents_impl(
                 return error
             empty_message = "No documents matched your query."
             compact_on_budget_exhausted = False
+            raw_count = len(files)
+            visible_count = len(files)
         else:
             # --- Or list all files without queries --- 
             all_files = await _user_file_storage.list_by_org(scope.org_id)
             files = _filter_listed_files(all_files, scope, owner_filter_user_id)
             empty_message = "No documents in your scope."
             compact_on_budget_exhausted = True
+            raw_count = len(all_files)
+            visible_count = len(files)
+
+        logger.info(
+            "%s candidates: path=%s raw=%d visible=%d compact_on_budget=%s",
+            tool_name, path, raw_count, visible_count, compact_on_budget_exhausted,
+        )
 
         dedupe_state, page_slice, early_result = await dedupe_and_page(
             runtime,
@@ -355,9 +400,24 @@ async def _list_documents_impl(
             empty_message,
         )
         if early_result is not None:
+            logger.info(
+                "%s done: path=%s result=early output_tokens=%d deduped=%s",
+                tool_name, path, count_tokens(early_result), dedupe_state.deduplicated_across_runs,
+            )
             return early_result
 
-        return await format_and_commit_page(
+        logger.info(
+            "%s page: page=%d/%d span=%d-%d total=%d page_items=%d deduped=%s",
+            tool_name,
+            page_slice.page,
+            page_slice.total_pages,
+            page_slice.start + 1,
+            page_slice.end,
+            page_slice.total,
+            len(page_slice.items),
+            dedupe_state.deduplicated_across_runs,
+        )
+        result = await format_and_commit_page(
             runtime,
             page_slice,
             _user_storage,
@@ -365,6 +425,20 @@ async def _list_documents_impl(
             compact_on_budget_exhausted,
             _SUMMARY_TOKENS_BUDGET,
         )
+        async with runtime.context.lock:
+            summary_after = runtime.context.list_documents_runtime_data.spent_summary_tokens
+            tokens_after = runtime.context.total_tokens_spent
+        logger.info(
+            "%s done: path=%s output_tokens=%d summary_tokens=%d->%d total_tokens=%d->%d",
+            tool_name,
+            path,
+            count_tokens(result),
+            summary_before,
+            summary_after,
+            tokens_before,
+            tokens_after,
+        )
+        return result
 
     except Exception as e:
         logger.error(f"{tool_name} failed: {e}", exc_info=True)

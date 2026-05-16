@@ -96,10 +96,26 @@ async def dedupe_and_page(
         runtimedata = runtime.context.list_documents_runtime_data
         dedupe_state = get_dedupe_state(runtimedata)
 
+        before_dedupe = len(files)
         if dedupe_state.deduplicated_across_runs:
             files = [f for f in files if document_id(f) not in dedupe_state.seen_ids]
+            logger.info(
+                "%s dedupe: before=%d omitted=%d after=%d seen_before=%d",
+                tool_name,
+                before_dedupe,
+                before_dedupe - len(files),
+                len(files),
+                len(dedupe_state.seen_ids),
+            )
 
         if not files:
+            logger.info(
+                "%s empty: before_dedupe=%d seen_before=%d deduped=%s",
+                tool_name,
+                before_dedupe,
+                len(dedupe_state.seen_ids),
+                dedupe_state.deduplicated_across_runs,
+            )
             return (
                 dedupe_state,
                 None,
@@ -108,10 +124,11 @@ async def dedupe_and_page(
 
         if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
             logger.info(
-                "%s: blocked - total_tokens_spent=%d >= %d",
+                "%s blocked: total_tokens_spent=%d cap=%d candidates=%d",
                 tool_name,
                 runtime.context.total_tokens_spent,
                 runtime.context.critical_tokens_cap,
+                len(files),
             )
             return dedupe_state, None, blocked_listing_message()
 

@@ -115,19 +115,18 @@ async def _supervisor_agent_call(
             )
             for agent in subagents
         ]
+        supervisor_name = (agent_config or {}).get("supervisor_name", "supervisor")
         logger.info(
-            "supervisor: creating with handoff tools=%s",
-            [
-                {
-                    "tool": tool.name,
-                    "agent": agent.name,
-                    "description": subagent_descriptions.get(agent.name, ""),
-                }
-                for tool, agent in zip(handoff_tools, subagents)
-            ],
+            "supervisor build: role=%s name=%s direct_tools=%d subagents=%d handoffs=%d prompt_chars=%d context_chars=%d",
+            supervisor_role.code,
+            supervisor_name,
+            len(tools or []),
+            len(subagents),
+            len(handoff_tools),
+            len(system_prompt or ""),
+            len(subagent_context or ""),
         )
         supervisor_tools = [*(tools or []), *handoff_tools]
-        supervisor_name = (agent_config or {}).get("supervisor_name", "supervisor")
 
         workflow = create_supervisor(
             subagents,
@@ -189,6 +188,16 @@ async def _supervisor_agent_call(
             last = output_messages[-1]
             final_content = last.content if hasattr(last, "content") else str(last)
 
+        logger.info(
+            "supervisor done: role=%s name=%s output_messages=%d tool_calls=%d final_chars=%d tokens=%d",
+            supervisor_role.code,
+            supervisor_name,
+            len(output_messages),
+            len(tool_calls),
+            len(final_content or ""),
+            grand_total,
+        )
+
         return AgentResult(
             content=final_content,
             model=llm.model,
@@ -238,6 +247,13 @@ async def _build_subagents(
             if role.tools
             else ([], "")
         )
+        logger.info(
+            "supervisor subagent build: supervisor=%s role=%s agent=%s tools=%d",
+            supervisor_role.code,
+            role.code,
+            agent_name,
+            len(role_tools),
+        )
         subagent_prompt = subagent_prompt.replace("{tools}", tools_doc)
         subagent_prompt = "\n\n".join(
             part
@@ -286,7 +302,15 @@ def _create_task_handoff_tool(
         state: Annotated[dict, InjectedState],
         tool_call_id: Annotated[str, InjectedToolCallId],
     ) -> Command:
-        del state, tool_call_id
+        del state
+        logger.info(
+            "supervisor handoff: destination=%s task=%r details=%r context_chars=%d tool_call_id=%s",
+            agent_name,
+            task,
+            details,
+            len(subagent_context or ""),
+            tool_call_id,
+        )
         handoff_message = HumanMessage(
             content="\n\n".join(
                 part

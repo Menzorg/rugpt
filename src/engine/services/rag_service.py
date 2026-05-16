@@ -403,7 +403,8 @@ class RAGService:
     ) -> list[RelatedDoc]:
         """Return top-k related docs in org/user scope using SQL hybrid search."""
         logger.info(
-            f"rag find_docs: query={query!r} top_k={top_k} org={org_id} user={user_id}"
+            "rag find_docs start: query=%r mode=%s top_k=%d org=%s user=%s filter_user=%s is_admin=%s exclude_images=%s",
+            query, search_mode, top_k, org_id, user_id, filter_user_id, is_admin, exclude_images,
         )
         SUMMARY_SEARCH_INSTRUCT = (
     "Instruct: Retrieve document summaries that are semantically relevant to the user's need, "
@@ -423,7 +424,10 @@ class RAGService:
             exclude_images=exclude_images,
             search_mode=search_mode,
         )
-        logger.info(f"rag find_docs: returned {len(docs)} docs")
+        logger.info(
+            "rag find_docs done: query=%r mode=%s returned=%d top_k=%d",
+            query, search_mode, len(docs), top_k,
+        )
         return docs
 
     async def search_abstract_in_doc(
@@ -433,13 +437,22 @@ class RAGService:
         top_k: int,
     ) -> list[ChunkSearchResult]:
         """Return top-k abstract matches inside one file."""
+        logger.info(
+            "rag search_in_doc start: file_id=%s mode=abstract query=%r top_k=%d",
+            file_id, query, top_k,
+        )
         query_embedding = self._embed_query(query)
-        return await self._store.call_search_abstract_chunks(
+        chunks = await self._store.call_search_abstract_chunks(
             file_id=file_id,
             query=query,
             query_embedding=query_embedding,
             top_k=top_k,
         )
+        logger.info(
+            "rag search_in_doc done: file_id=%s mode=abstract returned=%d top_k=%d",
+            file_id, len(chunks), top_k,
+        )
+        return chunks
 
     async def search_concrete_in_doc(
         self,
@@ -452,11 +465,8 @@ class RAGService:
         word_count = _query_word_count(query)
         if word_count >= _ABSTRACT_SEARCH_MIN_WORDS:
             logger.info(
-                "rag search_concrete_in_doc: using abstract search for long query "
-                "(words=%d, top_k=%d, file_id=%s)",
-                word_count,
-                top_k,
-                file_id,
+                "rag search_in_doc switch: file_id=%s query=%r requested=concrete actual=abstract words=%d top_k=%d",
+                file_id, query, word_count, top_k,
             )
             return await self.search_abstract_in_doc(
                 file_id=file_id,
@@ -464,16 +474,25 @@ class RAGService:
                 top_k=top_k,
             )
 
+        logger.info(
+            "rag search_in_doc start: file_id=%s mode=concrete query=%r top_k=%d words=%d",
+            file_id, query, top_k, word_count,
+        )
         qwen_query = ("Instruct: Given a web search query, retrieve relevant passages that answer the query"
                 f"Query: {query}")
         query_embedding = self._embed_query(qwen_query)
-        return await self._store.call_search_concrete_chunks(
+        chunks = await self._store.call_search_concrete_chunks(
             file_id=file_id,
             query=query,
             query_embedding=query_embedding,
             top_k=top_k,
             tsv_weight=tsv_weight,
         )
+        logger.info(
+            "rag search_in_doc done: file_id=%s mode=concrete returned=%d top_k=%d",
+            file_id, len(chunks), top_k,
+        )
+        return chunks
 
     async def get_expanded_context_by_index(
         self,

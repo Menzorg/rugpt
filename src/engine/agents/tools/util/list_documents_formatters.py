@@ -1,3 +1,4 @@
+import logging
 from uuid import UUID
 
 from langgraph.prebuilt import ToolRuntime
@@ -14,6 +15,8 @@ from .list_documents_dedupe import (
     remember_seen_documents,
     with_dedup_header,
 )
+
+logger = logging.getLogger("rugpt.agents.tools.document")
 
 
 def document_owner_id(f: UserFile | RelatedDoc) -> UUID | None:
@@ -236,6 +239,12 @@ def format_page(
     )
     if budget_exhausted:
         user_files = [f for f in page_slice.items if isinstance(f, UserFile)]
+        logger.info(
+            "list_documents compact: items=%d summary_tokens=%d/%d",
+            len(user_files),
+            runtimedata.spent_summary_tokens,
+            summary_tokens_budget,
+        )
         lines = format_compact_batch(user_files, owner_cache)
         footer = "\n[SUMMARY BUDGET EXHAUSTED FROM PREVIOUS CALLS. USE FILTERS TO NARROW RESULTS AND SEE SUMMARIES.]"
         tokens_spent = 0
@@ -276,6 +285,12 @@ async def format_and_commit_page(
 
     async with runtime.context.lock:
         runtimedata = runtime.context.list_documents_runtime_data
+        summary_before = (
+            runtimedata.spent_summary_tokens
+            if isinstance(runtimedata, ListDocumentsRuntimeData)
+            else 0
+        )
+        total_before = runtime.context.total_tokens_spent
         remember_seen_documents(runtimedata, page_slice.items)
 
         result_body, tokens_spent = format_page(
@@ -294,4 +309,19 @@ async def format_and_commit_page(
         )
         rag_tokens = count_tokens(result)
         runtime.context.total_tokens_spent += rag_tokens
+        summary_after = (
+            runtimedata.spent_summary_tokens
+            if isinstance(runtimedata, ListDocumentsRuntimeData)
+            else summary_before
+        )
+        logger.info(
+            "list_documents commit: page=%d items=%d summary_tokens=%d->%d output_tokens=%d total_tokens=%d->%d",
+            page_slice.page,
+            len(page_slice.items),
+            summary_before,
+            summary_after,
+            rag_tokens,
+            total_before,
+            runtime.context.total_tokens_spent,
+        )
         return result
