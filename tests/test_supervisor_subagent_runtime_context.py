@@ -28,8 +28,17 @@ class FakePromptCache:
 
 
 class FakeAgentExecutor:
-    def _create_llm(self, model_name, model_kwargs=None):
-        return SimpleNamespace(model=model_name, model_kwargs=model_kwargs)
+    def __init__(self):
+        self.created_llms = []
+
+    def _create_llm(self, model_name, model_kwargs=None, extra_body=None):
+        llm = SimpleNamespace(
+            model=model_name,
+            model_kwargs=model_kwargs,
+            extra_body=extra_body,
+        )
+        self.created_llms.append(llm)
+        return llm
 
 
 class FakeCompiledAgent:
@@ -87,6 +96,7 @@ async def test_build_subagents_binds_separate_runtime_context_instances(monkeypa
     subagents, descriptions = await supervisor._build_subagents(
         supervisor_role=SimpleNamespace(id=uuid4(), code="supervisor"),
         subagent_context="",
+        litellm_session_id="test-session",
     )
 
     assert descriptions == {
@@ -99,3 +109,51 @@ async def test_build_subagents_binds_separate_runtime_context_instances(monkeypa
     assert contexts[0] is not contexts[1]
     assert all(isinstance(context, RuntimeContext) for context in contexts)
     assert [context.available_tools_count for context in contexts] == [2, 1]
+
+
+@pytest.mark.asyncio
+async def test_build_subagents_shares_litellm_session_and_sets_supervisor_metadata(monkeypatch):
+    chat_id = uuid4()
+    roles = [
+        SimpleNamespace(
+            code="doc-search",
+            name="Document Search",
+            description="Search documents",
+            as_subagent_description=None,
+            tools=[],
+            model_name="test-model",
+            agent_type="simple",
+        ),
+    ]
+    fake_executor = FakeAgentExecutor()
+    engine = SimpleNamespace(
+        role_subagent_service=FakeRoleSubagentService(roles),
+        tool_registry=FakeToolRegistry(),
+        prompt_cache=FakePromptCache(),
+        agent_executor=fake_executor,
+    )
+    engine_service = types.ModuleType("src.engine.services.engine_service")
+    engine_service.get_engine_service = lambda: engine
+    monkeypatch.setitem(sys.modules, "src.engine.services.engine_service", engine_service)
+
+    def fake_create_agent(*, model, tools, system_prompt, context_schema, name):
+        return FakeCompiledAgent(name)
+
+    monkeypatch.setattr(supervisor, "create_agent", fake_create_agent)
+
+    await supervisor._build_subagents(
+        supervisor_role=SimpleNamespace(id=uuid4(), code="supervisor"),
+        subagent_context="",
+        litellm_session_id="shared-session",
+        chat_id=chat_id,
+        supervisor_name="main_supervisor",
+    )
+
+    assert fake_executor.created_llms[0].extra_body == {
+        "litellm_session_id": "shared-session",
+        "metadata": {
+            "agent_name": "doc_search",
+            "chatid": str(chat_id),
+            "supervisor_name": "main_supervisor",
+        },
+    }

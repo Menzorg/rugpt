@@ -653,6 +653,7 @@ class AIService:
             temperature=0.5,
             max_tokens=1024,
             caller_user_id=poll.assignee_user_id,
+            invocation_kind="system"
         )
 
         if not (result and result.content and result.content.strip()):
@@ -775,6 +776,7 @@ class AIService:
             temperature=0.3,
             max_tokens=2048,
             caller_user_id=poll.assignee_user_id,
+            invocation_kind="system"
         )
 
         if not (result and result.content and result.content.strip()):

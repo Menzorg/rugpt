@@ -17,6 +17,7 @@ from langchain_openai import ChatOpenAI
 
 from ..result import AgentResult, ToolCall
 from ..runtime import RuntimeContext
+from ..metadata import append_extra_body_key
 from ...utils.token_logger import log_llm_tokens, log_token_summary
 
 logger = get_logger("agents")
@@ -61,6 +62,7 @@ async def run_simple_agent(
     config: Optional[RunnableConfig] = None,
     context_schema: Optional[RuntimeContext] = None,
     middleware: Optional[List[Any]] = None,
+    llm_extra_body: Optional[dict] = None,
 ) -> AgentResult:
     """
     Run simple agent.
@@ -88,11 +90,12 @@ async def run_simple_agent(
         return await _direct_llm_call(llm, lc_messages)
     else:
         llm_think = llm.bind(
-            extra_body={
-                "chat_template_kwargs": {
-                    "enable_thinking": True
-                }
-            })
+            extra_body=append_extra_body_key(
+                llm_extra_body,
+                "chat_template_kwargs",
+                {"enable_thinking": True},
+            )
+        )
         
         # ReAct agent with tools
         return await _react_agent_call(

@@ -7,13 +7,14 @@ import asyncio
 
 from src.engine.unified_logger import get_logger
 from typing import Any, List, Optional, TYPE_CHECKING
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from langchain.agents.middleware import ToolCallLimitMiddleware
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 
 from ..config import Config
+from ..logging_context import get_correlation_id
 from ..models.role import Role
 from ..services.prompt_cache import PromptCache
 from ..utils.token_counter import count_tokens
@@ -21,6 +22,7 @@ from ..utils.token_logger import log_token_summary
 from .middleware import HistoryCompactionMiddleware
 from .result import AgentResult
 from .runtime import RuntimeContext
+from .metadata import append_extra_body_key, build_initial_extra_body
 from .tools.registry import ToolRegistry
 from .graphs.simple import run_simple_agent
 from .graphs.supervisor import run_supervisor_agent
@@ -75,6 +77,7 @@ class AgentExecutor:
         temperature: float = 0.7,
         max_tokens: int = 4096,
         model_kwargs: Optional[dict] = None,
+        extra_body: Optional[dict] = None,
     ) -> ChatOpenAI:
         """Create a ChatOpenAI instance pointed at the LiteLLM proxy."""
         kwargs = {
@@ -87,7 +90,15 @@ class AgentExecutor:
         }
         if model_kwargs is not None:
             kwargs["model_kwargs"] = model_kwargs
+        if extra_body is not None:
+            kwargs["extra_body"] = extra_body
         return ChatOpenAI(**kwargs)
+
+    def _resolve_litellm_session_id(self) -> str:
+        correlation_id = get_correlation_id()
+        if correlation_id and correlation_id != "-":
+            return correlation_id
+        return str(uuid4())
 
     async def _build_chat_attachments_block(
         self,
@@ -146,6 +157,149 @@ class AgentExecutor:
         block += "\nНе раскрывать пользователю его ID."
         return block
 
+    async def _build_caller_callee_blocks(
+        self,
+        engine: Any,
+        caller: Optional[Any],
+        callee: Optional[Any],
+        *,
+        chat_id: Optional[UUID],
+    ) -> tuple[Optional[str], Optional[str]]:
+        caller_block = None
+        callee_block = None
+
+        if caller:
+            attachments_block = None
+            if chat_id is not None:
+                attachments_block = await self._build_chat_attachments_block(engine, chat_id)
+            caller_block = await self._build_user_info_block(
+                engine,
+                caller,
+                "Информация о пользователе, который произвёл вызов (caller)",
+                attachments_block=attachments_block,
+            )
+
+        if callee:
+            callee_block = await self._build_user_info_block(
+                engine,
+                callee,
+                "Информация о пользователе, которому адресован вызов (callee)",
+            )
+
+        return caller_block, callee_block
+
+    async def _build_memory_context_block(
+        self,
+        chat_id: Optional[UUID],
+        messages: List[dict],
+    ) -> tuple[str, str]:
+        """Fetch chat memory and return raw summary plus formatted context block."""
+        if chat_id is None or self.memory_service is None or not messages:
+            return "", ""
+
+        summary = await self.memory_service.get_summary_for_chat(chat_id)
+        if summary:
+            logger.info("memory: summary found for chat=%s (%d chars)", chat_id, len(summary))
+        else:
+            logger.info("memory: no summary for chat=%s", chat_id)
+
+        resummary_needed = await self.memory_service.check_resummary_needed(chat_id)
+        if resummary_needed:
+            logger.info("memory: starting background update_summary for chat=%s", chat_id)
+            asyncio.create_task(self.memory_service.update_summary(chat_id, messages))
+        else:
+            logger.info("memory: re-summarisation not needed for chat=%s", chat_id)
+
+        if not summary:
+            return "", ""
+
+        memory_block = (
+            "Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n"
+            f"{summary}"
+        )
+        logger.info("memory: prepared summary injected message for chat=%s", chat_id)
+        return summary, memory_block
+
+    async def _build_correction_rules_block(
+        self,
+        chat_id: Optional[UUID],
+        messages: List[dict],
+        memory_text: str,
+    ) -> str:
+        """Search correction rules and return a formatted system-prompt block."""
+        if chat_id is None or self.correction_rule_service is None or not messages:
+            return ""
+
+        raw_content = messages[-1].get("content", "")
+        # content can be a list of blocks when message contains both text and image
+        if isinstance(raw_content, list):
+            last_content = " ".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in raw_content
+            )
+        else:
+            last_content = raw_content or ""
+
+        try:
+            rules = await self.correction_rule_service.search_corrections(
+                user_prompt=last_content,
+                memory_text=memory_text or last_content,
+            )
+            lessons = [r.extracted_lesson for r in rules if r.extracted_lesson]
+            if lessons:
+                logger.info("corrections: found %d lessons for chat=%s", len(lessons), chat_id)
+            else:
+                logger.info("corrections: no lessons found for chat=%s", chat_id)
+                return ""
+        except Exception:
+            logger.exception("corrections: search failed for chat=%s", chat_id)
+            return ""
+
+        rules_block = "\n".join(f"- {lesson}" for lesson in lessons)
+        logger.info("corrections: prepared %d lessons for chat=%s", len(lessons), chat_id)
+        return (
+            "\n\n## Корректировки поведения со стороны пользователя по предыдущим подобным обращениям:\n"
+            f"{rules_block}"
+        )
+
+    def _resolve_middleware(self, tools: List[Any]) -> list[Any]:
+        middleware: list[Any] = []
+        if any(tool.name == "rag_search" for tool in tools):
+            middleware.append(
+                ToolCallLimitMiddleware(
+                    tool_name="rag_search",
+                    run_limit=_RAG_SEARCH_TOOL_CALL_LIMIT,
+                    exit_behavior="continue",
+                )
+            )
+            logger.info(
+                "rag_search tool call limit: run_limit=%d",
+                _RAG_SEARCH_TOOL_CALL_LIMIT,
+            )
+        for list_tool_name in ("list_documents", "list_own_documents"):
+            if any(tool.name == list_tool_name for tool in tools):
+                middleware.append(
+                    ToolCallLimitMiddleware(
+                        tool_name=list_tool_name,
+                        run_limit=_LIST_DOCUMENTS_TOOL_CALL_LIMIT,
+                        exit_behavior="continue",
+                    )
+                )
+                logger.info(
+                    "%s tool call limit: run_limit=%d",
+                    list_tool_name,
+                    _LIST_DOCUMENTS_TOOL_CALL_LIMIT,
+                )
+        if any(tool.name in _TASK_TOOL_NAMES for tool in tools):
+            middleware.append(
+                ToolCallLimitMiddleware(
+                    run_limit=_TASK_TOOLS_TOTAL_CALL_LIMIT,
+                    exit_behavior="continue",
+                )
+            )
+            logger.info("task tools total call limit: run_limit=%d", _TASK_TOOLS_TOTAL_CALL_LIMIT)
+        return middleware
+
     async def execute(
         self,
         role: Role,
@@ -167,40 +321,65 @@ class AgentExecutor:
             max_tokens: Max tokens in response
             caller_user_id: User ID that triggered the agent run
             callee_user_id: Mentioned/responding user ID for mention calls; defaults to caller when absent
-            invocation_kind: "direct" or "mention"
+            invocation_kind: "direct", "mention", or "system"
 
         Returns:
             AgentResult with response
         """
         model = role.model_name or self.default_model
+        
+        # Qwen's chat template requires the first non-system message to be a user
+        # turn. Injected context blocks use "user" role for Qwen models so the
+        # template doesn't raise "No user query found in messages".
+        _is_qwen = "qwen" in model.lower()
+        _inject_role = "user" if _is_qwen else "assistant"
+        
+        litellm_session_id = self._resolve_litellm_session_id()
+        litellm_extra_body = build_initial_extra_body(
+            litellm_session_id=litellm_session_id,
+            agent_name=role.code,
+            chat_id=chat_id,
+        )
 
         # Fetch org_context for message injection
         from ..services.engine_service import get_engine_service
         engine = get_engine_service()
-        if invocation_kind != "mention" or callee_user_id is None:
+        
+        if not chat_id is not None:
+            invocation_kind = "system"
+        elif invocation_kind != "mention" or callee_user_id is None:
             invocation_kind = "direct"
+            
         # In direct calls callee == caller so tools always have a valid target without None checks.
         effective_callee_user_id = callee_user_id if invocation_kind == "mention" else caller_user_id
-
-        # Resolve the INITIATOR's org — that's the scope tools should operate in.
+        callee = None
+        if invocation_kind == "mention":
+            callee = await engine.user_storage.get_by_id(effective_callee_user_id)
+            
+        # Resolve the CALLER's org — that's the scope tools should operate in.
         # so tools don't try to run in system org scope because role_org for system roles is 00000000-0000-0000-0000-000000000000.
         scope_org_id = role.org_id
-        initiator = await engine.user_storage.get_by_id(caller_user_id)
-        if initiator and initiator.org_id:
-            scope_org_id = initiator.org_id
-
+        caller = await engine.user_storage.get_by_id(caller_user_id)
+        if caller and caller.org_id:
+            scope_org_id = caller.org_id
         org = await engine.org_storage.get_by_id(scope_org_id)
-        org_context = org.org_context if org else ""
+        
         system_prompt = self.prompt_cache.get_prompt(role)
+        
+        # Tool resolving and tool docs injection
         tools, tools_doc = self.tool_registry.resolve(role.tools) if role.tools else ([], "")
         system_prompt = system_prompt.replace("{tools}", tools_doc)
+        
         llm = self._create_llm(
             model,
             temperature,
             model_kwargs=(
                 {"parallel_tool_calls": role.agent_type != "supervisor"} # Supervisors are not allowed to call tools in parallel to not create whole swarm of agents at once
             ),
+            extra_body=litellm_extra_body,
         )
+        
+
         
         runtime_context = RuntimeContext(available_tools_count=len(tools))
 
@@ -208,118 +387,75 @@ class AgentExecutor:
         config = RunnableConfig(
             max_concurrency=2,
             configurable={
-                "org_id": str(scope_org_id) if scope_org_id else "",
+                "org_id": str(scope_org_id) if scope_org_id else role.org_id,
                 "caller_user_id": str(caller_user_id),
                 "callee_user_id": str(effective_callee_user_id),
                 "invocation_kind": invocation_kind,
-                "is_admin": bool(initiator.is_admin) if initiator else False,
+                "is_admin": bool(caller.is_admin) if caller else False,
             },
         )
 
         # --- Retrieval phase ---
-
-        summary = ""
-        if chat_id is not None and self.memory_service is not None and messages:
-            summary = await self.memory_service.get_summary_for_chat(chat_id)
-            if summary:
-                logger.info("memory: summary found for chat=%s (%d chars)", chat_id, len(summary))
-            else:
-                logger.info("memory: no summary for chat=%s", chat_id)
-
-            resummary_needed = await self.memory_service.check_resummary_needed(chat_id)
-            if resummary_needed:
-                logger.info("memory: starting background update_summary for chat=%s", chat_id)
-                asyncio.create_task(self.memory_service.update_summary(chat_id, messages))
-            else:
-                logger.info("memory: re-summarisation not needed for chat=%s", chat_id)
-
-        lessons: list[str] = []
-        if self.correction_rule_service is not None and messages:
-            raw_content = messages[-1].get("content", "")
-            # content can be a list of blocks when message contains both text and image
-            if isinstance(raw_content, list):
-                last_content = " ".join(
-                    part.get("text", "") if isinstance(part, dict) else str(part)
-                    for part in raw_content
-                )
-            else:
-                last_content = raw_content or ""
-            try:
-                rules = await self.correction_rule_service.search_corrections(
-                    user_prompt=last_content,
-                    memory_text=summary or last_content,
-                )
-                lessons = [r.extracted_lesson for r in rules if r.extracted_lesson]
-                if lessons:
-                    logger.info("corrections: found %d lessons for chat=%s", len(lessons), chat_id)
-                else:
-                    logger.info("corrections: no lessons found for chat=%s", chat_id)
-            except Exception:
-                logger.exception("corrections: search failed for chat=%s", chat_id)
+ 
+        
+        org_context = org.org_context if org else ""
+ 
+        summary, memory_block = await self._build_memory_context_block(
+            chat_id,
+            messages,
+        )
+        correction_rules_block = await self._build_correction_rules_block(
+            chat_id,
+            messages,
+            summary,
+        )
+        caller_block, callee_block = await self._build_caller_callee_blocks(
+            engine,
+            caller,
+            callee,
+            chat_id=chat_id,
+        )
 
         # --- Injection phase ---
 
-        # Qwen's chat template requires the first non-system message to be a user
-        # turn. Injected context blocks use "user" role for Qwen models so the
-        # template doesn't raise "No user query found in messages".
-        _is_qwen = "qwen" in model.lower()
-        _inject_role = "user" if _is_qwen else "assistant"
 
         context_blocks: list[str] = []
         subagent_context_blocks: list[str] = []
 
-        if initiator:
-            attachments_block = None
-            if chat_id is not None:
-                attachments_block = await self._build_chat_attachments_block(engine, chat_id)
-            user_block = await self._build_user_info_block(
-                engine,
-                initiator,
-                "Информация о пользователе, который произвёл вызов (caller)",
-                attachments_block=attachments_block,
-            )
-            context_blocks.append(user_block)
-            subagent_context_blocks.append(user_block)
-
-        if invocation_kind == "mention":
-            callee = await engine.user_storage.get_by_id(effective_callee_user_id)
-            if callee:
-                callee_block = await self._build_user_info_block(
-                    engine,
-                    callee,
-                    "Информация о пользователе, которому адресован вызов (callee)",
-                )
-                context_blocks.append(callee_block)
-                subagent_context_blocks.append(callee_block)
+        
+        for identity_block in (caller_block, callee_block):
+            if identity_block:
+                context_blocks.append(identity_block)
+                subagent_context_blocks.append(identity_block)
 
         if org_context:
             context_blocks.append(f"Контекст организации:\n{org_context}")
             logger.info("org_context: prepared injected message for org=%s", scope_org_id)
 
-        if summary:
-            summary_block = f"Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n{summary}"
-            context_blocks.append(summary_block)
-            subagent_context_blocks.append(summary_block)
-            logger.info("memory: prepared summary injected message for chat=%s", chat_id)
+        if memory_block:
+            context_blocks.append(memory_block)
+            subagent_context_blocks.append(memory_block)
             system_prompt += _MEMORY_PROMPT_BLOCK
 
         context_block = "\n\n".join(context_blocks)
         subagent_context_block = "\n\n".join(subagent_context_blocks)
+        
+        # Build and inject context message
         if context_block:
             messages = [
                 {
-                    "role": "user" if _is_qwen else _inject_role,
+                    "role": _inject_role,
                     "content": f"<context>\n{context_block}\n</context>",
                 }
             ] + messages
 
-        if lessons:
-            # Inject corrections 
-            rules_block = "\n".join(f"- {lesson}" for lesson in lessons)
-            system_prompt += f"\n\n## Корректировки поведения со стороны пользователя по предыдущим подобным обращениям:\n{rules_block}"
-            logger.info("corrections: injected %d lessons for chat=%s", len(lessons), chat_id)
+        # System prompt injections
+        
+        # Rules injection
+        if correction_rules_block:
+            system_prompt += correction_rules_block
 
-        # Final postfix for all prompts
+        # Final postfix for all prompts injection
         system_prompt += (
             "\n\n##ВАЖНЫЕ ОГРАНИЧЕНИЯ\n"
             "Любое текстовое сообщение пользователю считается финальным ответом текущего обращения.\n"
@@ -337,13 +473,17 @@ class AgentExecutor:
             initial_tokens, model, len(tools),
         )
         runtime_context.total_tokens_spent += initial_tokens
+        
+        # --- Middleware stage ---
+
 
         llm_summarizer = llm.bind(
-            extra_body={
-                "chat_template_kwargs": {
-                    "enable_thinking": True,
-                }
-            })
+            extra_body=append_extra_body_key(
+                litellm_extra_body,
+                "chat_template_kwargs",
+                {"enable_thinking": True},
+            )
+        )
 
         agent_middleware = [
             HistoryCompactionMiddleware(
@@ -352,39 +492,7 @@ class AgentExecutor:
                 keep_last=3,
             )
         ]
-        if any(tool.name == "rag_search" for tool in tools):
-            agent_middleware.append(
-                ToolCallLimitMiddleware(
-                    tool_name="rag_search",
-                    run_limit=_RAG_SEARCH_TOOL_CALL_LIMIT,
-                    exit_behavior="continue",
-                )
-            )
-            logger.info(
-                "rag_search tool call limit: run_limit=%d",
-                _RAG_SEARCH_TOOL_CALL_LIMIT,
-            )
-        for list_tool_name in ("list_documents", "list_own_documents"):
-            if any(tool.name == list_tool_name for tool in tools):
-                agent_middleware.append(
-                    ToolCallLimitMiddleware(
-                        tool_name=list_tool_name,
-                        run_limit=_LIST_DOCUMENTS_TOOL_CALL_LIMIT,
-                        exit_behavior="continue",
-                    )
-                )
-                logger.info(
-                    "%s tool call limit: run_limit=%d",
-                    list_tool_name, _LIST_DOCUMENTS_TOOL_CALL_LIMIT,
-                )
-        if any(tool.name in _TASK_TOOL_NAMES for tool in tools):
-            agent_middleware.append(
-                ToolCallLimitMiddleware(
-                    run_limit=_TASK_TOOLS_TOTAL_CALL_LIMIT,
-                    exit_behavior="continue",
-                )
-            )
-            logger.info("task tools total call limit: run_limit=%d", _TASK_TOOLS_TOTAL_CALL_LIMIT)
+        agent_middleware.extend(self._resolve_middleware(tools))
 
         logger.info(
             f"Executing agent: role={role.code}, type={role.agent_type}, "
@@ -401,6 +509,7 @@ class AgentExecutor:
                     config=config,
                     context_schema=runtime_context,
                     middleware=agent_middleware,
+                    llm_extra_body=litellm_extra_body,
                 )
             elif role.agent_type in {"supervisor"}:
                 result = await run_supervisor_agent(
@@ -414,6 +523,9 @@ class AgentExecutor:
                     middleware=agent_middleware,
                     agent_config=role.agent_config,
                     subagent_context=subagent_context_block,
+                    litellm_session_id=litellm_session_id,
+                    chat_id=chat_id,
+                    llm_extra_body=litellm_extra_body,
                 )
             else:
                 logger.warning(f"Unknown agent_type '{role.agent_type}', falling back to simple")
@@ -424,6 +536,7 @@ class AgentExecutor:
                     config=config,
                     context_schema=runtime_context,
                     middleware=agent_middleware,
+                    llm_extra_body=litellm_extra_body,
                 )
 
             log_token_summary(

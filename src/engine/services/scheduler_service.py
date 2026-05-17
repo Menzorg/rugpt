@@ -210,6 +210,7 @@ class SchedulerService:
                 temperature=0.5,
                 max_tokens=512,
                 user_id=event.created_by_user_id,
+                invocation_kind="system"
             )
 
             if result.error:

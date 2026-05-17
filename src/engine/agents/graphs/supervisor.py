@@ -19,6 +19,7 @@ from typing_extensions import Annotated
 
 from ..result import AgentResult, ToolCall
 from ..runtime import RuntimeContext
+from ..metadata import append_extra_body_key, build_initial_extra_body
 from ...models.role import Role
 from ...utils.token_logger import log_token_summary
 
@@ -36,6 +37,10 @@ async def run_supervisor_agent(
     middleware: Optional[List[Any]] = None,
     agent_config: Optional[dict] = None,
     subagent_context: str = "",
+    *,
+    litellm_session_id: str,
+    chat_id: Optional[Any] = None,
+    llm_extra_body: Optional[dict] = None,
 ) -> AgentResult:
     """
     Run supervisor agent.
@@ -56,11 +61,11 @@ async def run_supervisor_agent(
             lc_messages.append({"role": "assistant", "content": content})
 
     llm_think = llm.bind(
-        extra_body={
-            "chat_template_kwargs": {
-                "enable_thinking": True,
-            }
-        }
+        extra_body=append_extra_body_key(
+            llm_extra_body,
+            "chat_template_kwargs",
+            {"enable_thinking": True},
+        )
     )
 
     return await _supervisor_agent_call(
@@ -74,6 +79,9 @@ async def run_supervisor_agent(
         middleware,
         agent_config or {},
         subagent_context,
+        litellm_session_id=litellm_session_id,
+        chat_id=chat_id,
+        llm_extra_body=llm_extra_body,
     )
 
 
@@ -88,14 +96,22 @@ async def _supervisor_agent_call(
     extra_middleware: Optional[List[Any]] = None,
     agent_config: Optional[dict] = None,
     subagent_context: str = "",
+    *,
+    litellm_session_id: str,
+    chat_id: Optional[Any] = None,
+    llm_extra_body: Optional[dict] = None,
 ) -> AgentResult:
     """Supervisor graph call with tool and future subagent support."""
     try:
         from langgraph_supervisor import create_supervisor
 
+        supervisor_name = (agent_config or {}).get("supervisor_name", "supervisor")
         subagents, subagent_descriptions = await _build_subagents(
             supervisor_role=supervisor_role,
             subagent_context=subagent_context,
+            litellm_session_id=litellm_session_id,
+            chat_id=chat_id,
+            supervisor_name=supervisor_name,
         )
         handoff_tools = [
             _create_task_handoff_tool(
@@ -105,7 +121,6 @@ async def _supervisor_agent_call(
             )
             for agent in subagents
         ]
-        supervisor_name = (agent_config or {}).get("supervisor_name", "supervisor")
         logger.info(
             "supervisor build: role=%s name=%s direct_tools=%d subagents=%d handoffs=%d prompt_chars=%d context_chars=%d",
             supervisor_role.code,
@@ -202,6 +217,10 @@ async def _supervisor_agent_call(
 async def _build_subagents(
     supervisor_role: Role,
     subagent_context: str,
+    *,
+    litellm_session_id: str,
+    chat_id: Optional[Any] = None,
+    supervisor_name: Optional[str] = None,
 ) -> tuple[list, dict[str, str]]:
     """Build allowed subagents for a supervisor role."""
     from ...services.engine_service import get_engine_service
@@ -243,12 +262,21 @@ async def _build_subagents(
             ]
             if part
         )
-        subagent_llm = engine.agent_executor._create_llm(
-            role.model_name,
-            model_kwargs={
+        llm_kwargs = {
+            "model_kwargs": {
                 # In case a supervisor is itself used as a subagent, keep its calls serial.
                 "parallel_tool_calls": role.agent_type != "supervisor",
             },
+        }
+        llm_kwargs["extra_body"] = build_initial_extra_body(
+            litellm_session_id=litellm_session_id,
+            agent_name=agent_name,
+            chat_id=chat_id,
+            supervisor_name=supervisor_name,
+        )
+        subagent_llm = engine.agent_executor._create_llm(
+            role.model_name,
+            **llm_kwargs,
         )
         subagent = create_agent(
             model=subagent_llm,
