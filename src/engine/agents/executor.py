@@ -7,14 +7,13 @@ import asyncio
 
 from src.engine.unified_logger import get_logger
 from typing import Any, List, Optional, TYPE_CHECKING
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from langchain.agents.middleware import ToolCallLimitMiddleware
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 
 from ..config import Config
-from ..logging_context import get_correlation_id
 from ..models.role import Role
 from ..services.prompt_cache import PromptCache
 from ..utils.token_counter import count_tokens
@@ -22,7 +21,7 @@ from ..utils.token_logger import log_token_summary
 from .middleware import HistoryCompactionMiddleware
 from .result import AgentResult
 from .runtime import RuntimeContext
-from .metadata import append_extra_body_key, build_initial_extra_body
+from .metadata import append_extra_body_key, build_initial_extra_body, resolve_litellm_session_id
 from .tools.registry import ToolRegistry
 from .graphs.simple import run_simple_agent
 from .graphs.supervisor import run_supervisor_agent
@@ -93,12 +92,6 @@ class AgentExecutor:
         if extra_body is not None:
             kwargs["extra_body"] = extra_body
         return ChatOpenAI(**kwargs)
-
-    def _resolve_litellm_session_id(self) -> str:
-        correlation_id = get_correlation_id()
-        if correlation_id and correlation_id != "-":
-            return correlation_id
-        return str(uuid4())
 
     async def _build_chat_attachments_block(
         self,
@@ -334,7 +327,7 @@ class AgentExecutor:
         _is_qwen = "qwen" in model.lower()
         _inject_role = "user" if _is_qwen else "assistant"
         
-        litellm_session_id = self._resolve_litellm_session_id()
+        litellm_session_id = resolve_litellm_session_id()
         litellm_extra_body = build_initial_extra_body(
             litellm_session_id=litellm_session_id,
             agent_name=role.code,

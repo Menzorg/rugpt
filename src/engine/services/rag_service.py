@@ -16,6 +16,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from tika import parser
 
+from ..agents.metadata import build_initial_extra_body, resolve_litellm_session_id
 from ..config import Config
 from ..models.rag import ChunkRow, ChunkSearchResult, RelatedDoc
 from ..storage.rag_store import RAG_store
@@ -95,8 +96,24 @@ class RAGService:
         self._tika_server_endpoint = Config.RAG_TIKA_SERVER_ENDPOINT
         self._summary_input_max_tokens = summary_input_max_tokens
 
+    def _build_embedding_extra_body(self) -> dict[str, Any]:
+        return build_initial_extra_body(
+            litellm_session_id=resolve_litellm_session_id(),
+            agent_name="rag_embedding",
+            chat_id=None,
+        )
+
     def _embed_query(self, query: str) -> list[float]:
-        return self._embeddings.embed_query(query)
+        return self._embeddings.embed_query(
+            query,
+            extra_body=self._build_embedding_extra_body(),
+        )
+
+    def _embed_documents(self, documents: list[str]) -> list[list[float]]:
+        return self._embeddings.embed_documents(
+            documents,
+            extra_body=self._build_embedding_extra_body(),
+        )
 
     def _extract_text_with_tika(self, file_bytes: bytes, file_name: str) -> str:
         parsed = parser.from_buffer(
@@ -268,7 +285,7 @@ class RAGService:
 
                 stage = "table_embedding"
                 logger.info(f"[{fid}] stage={stage}")
-                row_embeddings = self._embeddings.embed_documents(table_rows)
+                row_embeddings = self._embed_documents(table_rows)
                 logger.info(f"[{fid}] embedded {len(row_embeddings)} row vectors")
 
                 stage = "summary_generation"
@@ -280,7 +297,7 @@ class RAGService:
 
                 stage = "summary_embedding"
                 logger.info(f"[{fid}] stage={stage}")
-                summary_embedding = self._embeddings.embed_query(summary)
+                summary_embedding = self._embed_query(summary)
 
                 stage = "db_write"
                 logger.info(f"[{fid}] stage={stage}")
@@ -313,7 +330,7 @@ class RAGService:
 
             stage = "chunk_embedding"
             logger.info(f"[{fid}] stage={stage}")
-            chunk_embeddings = self._embeddings.embed_documents(chunks)
+            chunk_embeddings = self._embed_documents(chunks)
             logger.info(f"[{fid}] embedded {len(chunk_embeddings)} chunk vectors")
 
             stage = "summary_generation"
@@ -323,7 +340,7 @@ class RAGService:
 
             stage = "summary_embedding"
             logger.info(f"[{fid}] stage={stage}")
-            summary_embedding = self._embeddings.embed_query(summary)
+            summary_embedding = self._embed_query(summary)
 
             stage = "db_write"
             logger.info(f"[{fid}] stage={stage}")

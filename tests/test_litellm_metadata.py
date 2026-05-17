@@ -1,10 +1,10 @@
 from uuid import uuid4
 
-from src.engine.agents.executor import AgentExecutor
 from src.engine.agents.metadata import (
     append_extra_body_key,
     append_metadata_key,
     build_initial_extra_body,
+    resolve_litellm_session_id,
 )
 from src.engine.logging_context import bind_correlation_id, correlation_id_var
 
@@ -63,28 +63,18 @@ def test_append_metadata_key_creates_metadata_when_missing():
     }
 
 
-def test_executor_uses_correlation_id_as_litellm_session_id():
-    executor = AgentExecutor(
-        base_url="http://localhost:4000",
-        default_model="test-model",
-        prompt_cache=object(),
-    )
+def test_resolve_litellm_session_id_uses_correlation_id():
     token = bind_correlation_id("corr-123")
     try:
-        assert executor._resolve_litellm_session_id() == "corr-123"
+        assert resolve_litellm_session_id() == "corr-123"
     finally:
         correlation_id_var.reset(token)
 
 
-def test_executor_litellm_session_id_falls_back_when_correlation_id_missing():
-    executor = AgentExecutor(
-        base_url="http://localhost:4000",
-        default_model="test-model",
-        prompt_cache=object(),
-    )
+def test_resolve_litellm_session_id_falls_back_when_correlation_id_missing():
     token = correlation_id_var.set("-")
     try:
-        session_id = executor._resolve_litellm_session_id()
+        session_id = resolve_litellm_session_id()
     finally:
         correlation_id_var.reset(token)
 

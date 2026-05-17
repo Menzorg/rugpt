@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 from langchain_openai import OpenAIEmbeddings
 
+from ..agents.metadata import build_initial_extra_body, resolve_litellm_session_id
 from ..models.correction_rule import CorrectionRule
 from ..models.message import SenderType
 from ..storage.correction_rule_storage import CorrectionRuleStorage
@@ -255,8 +256,19 @@ class CorrectionRuleService:
         top_k: int = 3,
     ) -> List[CorrectionRule]:
         """Search correction rules by semantic similarity to a user prompt and memory string."""
-        user_embedding = await self._embeddings.aembed_query(user_prompt)
-        mem_embedding = await self._embeddings.aembed_query(memory_text)
+        embedding_extra_body = build_initial_extra_body(
+            litellm_session_id=resolve_litellm_session_id(),
+            agent_name="correction_rules_embedding",
+            chat_id=None,
+        )
+        user_embedding = await self._embeddings.aembed_query(
+            user_prompt,
+            extra_body=embedding_extra_body,
+        )
+        mem_embedding = await self._embeddings.aembed_query(
+            memory_text,
+            extra_body=embedding_extra_body,
+        )
         return await self.correction_rule_storage.search_by_embeddings(
             mem_embedding=mem_embedding,
             user_message_embedding=user_embedding,

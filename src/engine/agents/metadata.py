@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from typing import Any, Mapping, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
+
+from ..logging_context import get_correlation_id
 
 
 def append_extra_body_key(
@@ -27,6 +29,13 @@ def append_metadata_key(
     metadata[key] = value
     updated["metadata"] = metadata
     return updated
+
+
+def resolve_litellm_session_id() -> str:
+    correlation_id = get_correlation_id()
+    if correlation_id and correlation_id != "-":
+        return correlation_id
+    return str(uuid4())
 
 
 def build_initial_extra_body(
