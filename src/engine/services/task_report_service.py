@@ -5,7 +5,8 @@ Business logic for AI-generated evening reports.
 Aggregates poll data, asks LLM (role=report_generator) to write a summary,
 falls back to deterministic plain text on LLM failure.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import date
 from typing import Optional, List
 from uuid import UUID
@@ -15,11 +16,10 @@ from ..storage.task_report_storage import TaskReportStorage
 from .task_poll_service import TaskPollService
 from .in_app_notification_service import InAppNotificationService
 
-logger = logging.getLogger("rugpt.services.task_report")
+logger = get_logger("services")
 
 REPORT_GENERATOR_ROLE_CODE = "report_generator"
 RUGPT_SYSTEM_ORG_ID = UUID("00000000-0000-0000-0000-000000000000")
-
 
 class TaskReportService:
 

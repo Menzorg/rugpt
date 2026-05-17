@@ -6,16 +6,15 @@ Since "support_*" types are not in the allowlist, we route via:
   type='system' + reference_type='support_ticket' + reference_id=ticket.id
 The frontend uses reference_type to render support-specific notifications.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 
 from src.engine.config import Config
 from src.engine.models.support_ticket import (
     SupportTicket, ClosedByRole,
 )
 
-
-logger = logging.getLogger("rugpt.services.support_notification")
-
+logger = get_logger("services")
 
 class SupportNotificationService:
 

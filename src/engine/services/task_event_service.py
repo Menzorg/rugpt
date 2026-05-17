@@ -4,15 +4,15 @@ TaskEvent Service
 Thin wrapper over TaskEventStorage: records and lists audit events for tasks.
 Callers are responsible for stringifying UUIDs/datetimes in payload.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import List, Optional
 from uuid import UUID
 
 from ..models.task_event import TaskEvent
 from ..storage.task_event_storage import TaskEventStorage
 
-logger = logging.getLogger("rugpt.services.task_event")
-
+logger = get_logger("services")
 
 class TaskEventService:
 

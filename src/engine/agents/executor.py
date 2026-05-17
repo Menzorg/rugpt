@@ -4,7 +4,8 @@ Agent Executor
 Main router: dispatches execution to the right graph based on role.agent_type.
 """
 import asyncio
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Any, List, Optional, TYPE_CHECKING
 from uuid import UUID
 
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
     from ..services.memory_service import MemoryService
     from ..services.correction_rule_service import CorrectionRuleService
 
-logger = logging.getLogger("rugpt.agents.executor")
+logger = get_logger("agents")
 
 _RAG_SEARCH_TOOL_CALL_LIMIT = 15
 _LIST_DOCUMENTS_TOOL_CALL_LIMIT = 8

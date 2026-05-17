@@ -4,10 +4,10 @@ Crypto Service
 ECDSA P-256 signature verification for Zero Trust.
 """
 import base64
-import logging
 
-logger = logging.getLogger("rugpt.services.crypto")
+from src.engine.unified_logger import get_logger
 
+logger = get_logger("services")
 
 def verify_device_signature(
     device_public_key_pem: str,

@@ -4,7 +4,8 @@ Project Service
 Business logic for Project entity: creation, listing, update, soft-delete.
 Head/admin-only for mutating operations. Multi-tenancy via org_id guard.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import List, Optional, TYPE_CHECKING
 from uuid import UUID
 
@@ -15,8 +16,7 @@ from ..storage.project_storage import ProjectStorage
 if TYPE_CHECKING:
     from .chat_service import ChatService
 
-logger = logging.getLogger("rugpt.services.project")
-
+logger = get_logger("services")
 
 class ProjectService:
 

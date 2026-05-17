@@ -10,7 +10,8 @@ infrastructure, not people, and must never leak into any user-list surface.
 Async `StructuredTool.from_function(coroutine=...)` — invoked directly in
 the running event loop alongside asyncpg pool.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -18,11 +19,10 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool, InjectedToolArg
 from pydantic import BaseModel, Field
 
-logger = logging.getLogger("rugpt.agents.tools.user")
+logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _MAX_RESULTS = 60
-
 
 class UserSearchInput(BaseModel):
     name_query: str = Field(
@@ -33,7 +33,6 @@ class UserSearchInput(BaseModel):
         default="",
         description="Filter users by role code (e.g. 'lawyer', 'accountant'). Empty = no filter.",
     )
-
 
 def create_user_tools(user_storage, role_storage, department_service):
     """Create user tools. Returns (user_search_tool,)."""

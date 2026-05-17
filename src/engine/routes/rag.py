@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import logging
+from src.engine.unified_logger import get_logger
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -10,9 +10,8 @@ from ..services.engine_service import get_engine_service
 from ..tasks.ingest_queue import ingest_queue
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.rag")
+logger = get_logger("routes")
 router = APIRouter(prefix="/rag", tags=["rag"])
-
 
 @router.post("/docs/ingest")
 async def ingest_doc(
@@ -33,7 +32,6 @@ async def ingest_doc(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
 
-
 @router.delete("/docs/{file_id}")
 async def delete_doc(
     file_id: str,
@@ -49,7 +47,6 @@ async def delete_doc(
         raise HTTPException(status_code=404, detail="Document not found.")
 
     return {"status": "deleted", "file_id": file_id}
-
 
 @router.post("/docs/{file_id}/retry")
 async def retry_ingestion(
@@ -84,7 +81,6 @@ async def retry_ingestion(
     )
     return {"status": "queued", "file_id": file_id}
 
-
 @router.get("/docs/find")
 async def find_docs(
     query: str = Query(..., min_length=1),
@@ -102,7 +98,6 @@ async def find_docs(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Find docs failed: {exc}") from exc
 
-
 @router.get("/docs/{file_id}/search/abstract")
 async def search_abstract_in_doc(
     file_id: str,
@@ -119,7 +114,6 @@ async def search_abstract_in_doc(
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Abstract chunk search failed: {exc}") from exc
-
 
 @router.get("/docs/{file_id}/search/concrete")
 async def search_concrete_in_doc(

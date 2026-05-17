@@ -8,7 +8,8 @@ org_id and user_id are injected via RunnableConfig — LLM sees only query and f
 
 Service lifecycle: call init_rag_service(service) once during engine startup.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -21,13 +22,12 @@ from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
 from ...utils.token_counter import count_tokens
 
-logger = logging.getLogger("rugpt.agents.tools.rag")
+logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 _DEFAULT_TOP_K = 4
 
 _rag_service: Optional[RAGService] = None
 _user_file_storage: Optional[UserFileStorage] = None
-
 
 def init_rag_service(service: RAGService, file_storage: Optional[UserFileStorage] = None) -> None:
     """Set the shared RAGService instance for all RAG tool calls."""
@@ -59,7 +59,6 @@ async def _can_access_file(file_id: str, org_id: str, user_id: str, is_admin: bo
         for f in all_files
     )
 
-
 def _top_k_for_seen_chunks(seen_count: int) -> int:
     #if seen_count > 30:
     #    return 3
@@ -67,11 +66,9 @@ def _top_k_for_seen_chunks(seen_count: int) -> int:
         return 3
     return _DEFAULT_TOP_K
 
-
 def _remember_seen_chunks(runtime_data: object, chunks: list) -> None:
     if isinstance(runtime_data, RagSearchRuntimeData):
         runtime_data.chunk_ids.update(str(chunk.chunk_id) for chunk in chunks)
-
 
 @tool(response_format="content")
 async def rag_search(
@@ -104,7 +101,6 @@ async def rag_search(
 
         if not await _can_access_file(file_id, org_id, user_id, is_admin):
             return "You don't have access to that document."
-
 
         file_uuid = UUID(file_id)
         doc = await _user_file_storage.get_by_id(file_uuid)

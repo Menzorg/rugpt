@@ -4,7 +4,8 @@ Corrections Routes
 CRUD endpoints for correction rules — admin-created records that link an AI
 role's incorrect response to a user correction and an extracted lesson.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import List, Optional
 from uuid import UUID
 
@@ -15,9 +16,8 @@ from pydantic import BaseModel
 from .auth import get_current_user
 from ..services.engine_service import get_engine_service, EngineService
 
-logger = logging.getLogger("rugpt.routes.corrections")
+logger = get_logger("routes")
 router = APIRouter(prefix="/corrections", tags=["corrections"])
-
 
 # ============================================
 # Request / Response Models
@@ -30,19 +30,16 @@ class CorrectionRuleResponse(BaseModel):
     user_correction_text: str
     extracted_lesson: str
 
-
 class CreateCorrectionRequest(BaseModel):
     """Admin provides the corrected AI message and their correction text.
     extracted_lesson is derived automatically — not accepted from the client."""
     corrected_message_id: str   # src_ai_response_id
     user_correction_text: str
 
-
 class UpdateCorrectionRequest(BaseModel):
     """Only the human-supplied fields may be changed after creation."""
     corrected_message_id: str
     user_correction_text: str
-
 
 # ============================================
 # Helpers
@@ -52,10 +49,8 @@ def _require_admin(current_user: dict) -> None:
     if not current_user["is_admin"]:
         raise HTTPException(status_code=403, detail="Admin access required")
 
-
 def _get_engine() -> EngineService:
     return get_engine_service()
-
 
 def _to_response(rule) -> CorrectionRuleResponse:
     return CorrectionRuleResponse(
@@ -65,7 +60,6 @@ def _to_response(rule) -> CorrectionRuleResponse:
         user_correction_text=rule.user_correction_text or "",
         extracted_lesson=rule.extracted_lesson or "",
     )
-
 
 # ============================================
 # Routes
@@ -90,7 +84,6 @@ async def list_corrections(
         rules = await engine.correction_rule_storage.list_active()
     return [_to_response(r) for r in rules]
 
-
 @router.get("/{correction_id}", response_model=CorrectionRuleResponse)
 async def get_correction(
     correction_id: str,
@@ -107,7 +100,6 @@ async def get_correction(
     if not rule:
         raise HTTPException(status_code=404, detail="Correction rule not found")
     return _to_response(rule)
-
 
 @router.post("", response_model=CorrectionRuleResponse, status_code=201)
 @router.post("/", response_model=CorrectionRuleResponse, status_code=201)
@@ -132,7 +124,6 @@ async def create_correction(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return _to_response(rule)
-
 
 @router.patch("/{correction_id}", response_model=CorrectionRuleResponse)
 async def update_correction(
@@ -159,7 +150,6 @@ async def update_correction(
     if not rule:
         raise HTTPException(status_code=404, detail="Correction rule not found")
     return _to_response(rule)
-
 
 @router.delete("/{correction_id}", status_code=204)
 async def delete_correction(

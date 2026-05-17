@@ -8,7 +8,8 @@ Endpoints for file upload/download/management:
 - GET /files/{file_id}/download — download file binary
 - DELETE /files/{file_id} — soft-delete file
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from urllib.parse import quote as urlquote
 from uuid import UUID
@@ -22,10 +23,8 @@ from ..services.folder_service import FolderError
 from ..constants import CONTENT_TYPES
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.files")
+logger = get_logger("routes")
 router = APIRouter(prefix="/files", tags=["files"])
-
-
 
 class FileResponse(BaseModel):
     id: str
@@ -46,7 +45,6 @@ class FileResponse(BaseModel):
     updated_at: str
     cloned_from_file_id: Optional[str] = None
     folder_id: Optional[str] = None
-
 
 @router.post("/upload", response_model=FileResponse)
 async def upload_file(
@@ -102,7 +100,6 @@ async def upload_file(
         logger.error("Can't ingest file", exc_info=e)
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.get("", response_model=List[FileResponse])
 async def list_files(
     folder_id: Optional[str] = Query(None, description="Filter by folder. 'null'=root, UUID=specific, omit=all"),
@@ -124,7 +121,6 @@ async def list_files(
         files = await engine.file_service.list_by_user(current_user["user_id"])
     return [FileResponse(**f.to_dict()) for f in files]
 
-
 @router.get("/{file_id}", response_model=FileResponse)
 async def get_file(file_id: str, current_user: dict = Depends(get_current_user)):
     """Get file metadata"""
@@ -141,7 +137,6 @@ async def get_file(file_id: str, current_user: dict = Depends(get_current_user))
         raise HTTPException(status_code=403, detail="Access denied")
 
     return FileResponse(**file_record.to_dict())
-
 
 @router.get("/{file_id}/download")
 async def download_file(file_id: str, current_user: dict = Depends(get_current_user)):
@@ -180,7 +175,6 @@ async def download_file(file_id: str, current_user: dict = Depends(get_current_u
         headers={"Content-Disposition": content_disposition},
     )
 
-
 @router.delete("/{file_id}")
 async def delete_file(file_id: str, current_user: dict = Depends(get_current_user)):
     """Soft-delete a file"""
@@ -198,7 +192,6 @@ async def delete_file(file_id: str, current_user: dict = Depends(get_current_use
 
     await engine.file_service.delete(file_uuid)
     return {"success": True, "message": "File deleted"}
-
 
 @router.post("/{file_id}/index", response_model=FileResponse)
 async def index_file_for_rag(
@@ -230,7 +223,6 @@ async def index_file_for_rag(
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
 
 @router.post("/{file_id}/clone", response_model=FileResponse)
 async def clone_file(
@@ -268,7 +260,6 @@ async def clone_file(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.get("/{file_id}/rag-status")
 async def get_rag_status(file_id: str, current_user: dict = Depends(get_current_user)):
     """Get RAG indexing status for a file."""
@@ -290,7 +281,6 @@ async def get_rag_status(file_id: str, current_user: dict = Depends(get_current_
         "rag_error": file_record.rag_error,
         "indexed_at": file_record.indexed_at.isoformat() if file_record.indexed_at else None,
     }
-
 
 @router.patch("/{file_id}/public", response_model=FileResponse)
 async def set_file_public(

@@ -4,7 +4,8 @@ Authentication Routes
 Endpoints for user authentication.
 """
 import jwt
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
@@ -16,12 +17,12 @@ from pydantic import BaseModel, EmailStr
 from ..config import Config
 from ..services.engine_service import get_engine_service
 from ..services.users_service import UsersService
+from src.engine.unified_logger import set_user_id
 
-logger = logging.getLogger("rugpt.routes.auth")
+logger = get_logger("routes")
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 http_bearer = HTTPBearer(auto_error=False)
-
 
 # ============================================
 # Request/Response Models
@@ -33,7 +34,6 @@ class LoginRequest(BaseModel):
     password: str
     device_public_key: Optional[str] = None
     device_name: Optional[str] = None
-
 
 class LoginResponse(BaseModel):
     """Login response"""
@@ -50,7 +50,6 @@ class LoginResponse(BaseModel):
     device_id: Optional[str] = None
     message: Optional[str] = None
 
-
 class RegisterRequest(BaseModel):
     """Registration request body"""
     org_id: str  # Organization to join
@@ -59,13 +58,11 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
 
-
 class TokenPayload(BaseModel):
     """JWT token payload"""
     user_id: str
     org_id: str
     exp: datetime
-
 
 # ============================================
 # Helpers
@@ -83,7 +80,6 @@ def create_token(user_id: UUID, org_id: UUID, email: str = None, is_admin: bool 
     }
     return jwt.encode(payload, Config.JWT_SECRET, algorithm=Config.JWT_ALGORITHM)
 
-
 def verify_token(token: str) -> Optional[dict]:
     """Verify and decode JWT token"""
     try:
@@ -93,7 +89,6 @@ def verify_token(token: str) -> Optional[dict]:
         return None
     except jwt.InvalidTokenError:
         return None
-
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
@@ -115,7 +110,7 @@ async def get_current_user(
     user = await engine.user_storage.get_by_id(user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="User not found or inactive")
-
+    set_user_id(str(user_id))
     return {
         "user_id": user_id,
         "org_id": org_id,
@@ -186,7 +181,6 @@ async def login(request: LoginRequest):
         device_id=device_id,
     )
 
-
 @router.post("/register", response_model=LoginResponse)
 async def register(request: RegisterRequest):
     """
@@ -239,7 +233,6 @@ async def register(request: RegisterRequest):
         role_id=str(user.role_id) if user.role_id else None,
     )
 
-
 @router.get("/me")
 async def get_current_user_info(current_user: dict = Depends(get_current_user)):
     """Get current authenticated user's information"""
@@ -251,20 +244,17 @@ async def get_current_user_info(current_user: dict = Depends(get_current_user)):
 
     return user.to_dict()
 
-
 @router.post("/refresh")
 async def refresh_token(current_user: dict = Depends(get_current_user)):
     """Refresh JWT token"""
     token = create_token(current_user["user_id"], current_user["org_id"])
     return {"token": token}
 
-
 class VerifySignatureRequest(BaseModel):
     """Request to verify a device signature"""
     user_id: str
     payload: str
     signature: str
-
 
 @router.post("/verify-signature")
 async def verify_signature(request: VerifySignatureRequest):
@@ -291,7 +281,6 @@ async def verify_signature(request: VerifySignatureRequest):
             return {"valid": True}
 
     return {"valid": False, "error": "Invalid signature"}
-
 
 @router.get("/devices")
 async def get_user_devices(current_user: dict = Depends(get_current_user)):

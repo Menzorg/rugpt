@@ -3,7 +3,8 @@ Notification Routes
 
 Endpoints for notification channel management, Telegram webhook, and log.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
@@ -13,9 +14,8 @@ from pydantic import BaseModel
 from ..services.engine_service import get_engine_service
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.notifications")
+logger = get_logger("routes")
 router = APIRouter(prefix="/notifications", tags=["notifications"])
-
 
 # ============================================
 # Request/Response Models
@@ -26,7 +26,6 @@ class RegisterChannelRequest(BaseModel):
     channel_type: str                    # 'telegram', 'email'
     config: dict                         # {"chat_id": "..."} or {"email": "..."}
     priority: int = 0
-
 
 class ChannelResponse(BaseModel):
     """Notification channel response"""
@@ -40,7 +39,6 @@ class ChannelResponse(BaseModel):
     priority: int
     created_at: str
     updated_at: str
-
 
 class NotificationLogResponse(BaseModel):
     """Notification log entry"""
@@ -56,7 +54,6 @@ class NotificationLogResponse(BaseModel):
     created_at: str
     updated_at: str
 
-
 # ============================================
 # Channel Routes
 # ============================================
@@ -69,7 +66,6 @@ async def list_channels(current_user: dict = Depends(get_current_user)):
         current_user["user_id"], enabled_only=False
     )
     return [ChannelResponse(**c.to_dict()) for c in channels]
-
 
 @router.post("/channels", response_model=ChannelResponse)
 async def register_channel(
@@ -94,7 +90,6 @@ async def register_channel(
     )
     return ChannelResponse(**channel.to_dict())
 
-
 @router.delete("/channels/{channel_type}")
 async def remove_channel(
     channel_type: str,
@@ -109,7 +104,6 @@ async def remove_channel(
         raise HTTPException(status_code=404, detail="Channel not found")
     return {"success": True, "message": f"Channel '{channel_type}' removed"}
 
-
 @router.post("/channels/{channel_type}/verify")
 async def verify_channel(
     channel_type: str,
@@ -123,7 +117,6 @@ async def verify_channel(
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
     return ChannelResponse(**channel.to_dict())
-
 
 # ============================================
 # Telegram Webhook
@@ -194,7 +187,6 @@ async def telegram_webhook(request: Request):
             logger.debug(f"/start without user_id from chat_id={chat_id}")
 
     return {"ok": True}
-
 
 # ============================================
 # Notification Log

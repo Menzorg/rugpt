@@ -7,7 +7,8 @@ Delegates all DB access to RAGService.
 org_id and user_id are injected via RunnableConfig — LLM sees only file_id
 and chunk_index.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -18,14 +19,12 @@ from pydantic import BaseModel, Field
 from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
 
-logger = logging.getLogger("rugpt.agents.tools.expand_chunk")
+logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
-
 
 class ExpandChunkInput(BaseModel):
     file_id: str = Field(description="Document ID of the source file")
     chunk_index: int = Field(description="Index of the center chunk inside the file")
-
 
 def create_expand_chunk_tool(
     rag_service: RAGService,

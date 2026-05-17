@@ -10,7 +10,8 @@ row_start, row_end.
 Service lifecycle: call init_table_rows_service(service, file_storage) once
 during engine startup.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -20,12 +21,11 @@ from langchain_core.runnables import RunnableConfig
 from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
 
-logger = logging.getLogger("rugpt.agents.tools.table_rows")
+logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _rag_service: Optional[RAGService] = None
 _user_file_storage: Optional[UserFileStorage] = None
-
 
 def init_table_rows_service(
     service: RAGService,
@@ -36,7 +36,6 @@ def init_table_rows_service(
     _rag_service = service
     _user_file_storage = file_storage
     logger.info("Table rows tool service initialized")
-
 
 async def _can_access_file(file_id: str, org_id: str, user_id: str) -> bool:
     if _user_file_storage is None:
@@ -53,7 +52,6 @@ async def _can_access_file(file_id: str, org_id: str, user_id: str) -> bool:
         f.id == file_uuid and (f.uploaded_by_user_id == user_uuid or f.is_public)
         for f in all_files
     )
-
 
 @tool(response_format="content")
 async def table_rows_search(

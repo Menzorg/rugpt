@@ -4,7 +4,8 @@ Notification Service
 Orchestrates notification delivery across channels.
 Tries channels by priority (highest first), logs all attempts.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List, Dict
 from uuid import UUID
 
@@ -13,8 +14,7 @@ from ..storage.notification_channel_storage import NotificationChannelStorage
 from ..storage.notification_log_storage import NotificationLogStorage
 from ..notifications.base_sender import BaseSender, SendResult
 
-logger = logging.getLogger("rugpt.services.notification")
-
+logger = get_logger("services")
 
 class NotificationService:
     """

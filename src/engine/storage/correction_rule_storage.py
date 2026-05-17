@@ -3,15 +3,15 @@ Correction Rule Storage
 
 PostgreSQL storage for correction rules.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
 from .base import BaseStorage
 from ..models.correction_rule import CorrectionRule
 
-logger = logging.getLogger("rugpt.storage.correction_rule")
-
+logger = get_logger("storage")
 
 class CorrectionRuleStorage(BaseStorage):
     """Storage for CorrectionRule entities"""

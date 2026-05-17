@@ -5,13 +5,13 @@ Base class for PostgreSQL storage with connection pooling.
 """
 import asyncpg
 import asyncio
-import logging
+
+from src.engine.unified_logger import get_logger
 import os
 import time
 from typing import Optional, Any
 
-logger = logging.getLogger("rugpt.storage")
-
+logger = get_logger("storage")
 
 class BaseStorage:
     """Base storage class with PostgreSQL connection pool"""

@@ -6,7 +6,7 @@ Core rule: system user → their role responds (mirror → sender's role).
 """
 from __future__ import annotations
 
-import logging
+from src.engine.unified_logger import get_logger
 import re
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from ..storage.task_storage import TaskStorage
     from ..storage.storage_adapter import StorageAdapter
 
-logger = logging.getLogger("rugpt.services.ai")
+logger = get_logger("services")
 
 _OTHER_ROLE_HISTORY_PLACEHOLDER = (
     "[Исторический ответ другой роли скрыт. Текущая роль не наследует его "
@@ -52,7 +52,6 @@ _OTHER_ROLE_HISTORY_PLACEHOLDER = (
 POLL_INTERVIEWER_ROLE_CODE = "poll_interviewer"
 POLL_SUMMARIZER_ROLE_CODE = "poll_summarizer"
 RUGPT_SYSTEM_ORG_ID = UUID("00000000-0000-0000-0000-000000000000")
-
 
 class AIService:
     """Service for AI response generation"""

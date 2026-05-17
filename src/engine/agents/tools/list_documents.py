@@ -31,7 +31,8 @@ How it works:
    displayed and add them to spent_summary_tokens.  Summaries replaced by
    [BUDGET EXHAUSTED] are not counted — they did not consume budget.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -50,7 +51,7 @@ from ...storage.user_file_storage import UserFileStorage
 from ...storage.user_storage import UserStorage
 from ...utils.token_counter import count_tokens, cut_text_by_token_count
 
-logger = logging.getLogger("rugpt.agents.tools.document")
+logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _PAGE_SIZE = 30
@@ -114,13 +115,11 @@ def _is_image_file(f: UserFile) -> bool:
     filename = (f.original_filename or "").lower()
     return any(filename.endswith(f".{ext}") for ext in IMAGE_TYPES)
 
-
 def _with_dedup_header(deduplicated_across_runs: bool, result: str) -> str:
     # Tell the model when the list is shorter because this run already saw some documents.
     if not deduplicated_across_runs:
         return result
     return "[Documents already shown in previous tool calls were omitted.]\n" + result
-
 
 def _remember_seen_documents(runsession: object, files: list[UserFile]) -> None:
     # Persist ids only after the formatted result is committed to the tool output.

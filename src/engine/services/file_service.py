@@ -6,7 +6,8 @@ Uses StorageAdapter for binary data, UserFileStorage for metadata.
 """
 import asyncio
 import hashlib
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
@@ -21,8 +22,7 @@ from ..constants import (
     TABLE_EXTENSIONS,
 )
 
-logger = logging.getLogger("rugpt.services.file")
-
+logger = get_logger("services")
 
 class FileService:
 

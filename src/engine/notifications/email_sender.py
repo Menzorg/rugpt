@@ -3,7 +3,8 @@ Email Sender
 
 Sends notifications via SMTP using aiosmtplib.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
@@ -12,8 +13,7 @@ import aiosmtplib
 
 from .base_sender import BaseSender, SendResult
 
-logger = logging.getLogger("rugpt.notifications.email")
-
+logger = get_logger("notifications")
 
 class EmailSender(BaseSender):
     """Send messages via SMTP"""

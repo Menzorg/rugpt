@@ -9,7 +9,8 @@ that owns the asyncpg pool), so we just `await` service calls. No threading,
 no nested asyncio.run(). This avoids the `There is no current event loop`
 errors that the sync-wrapper approach produced under langchain-openai.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import date, datetime
 from typing import Annotated, List, Literal, Optional
 from uuid import UUID
@@ -21,9 +22,8 @@ from pydantic import BaseModel, Field
 from ...config import Config
 from ...services.task_service import TaskService
 
-logger = logging.getLogger("rugpt.agents.tools.task")
+logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
-
 
 # ============================================
 # Tool input schemas
@@ -55,7 +55,6 @@ class TaskDeadlineProposalInput(BaseModel):
     task_id: str = Field(description="UUID of the task whose proposed deadline to accept or reject")
     accept: bool = Field(description="True to accept the proposed deadline, False to reject it")
 
-
 class TaskUpdateInput(BaseModel):
     task_id: str = Field(description="UUID of the task to update")
     status: str = Field(default="", description="New status: created, in_progress, awaiting_review, done. Transitions are role-restricted — the tool will return an error if the caller is not permitted.")
@@ -64,7 +63,6 @@ class TaskUpdateInput(BaseModel):
     deadline: Optional[str] = Field(default=None, description="New deadline in ISO format (e.g. 2025-03-15T18:00:00). Only the task creator or admin can set this.")
     new_participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of task participants to add")
     delete_participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of task participants to remove")
-
 
 # ============================================
 # Factory: create tools wired to TaskService

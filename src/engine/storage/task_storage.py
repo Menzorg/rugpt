@@ -3,7 +3,8 @@ Task Storage
 
 PostgreSQL CRUD for tasks table.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import date, datetime
 from typing import Dict, Optional, List
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.task import Task
 
-logger = logging.getLogger("rugpt.storage.task")
-
+logger = get_logger("storage")
 
 class TaskStorage(BaseStorage):
 

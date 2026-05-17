@@ -3,7 +3,8 @@ Department Storage
 
 PostgreSQL storage for departments and visibility rules.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List, Set
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.department import Department, DepartmentVisibility
 
-logger = logging.getLogger("rugpt.storage.department")
-
+logger = get_logger("storage")
 
 class DepartmentStorage(BaseStorage):
 

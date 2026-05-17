@@ -6,7 +6,8 @@ trail) and trigger in-app notification via the injected notification_service.
 They do NOT write messages into the chat's message stream — UI is updated
 via WS push of the new ticket state, not via in-chat system messages.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 from uuid import UUID
@@ -27,9 +28,7 @@ from ..models.support_ticket_event import (
 )
 from ..models.user import User
 
-
-logger = logging.getLogger("rugpt.services.support_ticket")
-
+logger = get_logger("services")
 
 class SupportTicketService:
     """Business logic on top of SupportTicketStorage and friends.

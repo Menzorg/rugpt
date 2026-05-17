@@ -8,18 +8,19 @@ Successful handle -> offset commit (at-least-once delivery).
 """
 import asyncio
 import json
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Awaitable, Callable, Optional
 
 from ..config import Config
-from ..logging_context import bind_correlation_id, correlation_id_var
+from ..logging_context import bind_correlation_id, correlation_id_var, user_id_var
 
-logger = logging.getLogger("rugpt.kafka.consumer")
+logger = get_logger("kafka")
 
 _CORRELATION_FIELD = "_correlation_id"
+_USER_FIELD = "_user_id"
 
 MessageHandler = Callable[[dict], Awaitable[None]]
-
 
 class KafkaConsumerLoop:
     def __init__(
@@ -71,14 +72,20 @@ class KafkaConsumerLoop:
                 batch = await consumer.getmany(timeout_ms=1000, max_records=10)
                 for tp, messages in batch.items():
                     for msg in messages:
-                        # Rebind correlation_id from payload so the handler's
-                        # logs stay in the same trace as the original producer.
+                        # Rebind correlation_id и user_id из payload, чтобы логи handler'а
+                        # остались в той же трассе, что у HTTP-запроса, который publish'нул.
                         incoming_cid = (
                             msg.value.get(_CORRELATION_FIELD)
                             if isinstance(msg.value, dict)
                             else None
                         )
-                        token = bind_correlation_id(incoming_cid)
+                        incoming_uid = (
+                            msg.value.get(_USER_FIELD)
+                            if isinstance(msg.value, dict)
+                            else None
+                        )
+                        token_cid = bind_correlation_id(incoming_cid)
+                        token_uid = user_id_var.set(incoming_uid)
                         try:
                             logger.info(
                                 f"Kafka received: topic={self.topic} offset={msg.offset}"
@@ -92,7 +99,8 @@ class KafkaConsumerLoop:
                             )
                             # no commit -> redelivered
                         finally:
-                            correlation_id_var.reset(token)
+                            correlation_id_var.reset(token_cid)
+                            user_id_var.reset(token_uid)
         except asyncio.CancelledError:
             pass
         finally:

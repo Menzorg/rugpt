@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import logging
+from src.engine.unified_logger import get_logger
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -21,7 +21,7 @@ from ..models.rag import ChunkRow, ChunkSearchResult, RelatedDoc
 from ..storage.rag_store import RAG_store
 from ..storage.user_file_storage import UserFileStorage
 
-logger = logging.getLogger("rugpt.services.rag")
+logger = get_logger("services")
 _ABSTRACT_SEARCH_MIN_WORDS = 5
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -29,7 +29,6 @@ _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 def _safe_tika_file_name(file_name: str | None) -> str:
     raw_name = (file_name or "uploaded_file").strip() or "uploaded_file"
     return quote(raw_name, safe="")
-
 
 def _normalize_cell(value: Any) -> str:
     if value is None:
@@ -50,13 +49,11 @@ def _extract_tika_content(parsed: Any) -> str:
         return str(content or "")
     return ""
 
-
 def _format_row(headers: list[str], values: list[str], sheet_name: str | None = None) -> str:
     pairs = [f"{header}: {value}" for header, value in zip(headers, values)]
     if sheet_name:
         pairs.insert(0, f"Sheet: {sheet_name}")
     return ", ".join(pairs)
-
 
 class RAGService:
     def __init__(

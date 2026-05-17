@@ -8,19 +8,19 @@ frames the result for the user in conversational context.
 Tool is async so the ReAct loop awaits it directly in the same event loop
 (no worker-thread pool contention, no event-loop gymnastics).
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 import httpx
 from langchain_core.tools import tool
 
 from ...config import Config
 
-logger = logging.getLogger("rugpt.agents.tools.web")
+logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 _MODEL = "sonar"
 _TIMEOUT_SECONDS = 60.0
-
 
 @tool
 async def web_search(query: str) -> str:

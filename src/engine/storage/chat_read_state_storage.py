@@ -4,15 +4,15 @@ Chat Read State Storage
 PostgreSQL storage for high-water-mark per (chat, user) used for unread
 message counting.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Dict
 from uuid import UUID
 
 from .base import BaseStorage
 
-logger = logging.getLogger("rugpt.storage.chat_read_state")
-
+logger = get_logger("storage")
 
 class ChatReadStateStorage(BaseStorage):
     """Storage for chat_read_state high-water-marks."""

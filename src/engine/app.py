@@ -52,7 +52,8 @@ logging.basicConfig(
 _correlation_filter = CorrelationIDFilter()
 for _handler in logging.root.handlers:
     _handler.addFilter(_correlation_filter)
-logger = logging.getLogger("rugpt.app")
+from src.engine.unified_logger import get_logger
+logger = get_logger("app")
 
 # Suppress noisy loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)

@@ -4,9 +4,9 @@ Engine Service
 Main composite service that manages all storages and services.
 Singleton pattern - one instance per process.
 """
-import logging
-from typing import Optional
 
+from src.engine.unified_logger import get_logger
+from typing import Optional
 
 from ..config import Config
 from ..storage.org_storage import OrgStorage
@@ -65,11 +65,10 @@ from ..storage.rag_store import RAG_store
 from ..notifications.telegram_sender import TelegramSender
 from ..notifications.email_sender import EmailSender
 
-logger = logging.getLogger("rugpt.services.engine")
+logger = get_logger("services")
 
 # Singleton instance
 _engine_service: Optional["EngineService"] = None
-
 
 class EngineService:
     """
@@ -538,14 +537,12 @@ class EngineService:
         """Get singleton instance"""
         return get_engine_service()
 
-
 def get_engine_service() -> EngineService:
     """Get or create engine service singleton"""
     global _engine_service
     if _engine_service is None:
         _engine_service = EngineService()
     return _engine_service
-
 
 async def init_engine_service() -> EngineService:
     """Initialize and return engine service"""

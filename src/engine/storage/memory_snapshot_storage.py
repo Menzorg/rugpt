@@ -3,15 +3,15 @@ Memory Snapshot Storage
 
 PostgreSQL storage for memory snapshots.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
 from .base import BaseStorage
 from ..models.memory_snapshot import MemorySnapshot
 
-logger = logging.getLogger("rugpt.storage.memory_snapshot")
-
+logger = get_logger("storage")
 
 class MemorySnapshotStorage(BaseStorage):
     """Storage for MemorySnapshot entities"""

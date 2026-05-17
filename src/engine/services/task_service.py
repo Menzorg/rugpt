@@ -4,7 +4,8 @@ Task Service
 Business logic for employee task management.
 Creates in-app notifications on task events.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import date, datetime, timezone
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID
@@ -23,13 +24,11 @@ if TYPE_CHECKING:
     from .project_service import ProjectService
     from ..storage.task_participant_storage import TaskParticipantStorage
 
-logger = logging.getLogger("rugpt.services.task")
-
+logger = get_logger("services")
 
 class ParticipantAlreadyExists(ValueError):
     """Raised when add_participant called with a user_id already in task_participants."""
     pass
-
 
 def compute_priority(creator: Optional[dict]) -> int:
     """
@@ -45,7 +44,6 @@ def compute_priority(creator: Optional[dict]) -> int:
     if creator.get("is_head"):
         return 2
     return 1
-
 
 class TaskService:
 

@@ -4,7 +4,8 @@ Task Report Storage
 PostgreSQL CRUD for task_reports table.
 """
 import json
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import date
 from typing import Optional, List
 from uuid import UUID
@@ -12,8 +13,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.task_report import TaskReport
 
-logger = logging.getLogger("rugpt.storage.task_report")
-
+logger = get_logger("storage")
 
 class TaskReportStorage(BaseStorage):
 

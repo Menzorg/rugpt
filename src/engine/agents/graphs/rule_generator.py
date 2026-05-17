@@ -8,7 +8,8 @@ LangGraph graph that generates a concise rule_text from:
 
 Output: a clear, concise instruction for the AI role to follow in the future.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
@@ -16,7 +17,7 @@ from langchain_openai import ChatOpenAI
 from ...config import Config
 from ...utils.token_logger import log_llm_tokens, log_token_summary
 
-logger = logging.getLogger("rugpt.agents.graphs.rule_generator")
+logger = get_logger("agents")
 
 RULE_GENERATOR_PROMPT = """You are a rule formulator for an AI assistant system.
 
@@ -36,7 +37,6 @@ AI answer: "The statute of limitations for labor disputes is 3 years."
 Correction: "Wrong! For labor disputes it's 3 months under Article 392 of the Labor Code."
 Rule: "When asked about the statute of limitations for labor disputes: the deadline is 3 months (Article 392 of the Labor Code of the Russian Federation), not 3 years as in general civil cases."
 """
-
 
 async def generate_rule_text(
     base_url: str,

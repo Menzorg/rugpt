@@ -5,7 +5,8 @@ Endpoints for evening reports:
 - GET /task-reports — list reports for current manager
 - GET /task-reports/{report_id} — get a specific report
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
@@ -15,9 +16,8 @@ from pydantic import BaseModel
 from ..services.engine_service import get_engine_service
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.task_reports")
+logger = get_logger("routes")
 router = APIRouter(prefix="/task-reports", tags=["task-reports"])
-
 
 class TaskReportResponse(BaseModel):
     id: str
@@ -27,7 +27,6 @@ class TaskReportResponse(BaseModel):
     content: str
     task_summaries: list
     created_at: str
-
 
 @router.get("", response_model=List[TaskReportResponse])
 async def list_reports(
@@ -47,7 +46,6 @@ async def list_reports(
         current_user["user_id"], limit,
     )
     return [TaskReportResponse(**r.to_dict()) for r in reports]
-
 
 @router.get("/{report_id}", response_model=TaskReportResponse)
 async def get_report(report_id: str, current_user: dict = Depends(get_current_user)):

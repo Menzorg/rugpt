@@ -5,7 +5,8 @@ Sequential steps from agent_config["steps"].
 Each step has its own prompt/instruction processed by the LLM,
 with the output of step N feeding into step N+1.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import List, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -15,8 +16,7 @@ from langchain_openai import ChatOpenAI
 from ..result import AgentResult
 from ...utils.token_logger import log_llm_tokens, log_token_summary
 
-logger = logging.getLogger("rugpt.agents.graphs.chain")
-
+logger = get_logger("agents")
 
 async def run_chain_agent(
     llm: ChatOpenAI,

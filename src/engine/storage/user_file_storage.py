@@ -3,7 +3,8 @@ User File Storage
 
 PostgreSQL CRUD for user_files table (metadata only).
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Dict, Optional, List
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.user_file import UserFile
 
-logger = logging.getLogger("rugpt.storage.user_file")
-
+logger = get_logger("storage")
 
 class UserFileStorage(BaseStorage):
 

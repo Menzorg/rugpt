@@ -6,7 +6,8 @@ inside message content: `!<uuid>` -> task, `!!<uuid>` -> project.
 
 Nothing is stored structurally; parsing + resolution happens per read.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 import re
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 from uuid import UUID
@@ -17,15 +18,13 @@ if TYPE_CHECKING:
     from ..storage.task_storage import TaskStorage
     from ..storage.project_storage import ProjectStorage
 
-logger = logging.getLogger("rugpt.services.reference")
-
+logger = get_logger("services")
 
 # Order matters: !!(...) BEFORE !(...) so '!!abc...' isn't chewed as single '!'.
 REFERENCE_PATTERN = re.compile(
     r'!!([0-9a-fA-F-]{36})'   # group(1): project UUID
     r'|!([0-9a-fA-F-]{36})'   # group(2): task UUID
 )
-
 
 class ReferenceService:
 

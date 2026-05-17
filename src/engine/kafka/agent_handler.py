@@ -20,7 +20,7 @@ so Kafka does not loop on garbage.
 """
 from __future__ import annotations
 
-import logging
+from src.engine.unified_logger import get_logger
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -32,8 +32,7 @@ if TYPE_CHECKING:
     from ..storage.agent_run_storage import AgentRunStorage
     from .producer import KafkaProducerService
 
-logger = logging.getLogger("rugpt.kafka.agent_handler")
-
+logger = get_logger("kafka")
 
 class AgentRequestHandler:
     def __init__(
