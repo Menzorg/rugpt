@@ -16,6 +16,7 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
 from ..result import AgentResult, ToolCall
+from ..runtime import RuntimeContext
 from ...utils.token_logger import log_llm_tokens, log_token_summary
 
 logger = get_logger("agents")
@@ -58,7 +59,7 @@ async def run_simple_agent(
     messages: List[dict],
     tools: Optional[List[BaseTool]] = None,
     config: Optional[RunnableConfig] = None,
-    context_schema: Optional[Any] = None,
+    context_schema: Optional[RuntimeContext] = None,
     middleware: Optional[List[Any]] = None,
 ) -> AgentResult:
     """
@@ -139,28 +140,18 @@ async def _react_agent_call(
     system_prompt: str,
     tools: List[BaseTool],
     config: Optional[RunnableConfig] = None,
-    context_schema: Optional[Any] = None,
+    context_schema: Optional[RuntimeContext] = None,
     extra_middleware: Optional[List[Any]] = None,
 ) -> AgentResult:
     """ReAct agent with tool calling"""
     try:
-        context = (
-            None
-            if context_schema is None or isinstance(context_schema, type)
-            else context_schema
-        )
-        schema = (
-            context_schema
-            if context_schema is None or isinstance(context_schema, type)
-            else type(context_schema)
-        )
         middleware = extra_middleware or []
         agent = create_agent(
             llm,
             tools=tools,
             system_prompt=system_prompt,
             middleware=middleware,
-            context_schema=schema,
+            context_schema=RuntimeContext,
         )
 
         # create_agent receives system_prompt separately; keep the runtime
@@ -177,7 +168,7 @@ async def _react_agent_call(
         result = await agent.ainvoke(
             {"messages": input_messages},
             config={**(config or {}), "recursion_limit": 50 * (len(middleware) + 1)},
-            context=context,
+            context=context_schema,
         )
 
         # Extract final response from the result

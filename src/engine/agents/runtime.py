@@ -22,6 +22,9 @@ class RagSearchRuntimeData:
 class RuntimeContext:
     """Mutable scratch state scoped to a single agent execution."""
 
+    # Number of tools available to this agent; used by token counter to account
+    # for tool schema overhead in the context window estimate.
+    available_tools_count: int = 0
     # Synchronizes small runtime-state reads/writes across parallel tool calls.
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     list_documents_runtime_data: ListDocumentsRuntimeData = field(
@@ -30,9 +33,6 @@ class RuntimeContext:
     rag_search_runtime_data: RagSearchRuntimeData = field(
         default_factory=RagSearchRuntimeData,
     )
-    # Number of tools available to this agent; used by token counter to account
-    # for tool schema overhead in the context window estimate.
-    available_tools_count: int = 0
     # Cumulative tokens spent this run (prompt messages + RAG retrieval output).
     # Checked before each rag_search / list_documents call to prevent context overflow.
     total_tokens_spent: int = 0

@@ -18,6 +18,7 @@ from langgraph.types import Command
 from typing_extensions import Annotated
 
 from ..result import AgentResult, ToolCall
+from ..runtime import RuntimeContext
 from ...models.role import Role
 from ...utils.token_logger import log_token_summary
 
@@ -31,7 +32,7 @@ async def run_supervisor_agent(
     supervisor_role: Role,
     tools: Optional[List[BaseTool]] = None,
     config: Optional[RunnableConfig] = None,
-    context_schema: Optional[Any] = None,
+    context_schema: Optional[RuntimeContext] = None,
     middleware: Optional[List[Any]] = None,
     agent_config: Optional[dict] = None,
     subagent_context: str = "",
@@ -83,7 +84,7 @@ async def _supervisor_agent_call(
     tools: List[BaseTool],
     supervisor_role: Role,
     config: Optional[RunnableConfig] = None,
-    context_schema: Optional[Any] = None,
+    context_schema: Optional[RuntimeContext] = None,
     extra_middleware: Optional[List[Any]] = None,
     agent_config: Optional[dict] = None,
     subagent_context: str = "",
@@ -92,19 +93,8 @@ async def _supervisor_agent_call(
     try:
         from langgraph_supervisor import create_supervisor
 
-        context = (
-            None
-            if context_schema is None or isinstance(context_schema, type)
-            else context_schema
-        )
-        schema = (
-            context_schema
-            if context_schema is None or isinstance(context_schema, type)
-            else type(context_schema)
-        )
         subagents, subagent_descriptions = await _build_subagents(
             supervisor_role=supervisor_role,
-            context_schema=schema,
             subagent_context=subagent_context,
         )
         handoff_tools = [
@@ -133,7 +123,7 @@ async def _supervisor_agent_call(
             model=llm,
             tools=supervisor_tools or None,
             prompt=system_prompt,
-            context_schema=schema,
+            context_schema=RuntimeContext,
             output_mode="last_message",
             supervisor_name=supervisor_name,
             parallel_tool_calls=False,
@@ -149,7 +139,7 @@ async def _supervisor_agent_call(
         result = await agent.ainvoke(
             {"messages": input_messages},
             config={**(config or {}), "recursion_limit": 50 * (len(extra_middleware or []) + 1)},
-            context=context,
+            context=context_schema,
         )
 
         output_messages = result.get("messages", [])
@@ -168,9 +158,6 @@ async def _supervisor_agent_call(
 
             if hasattr(msg, "content") and msg.type == "ai" and not getattr(msg, "tool_calls", None):
                 final_content = msg.content
-
-        # TODO: make sure distinct calls of subagents have distinct token counters and modify tool token budget counters to that 
-        # (they work global right and promlem is that it stays the same after subagent disappears but his tool calls accumulated in token budget counters)
 
         grand_total = log_token_summary(
             "supervisor.agent_call",
@@ -214,7 +201,6 @@ async def _supervisor_agent_call(
 
 async def _build_subagents(
     supervisor_role: Role,
-    context_schema: Optional[Any],
     subagent_context: str,
 ) -> tuple[list, dict[str, str]]:
     """Build allowed subagents for a supervisor role."""
@@ -257,19 +243,25 @@ async def _build_subagents(
             ]
             if part
         )
-        subagent_llm = engine.agent_executor._create_llm(role.model_name,             
-            model_kwargs=(
-                {"parallel_tool_calls": role.agent_type != "supervisor"} # Well... in case if supervisor tries to call other supervisors
-            ),)
-        subagents.append(
-            create_agent(
-                model=subagent_llm,
-                tools=role_tools,
-                system_prompt=subagent_prompt,
-                context_schema=context_schema,
-                name=agent_name,
-            )
+        subagent_llm = engine.agent_executor._create_llm(
+            role.model_name,
+            model_kwargs={
+                # In case a supervisor is itself used as a subagent, keep its calls serial.
+                "parallel_tool_calls": role.agent_type != "supervisor",
+            },
         )
+        subagent = create_agent(
+            model=subagent_llm,
+            tools=role_tools,
+            system_prompt=subagent_prompt,
+            context_schema=RuntimeContext,
+            name=agent_name,
+        )
+        subagent = subagent.bind(
+            context=RuntimeContext(available_tools_count=len(role_tools)),
+        )
+        subagent.name = agent_name
+        subagents.append(subagent)
 
     return subagents, subagent_descriptions
 

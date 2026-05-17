@@ -202,8 +202,7 @@ class AgentExecutor:
             ),
         )
         
-        runtime_context = RuntimeContext()
-        runtime_context.available_tools_count = len(tools)
+        runtime_context = RuntimeContext(available_tools_count=len(tools))
 
         # RunnableConfig carries initiator/called identity for tools.
         config = RunnableConfig(
@@ -267,6 +266,7 @@ class AgentExecutor:
         _inject_role = "user" if _is_qwen else "assistant"
 
         context_blocks: list[str] = []
+        subagent_context_blocks: list[str] = []
 
         if initiator:
             attachments_block = None
@@ -279,6 +279,7 @@ class AgentExecutor:
                 attachments_block=attachments_block,
             )
             context_blocks.append(user_block)
+            subagent_context_blocks.append(user_block)
 
         if invocation_kind == "mention":
             callee = await engine.user_storage.get_by_id(effective_callee_user_id)
@@ -289,19 +290,21 @@ class AgentExecutor:
                     "Информация о пользователе, которому адресован вызов (callee)",
                 )
                 context_blocks.append(callee_block)
+                subagent_context_blocks.append(callee_block)
 
         if org_context:
             context_blocks.append(f"Контекст организации:\n{org_context}")
             logger.info("org_context: prepared injected message for org=%s", scope_org_id)
 
         if summary:
-            context_blocks.append(
-                f"Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n{summary}"
-            )
+            summary_block = f"Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n{summary}"
+            context_blocks.append(summary_block)
+            subagent_context_blocks.append(summary_block)
             logger.info("memory: prepared summary injected message for chat=%s", chat_id)
             system_prompt += _MEMORY_PROMPT_BLOCK
 
         context_block = "\n\n".join(context_blocks)
+        subagent_context_block = "\n\n".join(subagent_context_blocks)
         if context_block:
             messages = [
                 {
@@ -410,7 +413,7 @@ class AgentExecutor:
                     context_schema=runtime_context,
                     middleware=agent_middleware,
                     agent_config=role.agent_config,
-                    subagent_context=context_block,
+                    subagent_context=subagent_context_block,
                 )
             else:
                 logger.warning(f"Unknown agent_type '{role.agent_type}', falling back to simple")
