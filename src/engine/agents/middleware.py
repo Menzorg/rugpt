@@ -139,7 +139,7 @@ class TokenBudgetToolBlockMiddleware(AgentMiddleware):
     """
     Block tool calls once the context approaches the limit.
 
-    Use this for agents that have document-heavy tools (list_global_documents, list_private_documents, rag_search)
+    Use this for agents that have document-heavy tools (list_documents, list_own_documents, rag_search)
     where tool schema overhead matters.  Includes available_tools_count in the
     token estimate via RuntimeContext.
     """

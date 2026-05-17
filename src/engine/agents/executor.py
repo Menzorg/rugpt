@@ -23,8 +23,7 @@ from .result import AgentResult
 from .runtime import RuntimeContext
 from .tools.registry import ToolRegistry
 from .graphs.simple import run_simple_agent
-from .graphs.chain import run_chain_agent
-from .graphs.multi_agent import run_multi_agent
+from .graphs.supervisor import run_supervisor_agent
 
 if TYPE_CHECKING:
     from ..services.memory_service import MemoryService
@@ -48,8 +47,7 @@ class AgentExecutor:
 
     Routes requests to the appropriate graph based on role.agent_type:
     - "simple": direct LLM or ReAct agent (if tools present)
-    - "chain": sequential steps from agent_config["steps"]
-    - "multi_agent": LangGraph StateGraph from agent_config["graph"]
+    - "supervisor"/"multi_agent": LangGraph supervisor graph
     """
 
     def __init__(
@@ -71,17 +69,25 @@ class AgentExecutor:
         self.memory_service = memory_service
         self.correction_rule_service: Optional["CorrectionRuleService"] = None
 
-    def _create_llm(self, model: str, temperature: float = 0.7, max_tokens: int = 4096) -> ChatOpenAI:
+    def _create_llm(
+        self,
+        model: str,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        model_kwargs: Optional[dict] = None,
+    ) -> ChatOpenAI:
         """Create a ChatOpenAI instance pointed at the LiteLLM proxy."""
-        return ChatOpenAI(
-            base_url=self.base_url,
-            api_key=self.api_key,
-            model=model,
-            temperature=temperature,
-            timeout=self.timeout,
-            model_kwargs={"parallel_tool_calls": True}
-            #max_tokens=max_tokens,
-        )
+        kwargs = {
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "model": model,
+            "temperature": temperature,
+            "timeout": self.timeout,
+            # "max_tokens": max_tokens,
+        }
+        if model_kwargs is not None:
+            kwargs["model_kwargs"] = model_kwargs
+        return ChatOpenAI(**kwargs)
 
     async def _build_chat_attachments_block(
         self,
@@ -114,13 +120,41 @@ class AgentExecutor:
             return None
         return f"Вложения чата (последние {limit}):\n" + "\n".join(attachment_lines)
 
+    async def _build_user_info_block(
+        self,
+        engine: Any,
+        user: Any,
+        title: str,
+        attachments_block: Optional[str] = None,
+    ) -> str:
+        """Build injected user identity context."""
+        user_lines = [
+            f"ID: {user.id}",
+            f"Имя: {user.name}",
+            f"Логин: @{user.username}",
+            f"Email: {user.email}" if user.email else None,
+            f"Администратор: да" if user.is_admin else "Администратор: нет",
+        ]
+        if user.department_id:
+            dept = await engine.department_storage.get_by_id(user.department_id)
+            if dept:
+                user_lines.append(f"Отдел: {dept.name}")
+                user_lines.append(f"Руководитель отдела: {'да' if user.is_head else 'нет'}")
+        if attachments_block:
+            user_lines.append(attachments_block)
+        block = f"{title}:\n" + "\n".join(line for line in user_lines if line)
+        block += "\nНе раскрывать пользователю его ID."
+        return block
+
     async def execute(
         self,
         role: Role,
         messages: List[dict],
+        caller_user_id: UUID,
+        callee_user_id: Optional[UUID] = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
-        user_id: Optional[UUID] = None,
+        max_tokens: int = 2048, # For now it breaks tool calls if set too low, so keeping it high and relying on individual tool limits and HistoryCompactionMiddleware to control token usage.
+        invocation_kind: str = "direct",
         chat_id: Optional[UUID] = None,
     ) -> AgentResult:
         """
@@ -131,7 +165,9 @@ class AgentExecutor:
             messages: Conversation as [{"role": "user"/"assistant", "content": "..."}]
             temperature: Sampling temperature
             max_tokens: Max tokens in response
-            user_id: User ID for RAG scope (owner of the conversation)
+            caller_user_id: User ID that triggered the agent run
+            callee_user_id: Mentioned/responding user ID for mention calls; defaults to caller when absent
+            invocation_kind: "direct" or "mention"
 
         Returns:
             AgentResult with response
@@ -141,35 +177,42 @@ class AgentExecutor:
         # Fetch org_context for message injection
         from ..services.engine_service import get_engine_service
         engine = get_engine_service()
+        if invocation_kind != "mention" or callee_user_id is None:
+            invocation_kind = "direct"
+        # In direct calls callee == caller so tools always have a valid target without None checks.
+        effective_callee_user_id = callee_user_id if invocation_kind == "mention" else caller_user_id
 
         # Resolve the INITIATOR's org — that's the scope tools should operate in.
-        # role.org_id is typically the RuGPT system org for cross-org roles (PM,
-        # reasoner, doc_search, web_search) and would point tools at the wrong
-        # place (no real users / files there). Fall back to role.org_id only
-        # when there is no initiator (e.g. scheduler-driven calls).
+        # so tools don't try to run in system org scope because role_org for system roles is 00000000-0000-0000-0000-000000000000.
         scope_org_id = role.org_id
-        initiator = None
-        if user_id is not None:
-            initiator = await engine.user_storage.get_by_id(user_id)
-            if initiator and initiator.org_id:
-                scope_org_id = initiator.org_id
+        initiator = await engine.user_storage.get_by_id(caller_user_id)
+        if initiator and initiator.org_id:
+            scope_org_id = initiator.org_id
 
         org = await engine.org_storage.get_by_id(scope_org_id)
         org_context = org.org_context if org else ""
         system_prompt = self.prompt_cache.get_prompt(role)
         tools, tools_doc = self.tool_registry.resolve(role.tools) if role.tools else ([], "")
         system_prompt = system_prompt.replace("{tools}", tools_doc)
-        llm = self._create_llm(model, temperature)
+        llm = self._create_llm(
+            model,
+            temperature,
+            model_kwargs=(
+                {"parallel_tool_calls": role.agent_type != "supervisor"} # Supervisors are not allowed to call tools in parallel to not create whole swarm of agents at once
+            ),
+        )
         
         runtime_context = RuntimeContext()
         runtime_context.available_tools_count = len(tools)
 
-        # RunnableConfig carries initiator's org_id/user_id for tools.
+        # RunnableConfig carries initiator/called identity for tools.
         config = RunnableConfig(
             max_concurrency=2,
             configurable={
                 "org_id": str(scope_org_id) if scope_org_id else "",
-                "user_id": str(user_id) if user_id else "",
+                "caller_user_id": str(caller_user_id),
+                "callee_user_id": str(effective_callee_user_id),
+                "invocation_kind": invocation_kind,
                 "is_admin": bool(initiator.is_admin) if initiator else False,
             },
         )
@@ -223,57 +266,60 @@ class AgentExecutor:
         _is_qwen = "qwen" in model.lower()
         _inject_role = "user" if _is_qwen else "assistant"
 
-        injected_messages: list[dict] = []
+        context_blocks: list[str] = []
 
-        if user_id is not None and initiator:
-            user_lines = [
-                f"ID: {initiator.id}",
-                f"Имя: {initiator.name}",
-                f"Логин: @{initiator.username}",
-                f"Email: {initiator.email}" if initiator.email else None,
-                f"Администратор: да" if initiator.is_admin else "Администратор: нет",
-            ]
-            if initiator.department_id:
-                dept = await engine.department_storage.get_by_id(initiator.department_id)
-                if dept:
-                    user_lines.append(f"Отдел: {dept.name}")
-                    user_lines.append(f"Руководитель отдела: {'да' if initiator.is_head else 'нет'}")
+        if initiator:
+            attachments_block = None
             if chat_id is not None:
                 attachments_block = await self._build_chat_attachments_block(engine, chat_id)
-                if attachments_block:
-                    user_lines.append(attachments_block)
-            user_block = "Информация о пользователе:\n" + "\n".join(l for l in user_lines if l)
-            user_block += "\nНе раскрывать пользователю его ID."
-            injected_messages.append({"role": _inject_role, "content": user_block})
+            user_block = await self._build_user_info_block(
+                engine,
+                initiator,
+                "Информация о пользователе, который произвёл вызов (caller)",
+                attachments_block=attachments_block,
+            )
+            context_blocks.append(user_block)
+
+        if invocation_kind == "mention":
+            callee = await engine.user_storage.get_by_id(effective_callee_user_id)
+            if callee:
+                callee_block = await self._build_user_info_block(
+                    engine,
+                    callee,
+                    "Информация о пользователе, которому адресован вызов (callee)",
+                )
+                context_blocks.append(callee_block)
 
         if org_context:
-            injected_messages.append({"role": _inject_role, "content": f"Контекст организации:\n{org_context}"})
+            context_blocks.append(f"Контекст организации:\n{org_context}")
             logger.info("org_context: prepared injected message for org=%s", scope_org_id)
 
         if summary:
-            injected_messages.append({
-                "role": "user" if _is_qwen else _inject_role,
-                "content": f"Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n{summary}",
-            })
+            context_blocks.append(
+                f"Сводка истории диалога (нумерация пунктов по возрастающей давности информации):\n{summary}"
+            )
             logger.info("memory: prepared summary injected message for chat=%s", chat_id)
             system_prompt += _MEMORY_PROMPT_BLOCK
 
-        if injected_messages:
-            messages = injected_messages + messages
+        context_block = "\n\n".join(context_blocks)
+        if context_block:
+            messages = [
+                {
+                    "role": "user" if _is_qwen else _inject_role,
+                    "content": f"<context>\n{context_block}\n</context>",
+                }
+            ] + messages
 
         if lessons:
             # Inject corrections 
             rules_block = "\n".join(f"- {lesson}" for lesson in lessons)
-            system_prompt += f"\n\n## Инструкции в частных случаях:\n{rules_block}"
+            system_prompt += f"\n\n## Корректировки поведения со стороны пользователя по предыдущим подобным обращениям:\n{rules_block}"
             logger.info("corrections: injected %d lessons for chat=%s", len(lessons), chat_id)
 
-        # Guardrails so roles don't mix in same chat is user mentions multiple
+        # Final postfix for all prompts
         system_prompt += (
             "\n\n##ВАЖНЫЕ ОГРАНИЧЕНИЯ\n"
-            "Запрещены любые служебные фразы о процессе работы агента: о начале, продолжении, переходе к этапу, проверке, поиске, анализе, обработке документов, заполнении категорий или будущих действиях.\n"
-            "Если задача требует использования инструмента, сначала вызови инструмент. "
-            "Не пиши пользователю промежуточный текст перед вызовом инструмента. "
-            "Любое текстовое сообщение пользователю считается финальным ответом текущей итерации.\n"
+            "Любое текстовое сообщение пользователю считается финальным ответом текущего обращения.\n"
             "У тебя есть конкретный точный набор инструментов. Не выдумывай себе функционал. Тебе запрещено говорить пользователю, что ты умеешь делать то, что явно не позволяют твои инструменты."
         )
 
@@ -315,7 +361,7 @@ class AgentExecutor:
                 "rag_search tool call limit: run_limit=%d",
                 _RAG_SEARCH_TOOL_CALL_LIMIT,
             )
-        for list_tool_name in ("list_global_documents", "list_private_documents"):
+        for list_tool_name in ("list_documents", "list_own_documents"):
             if any(tool.name == list_tool_name for tool in tools):
                 agent_middleware.append(
                     ToolCallLimitMiddleware(
@@ -353,27 +399,19 @@ class AgentExecutor:
                     context_schema=runtime_context,
                     middleware=agent_middleware,
                 )
-
-            elif role.agent_type == "chain":
-                result = await run_chain_agent(
+            elif role.agent_type in {"supervisor"}:
+                result = await run_supervisor_agent(
                     llm=llm,
                     system_prompt=system_prompt,
                     messages=messages,
-                    agent_config=role.agent_config,
+                    supervisor_role=role,
                     tools=tools if tools else None,
                     config=config,
-                )
-
-            elif role.agent_type == "multi_agent":
-                result = await run_multi_agent(
-                    llm=llm,
-                    system_prompt=system_prompt,
-                    messages=messages,
+                    context_schema=runtime_context,
+                    middleware=agent_middleware,
                     agent_config=role.agent_config,
-                    tools=tools if tools else None,
-                    config=config,
+                    subagent_context=context_block,
                 )
-
             else:
                 logger.warning(f"Unknown agent_type '{role.agent_type}', falling back to simple")
                 result = await run_simple_agent(

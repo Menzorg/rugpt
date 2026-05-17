@@ -7,6 +7,7 @@ from .base import BaseStorage
 from .org_storage import OrgStorage
 from .user_storage import UserStorage
 from .role_storage import RoleStorage
+from .role_subagent_storage import RoleSubagentStorage
 from .chat_storage import ChatStorage
 from .message_storage import MessageStorage
 from .calendar_storage import CalendarStorage
@@ -18,6 +19,7 @@ __all__ = [
     'OrgStorage',
     'UserStorage',
     'RoleStorage',
+    'RoleSubagentStorage',
     'ChatStorage',
     'MessageStorage',
     'CalendarStorage',

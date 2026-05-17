@@ -7,6 +7,7 @@ from .engine_service import EngineService
 from .org_service import OrgService
 from .users_service import UsersService
 from .roles_service import RolesService
+from .role_subagent_service import RoleSubagentService
 from .chat_service import ChatService
 from .mention_service import MentionService
 from .prompt_cache import PromptCache
@@ -19,6 +20,7 @@ __all__ = [
     'OrgService',
     'UsersService',
     'RolesService',
+    'RoleSubagentService',
     'ChatService',
     'MentionService',
     'PromptCache',

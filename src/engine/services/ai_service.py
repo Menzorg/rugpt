@@ -370,10 +370,18 @@ class AIService:
             strip_username,
             responder_id=responder_id,
         )
+        is_mention_call = self._is_mention_call(message, responder_id)
 
         # Generate
         try:
-            response_content = await self._call_llm(role, conv_messages, user_id=message.sender_id, chat_id=message.chat_id)
+            response_content = await self._call_llm(
+                role,
+                conv_messages,
+                caller_user_id=message.sender_id,
+                callee_user_id=responder_id if is_mention_call else None,
+                invocation_kind="mention" if is_mention_call else "direct",
+                chat_id=message.chat_id,
+            )
             if response_content is None:
                 return None
 
@@ -424,7 +432,22 @@ class AIService:
         logger.warning(f"User {responder_label} has no role assigned — @@-mention silently dropped")
         return None
 
-    async def _call_llm(self, role: Role, conv_messages: List[dict], user_id: Optional[UUID] = None, chat_id: Optional[UUID] = None) -> Optional[str]:
+    def _is_mention_call(self, message: Message, responder_id: UUID) -> bool:
+        """True when this response is caused by an AI-role mention of responder_id."""
+        return any(
+            mention.type == MentionType.AI_ROLE and mention.user_id == responder_id
+            for mention in (message.mentions or [])
+        )
+
+    async def _call_llm(
+        self,
+        role: Role,
+        conv_messages: List[dict],
+        caller_user_id: UUID,
+        callee_user_id: Optional[UUID] = None,
+        invocation_kind: str = "direct",
+        chat_id: Optional[UUID] = None,
+    ) -> Optional[str]:
         """Call LLM via AgentExecutor."""
         if not self.agent_executor:
             logger.error("AIService has no agent_executor — cannot generate response")
@@ -433,8 +456,9 @@ class AIService:
             role=role,
             messages=conv_messages,
             temperature=0.3,
-            max_tokens=256,
-            user_id=user_id,
+            caller_user_id=caller_user_id,
+            callee_user_id=callee_user_id,
+            invocation_kind=invocation_kind,
             chat_id=chat_id,
         )
         if result.finish_reason == "error":
@@ -628,7 +652,7 @@ class AIService:
             messages=[{"role": "user", "content": user_input}],
             temperature=0.5,
             max_tokens=1024,
-            user_id=poll.assignee_user_id,
+            caller_user_id=poll.assignee_user_id,
         )
 
         if not (result and result.content and result.content.strip()):
@@ -750,7 +774,7 @@ class AIService:
             messages=[{"role": "user", "content": user_input}],
             temperature=0.3,
             max_tokens=2048,
-            user_id=poll.assignee_user_id,
+            caller_user_id=poll.assignee_user_id,
         )
 
         if not (result and result.content and result.content.strip()):

@@ -149,9 +149,10 @@ Base URL: `http://127.0.0.1:8100/api/v1`
 - Роли — предсозданы через миграции/seed, CRUD через API убран
 - Промпты в файлах (`src/engine/prompts/*.md`), не в БД — git-версионирование
 - PromptCache — in-memory кеш, сброс через admin API без рестарта
-- AgentExecutor — маршрутизация по `role.agent_type` (simple/chain/multi_agent)
-- ToolRegistry — реестр инструментов (calendar, task, rag, web, role_call)
-- LangChain (ChatOllama) + LangGraph (StateGraph) для оркестрации
+- AgentExecutor — маршрутизация по `role.agent_type` (simple/supervisor)
+- Supervisor graph — multiagent-оркестрация через роли-сабагенты и handoff-инструменты
+- ToolRegistry — реестр инструментов (calendar, task, rag, web, role_call, list_documents, expand_chunk, table_rows, user, analyze_image, list_roles)
+- LangChain (ChatOpenAI → LiteLLM proxy) + LangGraph (StateGraph) для оркестрации
 
 ### Календарь + Планировщик
 

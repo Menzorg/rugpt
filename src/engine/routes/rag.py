@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.engine.unified_logger import get_logger
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -33,13 +34,26 @@ async def ingest_doc(
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
 
 @router.delete("/docs/{file_id}")
-async def delete_doc(
+async def delete_chunks(
     file_id: str,
     current_user: dict = Depends(get_current_user),
 ) -> dict[str, str]:
     engine = get_engine_service()
     try:
-        deleted = await engine.rag_store.delete_document(file_id=file_id)
+        file_uuid = UUID(file_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid file_id")
+
+    file_record = await engine.file_service.get(file_uuid)
+    if not file_record:
+        raise HTTPException(status_code=404, detail="File not found")
+    if file_record.org_id != current_user["org_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if file_record.user_id != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="Only the file owner can delete RAG data")
+
+    try:
+        deleted = await engine.rag_store.delete_chunks(file_id=str(file_uuid))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Database delete failed: {exc}") from exc
 
@@ -85,6 +99,8 @@ async def retry_ingestion(
 async def find_docs(
     query: str = Query(..., min_length=1),
     top_k: int = Query(5, gt=0),
+    filter_user_id: UUID | None = Query(None, alias="user_id"),
+    search_mode: Literal["concrete", "abstract"] = Query("abstract"),
     current_user: dict = Depends(get_current_user),
 ) -> list[RelatedDoc]:
     engine = get_engine_service()
@@ -94,6 +110,9 @@ async def find_docs(
             user_id=current_user["user_id"],
             query=query,
             top_k=top_k,
+            is_admin=bool(current_user.get("is_admin", False)),
+            filter_user_id=str(filter_user_id) if filter_user_id else None,
+            search_mode=search_mode,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Find docs failed: {exc}") from exc

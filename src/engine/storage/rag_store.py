@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import UUID
 
 from .base import BaseStorage
 from ..models.rag import ChunkRow, ChunkSearchResult, RelatedDoc
@@ -10,6 +11,18 @@ from ..models.rag import ChunkRow, ChunkSearchResult, RelatedDoc
 def _to_pgvector(values: list[float]) -> str:
     # asyncpg expects vector input as textual literal for pgvector casts.
     return "[" + ",".join(f"{v:.10f}" for v in values) + "]"
+
+
+def _as_uuid(value: Any) -> UUID:
+    """Normalize asyncpg UUID or text values to UUID."""
+    return value if isinstance(value, UUID) else UUID(str(value))
+
+
+def _as_optional_uuid(value: Any) -> UUID | None:
+    """Normalize nullable asyncpg UUID or text values to UUID."""
+    if value is None:
+        return None
+    return _as_uuid(value)
 
 
 class RAG_store(BaseStorage):
@@ -24,7 +37,7 @@ class RAG_store(BaseStorage):
                 f"Embedding size {len(embedding)} does not match VECTOR_DIM={self._vector_dim}."
             )
 
-    async def update_user_file_rag_data(
+    async def update_user_file_summary(
         self,
         file_id: str,
         summary: str,
@@ -52,6 +65,8 @@ class RAG_store(BaseStorage):
             _to_pgvector(summary_embedding),
         )
 
+    # -- CHUNK INGESTION --
+
     def _build_chunk_rows(
         self, file_id: str, chunks: list[str], embeddings: list[list[float]]
     ) -> list[tuple[Any, ...]]:
@@ -74,14 +89,11 @@ class RAG_store(BaseStorage):
             )
         return rows
 
-    async def insert_document_with_chunks(
+    async def insert_chunks_and_update_document_summary(
         self,
         file_id: str,
-        doc_title: str,
         summary: str,
         summary_embedding: list[float],
-        org_id: str,
-        user_id: str | None,
         chunks: list[str],
         chunk_embeddings: list[list[float]],
     ) -> None:
@@ -95,7 +107,7 @@ class RAG_store(BaseStorage):
         await self.init()
 
         # 1. Persist RAG fields into user_files (primary document table)
-        await self.update_user_file_rag_data(
+        await self.update_user_file_summary(
             file_id=file_id,
             summary=summary,
             summary_embedding=summary_embedding,
@@ -129,14 +141,11 @@ class RAG_store(BaseStorage):
             )
         return rows
 
-    async def insert_table_document_with_rows(
+    async def insert_rows_chunks_and_update_table_summary(
         self,
         file_id: str,
-        doc_title: str,
         summary: str,
         summary_embedding: list[float],
-        org_id: str,
-        user_id: str | None,
         rows_text: list[str],
         row_embeddings: list[list[float]],
     ) -> None:
@@ -154,7 +163,7 @@ class RAG_store(BaseStorage):
         await self.init()
 
         # 1. Persist RAG fields; is_table already set during upload
-        await self.update_user_file_rag_data(
+        await self.update_user_file_summary(
             file_id=file_id,
             summary=summary,
             summary_embedding=summary_embedding,
@@ -169,7 +178,7 @@ class RAG_store(BaseStorage):
         for row in table_rows:
             await self.execute(table_rows_sql, *row)
 
-    async def delete_document(self, file_id: str) -> bool:
+    async def delete_chunks(self, file_id: str) -> bool:
         """Deindex a file: delete its chunks/rows and reset RAG fields in user_files."""
         await self.init()
         await self.execute("DELETE FROM chunks WHERE file_id = $1::uuid", file_id)
@@ -193,9 +202,9 @@ class RAG_store(BaseStorage):
         rows = await self.fetch(
             """
             SELECT
-                id::text AS file_id,
-                org_id::text,
-                user_id::text,
+                id AS file_id,
+                org_id,
+                user_id,
                 original_filename AS doc_title,
                 summary,
                 created_at AS uploaded_at,
@@ -211,11 +220,11 @@ class RAG_store(BaseStorage):
             return None
         row = rows[0]
         return RelatedDoc(
-            file_id=row["file_id"],
-            org_id=row["org_id"],
-            user_id=row["user_id"],
+            file_id=_as_uuid(row["file_id"]),
+            org_id=_as_uuid(row["org_id"]),
+            user_id=_as_optional_uuid(row["user_id"]),
             doc_title=row["doc_title"],
-            summary=row["summary"],
+            summary=row["summary"] or "",
             uploaded_at=row["uploaded_at"],
             created_at=row["created_at"],
             vec_dist=None,
@@ -230,15 +239,19 @@ class RAG_store(BaseStorage):
         query: str,
         query_embedding: list[float],
         top_k: int,
+        is_admin: bool = False,
+        filter_user_id: str | None = None,
+        exclude_images: bool = True,
+        search_mode: str = "abstract",
     ) -> list[RelatedDoc]:
         """Call SQL function search_related_docs for doc-level retrieval."""
         self._validate_embedding(query_embedding)
         await self.init()
         sql = """
             SELECT
-                doc_id::text AS file_id,
-                org_id::text,
-                user_id::text,
+                doc_id AS file_id,
+                org_id,
+                user_id,
                 doc_title,
                 summary,
                 uploaded_at,
@@ -251,17 +264,32 @@ class RAG_store(BaseStorage):
                 $2::uuid,
                 $3,
                 $4::vector,
-                $5
+                $5,
+                $6::boolean,
+                $7::uuid,
+                $8::boolean,
+                $9::text
             )
         """
-        rows = await self.fetch(sql, org_id, user_id, query, _to_pgvector(query_embedding), top_k)
+        rows = await self.fetch(
+            sql,
+            org_id,
+            user_id,
+            query,
+            _to_pgvector(query_embedding),
+            top_k,
+            is_admin,
+            filter_user_id,
+            exclude_images,
+            search_mode,
+        )
         return [
             RelatedDoc(
-                file_id=row["file_id"],
-                org_id=row["org_id"],
-                user_id=row["user_id"],
+                file_id=_as_uuid(row["file_id"]),
+                org_id=_as_uuid(row["org_id"]),
+                user_id=_as_optional_uuid(row["user_id"]),
                 doc_title=row["doc_title"],
-                summary=row["summary"],
+                summary=row["summary"] or "",
                 uploaded_at=row["uploaded_at"],
                 created_at=row["created_at"],
                 vec_dist=row["vec_dist"],
@@ -283,8 +311,8 @@ class RAG_store(BaseStorage):
         await self.init()
         sql = """
             SELECT
-                item_id::text  AS chunk_id,
-                doc_id::text   AS file_id,
+                item_id AS chunk_id,
+                doc_id AS file_id,
                 text_content   AS chunk_text,
                 chunk_index,
                 vec_dist,
@@ -304,8 +332,8 @@ class RAG_store(BaseStorage):
         rows = await self.fetch(sql, file_id, query, _to_pgvector(query_embedding), top_k)
         return [
             ChunkSearchResult(
-                chunk_id=row["chunk_id"],
-                file_id=row["file_id"],
+                chunk_id=_as_uuid(row["chunk_id"]),
+                file_id=_as_uuid(row["file_id"]),
                 chunk_text=row["chunk_text"],
                 chunk_index=row["chunk_index"],
                 vec_dist=row["vec_dist"],
@@ -329,8 +357,8 @@ class RAG_store(BaseStorage):
         rows = await self.fetch(
             """
             SELECT
-                id::text AS id,
-                file_id::text AS file_id,
+                id,
+                file_id,
                 chunk_text,
                 metadata,
                 chunk_index
@@ -346,8 +374,8 @@ class RAG_store(BaseStorage):
         )
         return [
             ChunkRow(
-                id=row["id"],
-                file_id=row["file_id"],
+                id=_as_uuid(row["id"]),
+                file_id=_as_uuid(row["file_id"]),
                 chunk_text=row["chunk_text"],
                 metadata=row["metadata"] or {},
                 chunk_index=row["chunk_index"],
@@ -366,8 +394,8 @@ class RAG_store(BaseStorage):
         rows = await self.fetch(
             """
             SELECT
-                id::text   AS chunk_id,
-                file_id::text,
+                id AS chunk_id,
+                file_id,
                 row_text   AS chunk_text,
                 row_index
             FROM tables_rows_chunks
@@ -381,8 +409,8 @@ class RAG_store(BaseStorage):
         )
         return [
             ChunkSearchResult(
-                chunk_id=row["chunk_id"],
-                file_id=row["file_id"],
+                chunk_id=_as_uuid(row["chunk_id"]),
+                file_id=_as_uuid(row["file_id"]),
                 chunk_text=row["chunk_text"],
                 chunk_index=None,
                 vec_dist=None,
@@ -408,8 +436,8 @@ class RAG_store(BaseStorage):
         await self.init()
         sql = """
             SELECT
-                item_id::text  AS chunk_id,
-                doc_id::text   AS file_id,
+                item_id AS chunk_id,
+                doc_id AS file_id,
                 text_content   AS chunk_text,
                 chunk_index,
                 vec_dist,
@@ -435,8 +463,8 @@ class RAG_store(BaseStorage):
         )
         return [
             ChunkSearchResult(
-                chunk_id=row["chunk_id"],
-                file_id=row["file_id"],
+                chunk_id=_as_uuid(row["chunk_id"]),
+                file_id=_as_uuid(row["file_id"]),
                 chunk_text=row["chunk_text"],
                 chunk_index=row["chunk_index"],
                 vec_dist=row["vec_dist"],

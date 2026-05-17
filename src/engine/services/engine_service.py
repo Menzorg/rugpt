@@ -12,6 +12,7 @@ from ..config import Config
 from ..storage.org_storage import OrgStorage
 from ..storage.user_storage import UserStorage
 from ..storage.role_storage import RoleStorage
+from ..storage.role_subagent_storage import RoleSubagentStorage
 from ..storage.chat_storage import ChatStorage
 from ..storage.message_storage import MessageStorage
 from ..storage.message_attachment_storage import MessageAttachmentStorage
@@ -61,6 +62,7 @@ from .department_service import DepartmentService
 from .rag_service import RAGService
 from .support_notification_service import SupportNotificationService
 from .support_ticket_service import SupportTicketService
+from .role_subagent_service import RoleSubagentService
 from ..storage.rag_store import RAG_store
 from ..notifications.telegram_sender import TelegramSender
 from ..notifications.email_sender import EmailSender
@@ -88,6 +90,7 @@ class EngineService:
         self.org_storage = OrgStorage(self.postgres_dsn)
         self.user_storage = UserStorage(self.postgres_dsn)
         self.role_storage = RoleStorage(self.postgres_dsn)
+        self.role_subagent_storage = RoleSubagentStorage(self.postgres_dsn)
         self.chat_storage = ChatStorage(self.postgres_dsn)
         self.message_storage = MessageStorage(self.postgres_dsn)
         self.message_attachment_storage = MessageAttachmentStorage(self.postgres_dsn)
@@ -121,6 +124,9 @@ class EngineService:
 
         # Initialize calendar service
         self.calendar_service = CalendarService(self.calendar_storage)
+
+        # Initialize supervisor subagent mapping service
+        self.role_subagent_service = RoleSubagentService(self.role_subagent_storage)
 
         # Initialize department service
         self.department_service = DepartmentService(self.department_storage, self.user_storage)
@@ -267,7 +273,7 @@ class EngineService:
         from ..agents.tools.table_rows_tool import table_rows_search
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
-        from ..agents.tools.list_documents import list_global_documents, list_private_documents
+        from ..agents.tools.list_documents import list_documents, list_own_documents
         from ..agents.tools.user_tool import create_user_tools
         from ..agents.tools.analyze_image import create_analyze_image_tool
 
@@ -275,7 +281,7 @@ class EngineService:
         cal_create_tool, cal_query_tool = create_calendar_tools(self.calendar_service)
 
         # Create task tools wired to TaskService
-        task_create_tool, task_query_tool, task_update_tool, task_deadline_proposal_tool = create_task_tools(self.task_service)
+        task_create_tool, task_query_tool, task_update_tool, task_deadline_proposal_tool, get_own_tasks_tool = create_task_tools(self.task_service)
         expand_chunk_tool = create_expand_chunk_tool(self.rag_service, self.user_file_storage)
         analyze_image_tool = create_analyze_image_tool(
             self.user_file_storage,
@@ -290,13 +296,14 @@ class EngineService:
         self.tool_registry.register("task_query", task_query_tool)
         self.tool_registry.register("task_update", task_update_tool)
         self.tool_registry.register("task_deadline_proposal", task_deadline_proposal_tool)
+        self.tool_registry.register("get_own_tasks", get_own_tasks_tool)
         self.tool_registry.register("rag_search", rag_search)
         self.tool_registry.register("expand_chunk", expand_chunk_tool)
         self.tool_registry.register("table_rows_search", table_rows_search)
         self.tool_registry.register("web_search", web_search)
         self.tool_registry.register("role_call", role_call)
-        self.tool_registry.register("list_global_documents", list_global_documents)
-        self.tool_registry.register("list_private_documents", list_private_documents)
+        self.tool_registry.register("list_documents", list_documents)
+        self.tool_registry.register("list_own_documents", list_own_documents)
         self.tool_registry.register("analyze_image", analyze_image_tool)
 
         (user_search_tool,) = create_user_tools(
@@ -422,6 +429,7 @@ class EngineService:
         await self.org_storage.init()
         await self.user_storage.init()
         await self.role_storage.init()
+        await self.role_subagent_storage.init()
         await self.chat_storage.init()
         await self.message_storage.init()
         await self.message_attachment_storage.init()
@@ -489,6 +497,7 @@ class EngineService:
         await self.org_storage.close()
         await self.user_storage.close()
         await self.role_storage.close()
+        await self.role_subagent_storage.close()
         await self.chat_storage.close()
         await self.message_storage.close()
         await self.message_attachment_storage.close()

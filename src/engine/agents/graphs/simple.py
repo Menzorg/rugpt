@@ -81,9 +81,6 @@ async def run_simple_agent(
         elif role == "assistant":
             lc_messages.append({"role": "assistant", "content": content})
         # system messages already handled above
-
-    _reasoning_cb = ReasoningLoggerCallback()
-    config.setdefault("callbacks", []).append(_reasoning_cb)
     
     if not tools:
         # Direct LLM call — no tools, no agent overhead
@@ -187,7 +184,6 @@ async def _react_agent_call(
         output_messages = result.get("messages", [])
         tool_calls = []
         final_content = ""
-        grand_total = 0
 
         for msg in output_messages:
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
@@ -200,13 +196,11 @@ async def _react_agent_call(
             if hasattr(msg, 'content') and msg.type == "ai" and not getattr(msg, 'tool_calls', None):
                 final_content = msg.content
 
-            # Accumulate token usage from every AI message in the trace
-            if hasattr(msg, 'usage_metadata') and msg.type == "ai":
-                step_label = f"simple.react_step[tool={'yes' if getattr(msg, 'tool_calls', None) else 'no'}]"
-                spent = log_llm_tokens(msg, label=step_label, logger=logger, running_total=grand_total)
-                grand_total += spent
-
-        log_token_summary("simple.react_agent_call", grand_total, logger=logger)
+        grand_total = log_token_summary(
+            "simple.react_agent_call",
+            logger=logger,
+            messages=output_messages,
+        )
 
         # If we didn't find a clean final message, use the last message
         if not final_content and output_messages:
