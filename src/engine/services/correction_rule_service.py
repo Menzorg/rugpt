@@ -254,6 +254,7 @@ class CorrectionRuleService:
         user_prompt: str,
         memory_text: str,
         top_k: int = 3,
+        role_id: Optional[UUID] = None,
     ) -> List[CorrectionRule]:
         """Search correction rules by semantic similarity to a user prompt and memory string."""
         embedding_extra_body = build_initial_extra_body(
@@ -269,11 +270,19 @@ class CorrectionRuleService:
             memory_text,
             extra_body=embedding_extra_body,
         )
-        return await self.correction_rule_storage.search_by_embeddings(
+        rules = await self.correction_rule_storage.search_by_embeddings(
             mem_embedding=mem_embedding,
             user_message_embedding=user_embedding,
             top_k=top_k,
+            role_id=role_id,
         )
+        logger.info(
+            "correction rules search returned %d rules",
+            len(rules),
+            role_id=role_id,
+            top_k=top_k,
+        )
+        return rules
 
     async def get_rules_for_role(self, role_id: UUID, active_only: bool = True) -> List[CorrectionRule]:
         """Get correction rules for a role."""

@@ -218,6 +218,7 @@ class AgentExecutor:
         chat_id: Optional[UUID],
         messages: List[dict],
         memory_text: str,
+        role_id: Optional[UUID],
     ) -> str:
         """Search correction rules and return a formatted system-prompt block."""
         if chat_id is None or self.correction_rule_service is None or not messages:
@@ -237,12 +238,22 @@ class AgentExecutor:
             rules = await self.correction_rule_service.search_corrections(
                 user_prompt=last_content,
                 memory_text=memory_text or last_content,
+                role_id=role_id,
             )
             lessons = [r.extracted_lesson for r in rules if r.extracted_lesson]
             if lessons:
-                logger.info("corrections: found %d lessons for chat=%s", len(lessons), chat_id)
+                logger.info(
+                    "corrections: found %d rules, %d usable lessons for chat=%s",
+                    len(rules),
+                    len(lessons),
+                    chat_id,
+                )
             else:
-                logger.info("corrections: no lessons found for chat=%s", chat_id)
+                logger.info(
+                    "corrections: found %d rules, 0 usable lessons for chat=%s",
+                    len(rules),
+                    chat_id,
+                )
                 return ""
         except Exception:
             logger.exception("corrections: search failed for chat=%s", chat_id)
@@ -401,6 +412,7 @@ class AgentExecutor:
             chat_id,
             messages,
             summary,
+            role.id,
         )
         caller_block, callee_block = await self._build_caller_callee_blocks(
             engine,

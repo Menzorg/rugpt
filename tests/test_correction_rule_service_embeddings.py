@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
@@ -21,10 +22,15 @@ async def test_search_corrections_passes_correlation_id_as_litellm_session_id():
     service._embeddings = FakeEmbeddings()
     service.correction_rule_storage = AsyncMock()
     service.correction_rule_storage.search_by_embeddings = AsyncMock(return_value=[])
+    role_id = uuid4()
 
     token = bind_correlation_id("corr-emb-1")
     try:
-        await service.search_corrections("user prompt", "memory text")
+        await service.search_corrections(
+            "user prompt",
+            "memory text",
+            role_id=role_id,
+        )
     finally:
         correlation_id_var.reset(token)
 
@@ -37,3 +43,10 @@ async def test_search_corrections_passes_correlation_id_as_litellm_session_id():
                 "chatid": "",
             },
         }
+
+    service.correction_rule_storage.search_by_embeddings.assert_awaited_once_with(
+        mem_embedding=[1.0, 2.0, 3.0],
+        user_message_embedding=[1.0, 2.0, 3.0],
+        top_k=3,
+        role_id=role_id,
+    )
