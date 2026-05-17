@@ -642,3 +642,36 @@ CREATE TABLE tables_rows_chunks (
 | 016 | task_ownership.sql | tasks.created_by_user_id, awaiting_review_at, proposed_deadline, proposed_deadline_by (item 9) |
 | 017 | projects_and_task_chats.sql | projects, task_events, tasks.project_id, chats.task_id/project_id, legacy main/group→direct (item 11) |
 | 018 | pm_role_and_agent_runs.sql | PM role + system user `pm`, agent_runs таблица для async idempotency (item 10) |
+| 037 | user_file_folders.sql | user_file_folders table (personal folders, adjacency list, NULLS NOT DISTINCT unique name per parent), user_files.folder_id column |
+
+---
+
+## UserFileFolderStorage
+
+**Файл:** `src/engine/storage/user_file_folder_storage.py`
+
+PostgreSQL CRUD для `user_file_folders` (личные папки файлов). Adjacency list, soft-delete через `is_active`.
+
+```python
+class UserFileFolderStorage(BaseStorage):
+    async def create(folder: UserFileFolder) -> UserFileFolder  # raises UniqueViolationError on dup name
+    async def get_by_id(folder_id: UUID) -> Optional[UserFileFolder]
+    async def list_by_user(user_id: UUID) -> List[UserFileFolder]
+    async def list_children(user_id: UUID, parent_folder_id: Optional[UUID]) -> List[UserFileFolder]
+    async def list_subtree_ids(folder_id: UUID) -> Set[UUID]       # recursive CTE, includes self
+    async def deactivate_subtree(folder_id: UUID) -> List[UUID]    # cascade soft-delete
+    async def update(folder: UserFileFolder) -> Optional[UserFileFolder]
+    async def get_depth(folder_id: UUID) -> Optional[int]          # walk up via parent_folder_id
+    async def get_subtree_max_depth(folder_id: UUID) -> int        # walk down to deepest descendant
+```
+
+Recursive CTE'ы защищены hard-cap `depth < 20`.
+
+**Изменения в `UserFileStorage`** (расширение существующего):
+- `create()` — INSERT включает `folder_id`
+- `_row_to_file()` — читает `folder_id` (guard `if "folder_id" in keys`)
+- `list_by_user_in_folder(user_id, folder_id)` — `IS NOT DISTINCT FROM` для NULL = корень
+- `list_by_folder_ids(folder_ids)` — батч для cascade-delete
+- `move_to_folder(file_id, folder_id)` — UPDATE folder_id
+- `deactivate_by_folder_ids(folder_ids)` — bulk soft-delete для каскада
+

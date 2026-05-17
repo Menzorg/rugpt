@@ -309,8 +309,11 @@ class SchedulerService:
 
         has_morning = self.task_poll_service and self.task_service
         has_evening = self.task_report_service and self.user_storage and self.task_poll_service
+        has_admin_briefing = (
+            self.user_storage and self.task_service and self.in_app_notification_service
+        )
 
-        if not has_morning and not has_evening:
+        if not has_morning and not has_evening and not has_admin_briefing:
             return
 
         # Load active organizations and check local hour for each
@@ -331,6 +334,9 @@ class SchedulerService:
 
             if has_morning and local_hour in self.morning_hours:
                 await self._run_morning_polls_for_org(org.id)
+
+            if has_admin_briefing and local_hour in self.morning_hours:
+                await self._run_admin_briefing_for_org(org.id, org.timezone)
 
             if has_evening and local_hour in self.evening_hours:
                 await self._run_evening_reports_for_org(org.id, now_utc)
@@ -377,6 +383,90 @@ class SchedulerService:
 
         except Exception as e:
             logger.error(f"Morning polls for org {org_id} failed: {e}")
+
+    async def _run_admin_briefing_for_org(self, org_id, tz_name: str):
+        """Дневная сводка по открытым задачам, поставленным админом.
+
+        Для каждого активного админа орги:
+        - Собрать задачи, где он creator и статус != done.
+        - Если есть и сводка ещё не выслана сегодня в org-local дне — создать
+          in_app_notification типа 'daily_admin_briefing' со списком.
+
+        Идемпотентность через exists_for_user_on_date_in_tz: дневной таймстамп
+        в часовом поясе орги, поэтому окно morning_hours (8-10, три тика) не
+        дублирует уведомление.
+        """
+        try:
+            admins = await self.user_storage.list_admins_by_org(org_id)
+        except Exception as e:
+            logger.error(f"Admin briefing: failed to load admins for org {org_id}: {e}")
+            return
+
+        for admin in admins:
+            try:
+                already = await self.in_app_notification_service.storage.exists_for_user_on_date_in_tz(
+                    user_id=admin.id,
+                    type="daily_admin_briefing",
+                    tz_name=tz_name,
+                )
+                if already:
+                    continue
+
+                tasks_with_assignee = await self.task_service.list_tasks_created_by(
+                    admin.id, include_done=False,
+                )
+                if not tasks_with_assignee:
+                    continue
+
+                title, body = self._format_admin_briefing(tasks_with_assignee)
+                await self.in_app_notification_service.create(
+                    user_id=admin.id,
+                    org_id=org_id,
+                    type="daily_admin_briefing",
+                    title=title,
+                    content=body,
+                )
+                logger.info(
+                    f"Admin briefing sent: org={org_id} admin={admin.id} "
+                    f"open_tasks={len(tasks_with_assignee)}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Admin briefing failed for admin {admin.id} in org {org_id}: {e}"
+                )
+
+    @staticmethod
+    def _format_admin_briefing(entries: list) -> tuple[str, str]:
+        """Сформировать title и body нотификации из списка {task, assignee, ...}.
+
+        Показываем до 10 первых задач (отсортированы по дедлайну ASC NULLS LAST
+        в list_by_creator_with_assignee). Если задач больше — добавляем
+        "и ещё N".
+        """
+        total = len(entries)
+        title = f"Открытые задачи: {total}"
+
+        max_lines = 10
+        lines: list[str] = []
+        for entry in entries[:max_lines]:
+            task = entry.get("task")
+            assignee = entry.get("assignee")
+            assignee_name = assignee["name"] if assignee else "—"
+
+            task_title = getattr(task, "title", "") or "(без названия)"
+            deadline = getattr(task, "deadline", None)
+            if deadline is not None:
+                deadline_str = deadline.strftime("%d.%m")
+            else:
+                deadline_str = "без срока"
+
+            lines.append(f"• «{task_title}» — {assignee_name}, до {deadline_str}")
+
+        if total > max_lines:
+            lines.append(f"… и ещё {total - max_lines}")
+
+        body = "\n".join(lines)
+        return title, body
 
     async def _run_evening_reports_for_org(self, org_id, now_utc: datetime):
         """

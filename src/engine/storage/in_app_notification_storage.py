@@ -112,6 +112,31 @@ class InAppNotificationStorage(BaseStorage):
         )
         return "UPDATE 1" in result
 
+    async def exists_for_user_on_date_in_tz(
+        self,
+        user_id: UUID,
+        type: str,
+        tz_name: str,
+    ) -> bool:
+        """Есть ли нотификация данного типа у юзера, чьё created_at в org-local
+        timezone приходится на сегодня. Используется для дневной идемпотентности
+        (напр. ежедневная сводка админу — не слать второй раз в один и тот же
+        локальный день, даже если scheduler-тик попал на следующий час).
+        """
+        exists = await self.fetchval(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM in_app_notifications
+                WHERE user_id = $1
+                  AND type = $2
+                  AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE $3)::date
+                      = (now() AT TIME ZONE $3)::date
+            )
+            """,
+            user_id, type, tz_name,
+        )
+        return bool(exists)
+
     async def mark_all_read(self, user_id: UUID) -> int:
         """Mark all notifications as read for a user. Returns count of updated."""
         result = await self.execute(

@@ -15,13 +15,14 @@ class InAppNotification:
     """
     In-app bell notification.
 
-    Types: new_task, poll, report, mention, task_status_change, system.
+    Types: new_task, poll, report, mention, task_status_change, system,
+    daily_admin_briefing.
     Reference links to the related entity (task, poll, report, message).
     """
     id: UUID = field(default_factory=uuid4)
     user_id: UUID = field(default_factory=uuid4)
     org_id: UUID = field(default_factory=uuid4)
-    type: str = ""                                  # new_task | poll | report | mention | task_status_change | system
+    type: str = ""                                  # new_task | poll | report | mention | task_status_change | system | daily_admin_briefing
     title: str = ""
     content: Optional[str] = None
     reference_type: Optional[str] = None            # task | task_poll | task_report | message

@@ -604,3 +604,37 @@ AgentRun (*)                        # item 10: async idempotency для Kafka ag
 NotificationLog                     # лог доставки (user_id, event_id, role_id)
 UserFile -> chunks / tables_rows_chunks  # RAG-индекс (pgvector 1024-dim, HNSW)
 ```
+
+---
+
+## UserFileFolder
+
+**Файл:** `src/engine/models/user_file_folder.py`
+
+Личная папка файлов пользователя. Adjacency list через `parent_folder_id`.
+
+```python
+@dataclass
+class UserFileFolder:
+    id: UUID
+    user_id: UUID                            # владелец (личные папки, не org-shared)
+    org_id: UUID                             # multi-tenancy
+    parent_folder_id: Optional[UUID]         # NULL = root
+    name: str                                # case-insensitive unique per parent
+    is_active: bool                          # soft-delete
+    created_at: datetime
+    updated_at: datetime
+```
+
+**Изменения в `UserFile`:**
+- `folder_id: Optional[UUID] = None` — NULL = root. `folder.user_id` должен совпадать с `file.user_id` (service-enforced).
+
+**Связи:**
+```
+UserFileFolder
+    +-- UserFileFolder (children через parent_folder_id self-FK)
+    +-- UserFile (через user_files.folder_id)
+```
+
+Spec/plan: `docs/superpowers/specs/2026-05-12-file-folders-design.md`, `docs/superpowers/plans/2026-05-12-file-folders.md`.
+

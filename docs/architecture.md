@@ -128,7 +128,10 @@ RuGPT размещён на 7 узлах. Подробности по желез
 |  |    item 10)                              |
 |  +-- in_app_notifications                 |
 |  +-- user_files (+ RAG: summary,          |
-|  |    summary_embedding, is_table, tsv)   |
+|  |    summary_embedding, is_table, tsv,   |
+|  |    folder_id)                          |
+|  +-- user_file_folders (personal folders, |
+|  |    adjacency list, soft-delete)         |
 |  +-- chunks (pgvector)                    |
 |  +-- tables_rows_chunks (pgvector)        |
 |  +-- correction_rules                     |
@@ -174,6 +177,8 @@ RuGPT размещён на 7 узлах. Подробности по желез
 |                                           |
 |  Files:                                   |
 |  +-- FileService                          |
+|  +-- FolderService (personal folders,     |
+|  |    cascade delete, cycle/depth guard)  |
 |  +-- LocalStorageAdapter (filesystem)     |
 |                                           |
 |  Departments:                             |

@@ -834,3 +834,51 @@ EngineService (singleton)
     |   +-- notification_service (channel_storage, log_storage, senders)
     |   +-- scheduler_service (calendar, notifications, agent_executor, ...)
 ```
+
+---
+
+## FolderService
+
+**Файл:** `src/engine/services/folder_service.py`
+
+Бизнес-логика личных папок файлов. Валидация владения, циклов, глубины, имени.
+
+```python
+class FolderService:
+    MAX_DEPTH = 10
+    MAX_NAME_LEN = 255
+
+    async def create(user_id, org_id, parent_folder_id, name) -> UserFileFolder
+    async def rename(folder_id, new_name, actor) -> UserFileFolder
+    async def move(folder_id, new_parent_id, actor) -> UserFileFolder      # cycle + depth check
+    async def delete(folder_id, actor) -> dict                              # cascade soft-delete, returns counts
+    async def get_tree(user_id, org_id) -> List[dict]                       # nested children
+    async def list_children(user_id, parent_folder_id) -> List[UserFileFolder]
+    async def list_in_folder(user_id, folder_id) -> List[UserFile]
+    async def verify_folder_owner(folder_id, user_id, org_id) -> UserFileFolder  # used by file routes
+```
+
+**Typed errors** (все наследуются от `FolderError`):
+
+| Класс | code | HTTP |
+|---|---|---|
+| FolderInvalidName | EMPTY_NAME / NAME_TOO_LONG | 400 |
+| FolderMaxDepthExceeded | MAX_DEPTH_EXCEEDED | 400 |
+| FolderCyclicMove | CYCLIC_MOVE | 400 |
+| FolderInvalidParentOwner | INVALID_PARENT_OWNER | 400 |
+| FolderForbidden | FORBIDDEN | 403 |
+| FolderNotFound | FOLDER_NOT_FOUND | 404 |
+| FolderParentNotFound | PARENT_NOT_FOUND | 404 |
+| FolderNameConflict | DUPLICATE_NAME | 409 |
+
+**Cascade delete (без cross-pool tx — sequential, idempotent on retry):**
+1. `subtree_ids = folder_storage.list_subtree_ids(folder_id)`
+2. `file_storage.deactivate_by_folder_ids(subtree_ids)` (FIRST)
+3. `folder_storage.deactivate_subtree(folder_id)` (SECOND)
+4. Best-effort post: `rag_service.delete_document` для indexed файлов + `adapter.delete` для байтов
+
+**Изменения в `FileService`:**
+- `upload(..., folder_id: Optional[UUID] = None)` — записывает folder_id (валидация в route)
+- `move_to_folder(file_id, new_folder_id, actor_*)` — проверка владения + UPDATE
+- `clone()` — клон всегда в корень получателя (`folder_id=None`)
+
