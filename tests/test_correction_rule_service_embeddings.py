@@ -5,8 +5,10 @@ from uuid import uuid4
 import pytest
 
 from src.engine.logging_context import bind_correlation_id, correlation_id_var
+from src.engine.models.correction_rule import CorrectionRule
 from src.engine.models.message import Message, SenderType
 from src.engine.services.correction_rule_service import CorrectionRuleService
+from src.engine.storage.correction_rule_storage import CorrectionRuleStorage
 
 
 class FakeEmbeddings:
@@ -129,3 +131,40 @@ async def test_reject_and_create_rule_stores_embeddings_on_create():
     assert service._embeddings.calls[0][0] == "original user question"
     assert service._embeddings.calls[1][0] == "memory snapshot text"
     service.correction_rule_storage.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_correction_rule_storage_create_converts_embeddings_to_pgvector():
+    storage = CorrectionRuleStorage.__new__(CorrectionRuleStorage)
+    storage.fetchrow = AsyncMock(return_value={
+        "id": uuid4(),
+        "role_id": uuid4(),
+        "mem_id": uuid4(),
+        "mem_embedding": [0.1, 0.2],
+        "src_user_message_id": uuid4(),
+        "user_message_embedding": [0.3, 0.4],
+        "src_ai_response_id": uuid4(),
+        "user_correction_text": "correction",
+        "extracted_lesson": "lesson",
+        "is_active": True,
+    })
+
+    rule = CorrectionRule(
+        role_id=uuid4(),
+        mem_id=uuid4(),
+        mem_embedding=[0.1, 0.2],
+        src_user_message_id=uuid4(),
+        user_message_embedding=[0.3, 0.4],
+        src_ai_response_id=uuid4(),
+        user_correction_text="correction",
+        extracted_lesson="lesson",
+    )
+
+    await storage.create(rule)
+
+    _, args, _ = storage.fetchrow.mock_calls[0]
+    query = args[0]
+    assert "$4::vector" in query
+    assert "$6::vector" in query
+    assert args[4] == "[0.1000000000,0.2000000000]"
+    assert args[6] == "[0.3000000000,0.4000000000]"

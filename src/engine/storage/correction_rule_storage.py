@@ -13,6 +13,15 @@ from ..models.correction_rule import CorrectionRule
 
 logger = get_logger("storage")
 
+def _to_pgvector(values: List[float]) -> str:
+    # asyncpg expects vector input as textual literal for pgvector casts.
+    return "[" + ",".join(f"{v:.10f}" for v in values) + "]"
+
+def _optional_pgvector(values: Optional[List[float]]) -> Optional[str]:
+    if values is None:
+        return None
+    return _to_pgvector(values)
+
 class CorrectionRuleStorage(BaseStorage):
     """Storage for CorrectionRule entities"""
 
@@ -25,14 +34,14 @@ class CorrectionRuleStorage(BaseStorage):
                 src_ai_response_id, user_correction_text, extracted_lesson,
                 is_active
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4::vector, $5, $6::vector, $7, $8, $9, $10)
             RETURNING *
         """
         row = await self.fetchrow(
             query,
             rule.id, rule.role_id, rule.mem_id,
-            rule.mem_embedding,
-            rule.src_user_message_id, rule.user_message_embedding,
+            _optional_pgvector(rule.mem_embedding),
+            rule.src_user_message_id, _optional_pgvector(rule.user_message_embedding),
             rule.src_ai_response_id, rule.user_correction_text, rule.extracted_lesson,
             rule.is_active,
         )
@@ -80,9 +89,9 @@ class CorrectionRuleStorage(BaseStorage):
             SET
                 role_id              = $2,
                 mem_id               = $3,
-                mem_embedding        = $4,
+                mem_embedding        = $4::vector,
                 src_user_message_id  = $5,
-                user_message_embedding = $6,
+                user_message_embedding = $6::vector,
                 src_ai_response_id   = $7,
                 user_correction_text = $8,
                 extracted_lesson     = $9,
@@ -91,8 +100,8 @@ class CorrectionRuleStorage(BaseStorage):
             RETURNING *
             """,
             rule.id, rule.role_id, rule.mem_id,
-            rule.mem_embedding,
-            rule.src_user_message_id, rule.user_message_embedding,
+            _optional_pgvector(rule.mem_embedding),
+            rule.src_user_message_id, _optional_pgvector(rule.user_message_embedding),
             rule.src_ai_response_id, rule.user_correction_text, rule.extracted_lesson,
             rule.is_active,
         )
@@ -119,13 +128,11 @@ class CorrectionRuleStorage(BaseStorage):
         role_id: Optional[UUID] = None,
     ) -> List[CorrectionRule]:
         """Search correction rules by semantic similarity using both memory and user prompt embeddings."""
-        mem_literal = "[" + ",".join(str(v) for v in mem_embedding) + "]"
-        user_literal = "[" + ",".join(str(v) for v in user_message_embedding) + "]"
         rows = await self.fetch(
             """
             SELECT * FROM search_correction_rules($1::vector, $2::vector, $3, $4::uuid)
             """,
-            mem_literal, user_literal, top_k, role_id,
+            _to_pgvector(mem_embedding), _to_pgvector(user_message_embedding), top_k, role_id,
         )
         return [self._row_to_rule(row) for row in rows]
 
