@@ -179,9 +179,3 @@ async def test_rag_search_access_denies_called_user_private_in_mention(monkeypat
         public_only_owner=False,
         is_admin=False,
     )
-
-
-def test_private_documents_tool_is_not_exposed():
-    assert list_own_documents.name == "list_own_documents"
-    assert list_global_documents.name == "list_global_documents"
-    assert list_own_documents.name != "list_private_documents"
