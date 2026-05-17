@@ -16,6 +16,7 @@ from ..agents.metadata import build_initial_extra_body, resolve_litellm_session_
 from ..models.correction_rule import CorrectionRule
 from ..models.message import SenderType
 from ..storage.correction_rule_storage import CorrectionRuleStorage
+from ..storage.memory_snapshot_storage import MemorySnapshotStorage
 from ..storage.message_storage import MessageStorage
 from ..storage.role_storage import RoleStorage
 from ..storage.user_storage import UserStorage
@@ -47,6 +48,7 @@ class CorrectionRuleService:
         role_storage: RoleStorage,
         user_storage: UserStorage,
         chat_service: ChatService,
+        memory_snapshot_storage: Optional[MemorySnapshotStorage] = None,
         agent_executor: Optional[AgentExecutor] = None,
         embedding_model: str = "",
         llm_base_url: str = "",
@@ -58,6 +60,7 @@ class CorrectionRuleService:
         self.role_storage = role_storage
         self.user_storage = user_storage
         self.chat_service = chat_service
+        self.memory_snapshot_storage = memory_snapshot_storage
         self.agent_executor = agent_executor
         self.kafka_producer = kafka_producer
         self._embeddings = OpenAIEmbeddings(
@@ -128,11 +131,25 @@ class CorrectionRuleService:
             src_user_message_id=original_message.id if original_message else None,
             user_correction_text=correction_text,
         )
+
+        mem_id = ai_message.mem_id or (original_message.mem_id if original_message else None)
+        user_message_text = original_message.content if original_message else correction_text
+        memory_text = await self._resolve_memory_text(
+            mem_id=mem_id,
+            fallback_text=user_message_text,
+        )
+        user_message_embedding, mem_embedding = await self._embed_rule_context(
+            user_message_text=user_message_text,
+            memory_text=memory_text,
+        )
         
         rule = CorrectionRule(
             id=uuid4(),
             role_id=role_id,
+            mem_id=mem_id,
+            mem_embedding=mem_embedding,
             src_user_message_id=original_message.id if original_message else None,
+            user_message_embedding=user_message_embedding,
             src_ai_response_id=ai_message_id,
             user_correction_text=correction_text,
             extracted_lesson=lesson,
@@ -168,6 +185,39 @@ class CorrectionRuleService:
         created_rule = await self.correction_rule_storage.create(rule)
         logger.info("correction rule %s created for role %s", created_rule.id, role_id)
         return created_rule
+
+    async def _resolve_memory_text(
+        self,
+        mem_id: Optional[UUID],
+        fallback_text: str,
+    ) -> str:
+        """Resolve memory snapshot text for embedding; fall back to the user message."""
+        if mem_id is not None and self.memory_snapshot_storage is not None:
+            snapshot = await self.memory_snapshot_storage.get_by_id(mem_id)
+            if snapshot and snapshot.snapshot:
+                return snapshot.snapshot
+        return fallback_text
+
+    async def _embed_rule_context(
+        self,
+        user_message_text: str,
+        memory_text: str,
+    ) -> tuple[List[float], List[float]]:
+        """Embed the source user message and memory context for correction search."""
+        embedding_extra_body = build_initial_extra_body(
+            litellm_session_id=resolve_litellm_session_id(),
+            agent_name="correction_rules_embedding",
+            chat_id=None,
+        )
+        user_message_embedding = await self._embeddings.aembed_query(
+            user_message_text,
+            extra_body=embedding_extra_body,
+        )
+        mem_embedding = await self._embeddings.aembed_query(
+            memory_text,
+            extra_body=embedding_extra_body,
+        )
+        return user_message_embedding, mem_embedding
 
     async def update_rule(
         self,

@@ -406,6 +406,7 @@ class EngineService:
             role_storage=self.role_storage,
             user_storage=self.user_storage,
             chat_service=self.chat_service,
+            memory_snapshot_storage=self.memory_snapshot_storage,
             agent_executor=self.agent_executor,
             embedding_model=Config.EMBEDDING_MODEL,
             llm_base_url=Config.LLM_BASE_URL,
