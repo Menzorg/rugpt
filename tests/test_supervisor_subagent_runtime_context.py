@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from langchain_core.messages import HumanMessage, ToolMessage
 
 from src.engine.agents.graphs import supervisor
 from src.engine.agents.runtime import RuntimeContext
@@ -51,6 +52,66 @@ class FakeCompiledAgent:
         return self
 
 
+class CapturingAgent:
+    def __init__(self):
+        self.name = "worker"
+        self.input = None
+        self.config = None
+
+    def invoke(self, input_state, config=None):
+        self.input = input_state
+        self.config = config
+        return {"messages": [HumanMessage(content="done")]}
+
+    async def ainvoke(self, input_state, config=None):
+        self.input = input_state
+        self.config = config
+        return {"messages": [HumanMessage(content="done")]}
+
+
+def test_subagent_wrapper_invokes_agent_with_private_handoff_messages():
+    agent = CapturingAgent()
+    wrapper = supervisor._SubagentInputWrapper(agent, "worker")
+    handoff_message = HumanMessage(content="private task")
+    parent_message = HumanMessage(content="parent history")
+
+    output = wrapper.invoke(
+        {
+            "messages": [parent_message],
+            "subagent_messages": [handoff_message],
+        },
+        {"configurable": {"thread_id": "thread-1"}},
+    )
+
+    assert output["messages"][0].content == "done"
+    assert agent.input == {"messages": [handoff_message]}
+    assert agent.config == {"configurable": {"thread_id": "thread-1"}}
+
+
+def test_task_handoff_tool_preserves_parent_messages_and_sets_private_payload():
+    handoff_tool = supervisor._create_task_handoff_tool(
+        agent_name="doc_search",
+        description=None,
+        subagent_context="caller context",
+    )
+
+    command = handoff_tool.func(
+        task="Find docs",
+        details="Need recent invoices",
+        state={"messages": [HumanMessage(content="parent history")]},
+        tool_call_id="tool-call-1",
+    )
+
+    assert command.goto == "doc_search"
+    assert isinstance(command.update["messages"][0], ToolMessage)
+    assert command.update["messages"][0].tool_call_id == "tool-call-1"
+    assert command.update["subagent_messages"][0].content == (
+        "<context>\ncaller context\n</context>\n\n"
+        "<task>\nFind docs\n</task>\n\n"
+        "<details>\nNeed recent invoices\n</details>"
+    )
+
+
 @pytest.mark.asyncio
 async def test_build_subagents_binds_separate_runtime_context_instances(monkeypatch):
     roles = [
@@ -95,7 +156,6 @@ async def test_build_subagents_binds_separate_runtime_context_instances(monkeypa
 
     subagents, descriptions = await supervisor._build_subagents(
         supervisor_role=SimpleNamespace(id=uuid4(), code="supervisor"),
-        subagent_context="",
         litellm_session_id="test-session",
     )
 
@@ -143,7 +203,6 @@ async def test_build_subagents_shares_litellm_session_and_sets_supervisor_metada
 
     await supervisor._build_subagents(
         supervisor_role=SimpleNamespace(id=uuid4(), code="supervisor"),
-        subagent_context="",
         litellm_session_id="shared-session",
         chat_id=chat_id,
         supervisor_name="main_supervisor",

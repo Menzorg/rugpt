@@ -8,14 +8,14 @@ import logging
 from typing import Any, List, Optional
 
 from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage, RemoveMessage
+from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 from langchain_openai import ChatOpenAI
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.prebuilt.chat_agent_executor import AgentState
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
-from typing_extensions import Annotated
+from typing_extensions import Annotated, NotRequired
 
 from ..result import AgentResult, ToolCall
 from ..runtime import RuntimeContext
@@ -24,6 +24,30 @@ from ...models.role import Role
 from ...utils.token_logger import log_token_summary
 
 logger = logging.getLogger("rugpt.agents.graphs.supervisor")
+
+
+class SupervisorState(AgentState):
+    """Supervisor graph state with private handoff input for subagents."""
+
+    subagent_messages: NotRequired[list[BaseMessage]]
+
+
+class _SubagentInputWrapper:
+    """Run a subagent against isolated handoff messages, preserving parent history."""
+
+    def __init__(self, agent: Any, name: str):
+        self._agent = agent
+        self.name = name
+
+    @staticmethod
+    def _input_from_state(state: dict) -> dict:
+        return {"messages": state.get("subagent_messages") or []}
+
+    def invoke(self, state: dict, config: Optional[RunnableConfig] = None) -> dict:
+        return self._agent.invoke(self._input_from_state(state), config)
+
+    async def ainvoke(self, state: dict, config: Optional[RunnableConfig] = None) -> dict:
+        return await self._agent.ainvoke(self._input_from_state(state), config)
 
 
 async def run_supervisor_agent(
@@ -108,7 +132,6 @@ async def _supervisor_agent_call(
         supervisor_name = (agent_config or {}).get("supervisor_name", "supervisor")
         subagents, subagent_descriptions = await _build_subagents(
             supervisor_role=supervisor_role,
-            subagent_context=subagent_context,
             litellm_session_id=litellm_session_id,
             chat_id=chat_id,
             supervisor_name=supervisor_name,
@@ -138,6 +161,7 @@ async def _supervisor_agent_call(
             model=llm,
             tools=supervisor_tools or None,
             prompt=system_prompt,
+            state_schema=SupervisorState,
             context_schema=RuntimeContext,
             output_mode="last_message",
             supervisor_name=supervisor_name,
@@ -216,7 +240,6 @@ async def _supervisor_agent_call(
 
 async def _build_subagents(
     supervisor_role: Role,
-    subagent_context: str,
     *,
     litellm_session_id: str,
     chat_id: Optional[Any] = None,
@@ -289,7 +312,7 @@ async def _build_subagents(
             context=RuntimeContext(available_tools_count=len(role_tools)),
         )
         subagent.name = agent_name
-        subagents.append(subagent)
+        subagents.append(_SubagentInputWrapper(subagent, agent_name))
 
     return subagents, subagent_descriptions
 
@@ -336,14 +359,17 @@ def _create_task_handoff_tool(
                 if part
             )
         )
+        tool_message = ToolMessage(
+            content=f"Successfully transferred to {agent_name}",
+            name=name,
+            tool_call_id=tool_call_id,
+        )
         return Command(
             goto=agent_name,
             graph=Command.PARENT,
             update={
-                "messages": [
-                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
-                    handoff_message,
-                ]
+                "messages": [tool_message],
+                "subagent_messages": [handoff_message],
             },
         )
 
