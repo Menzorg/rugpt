@@ -13,7 +13,7 @@ set -e
 #
 # SSH alias `rag-engine` должен быть настроен в ~/.ssh/config.
 
-SERVER="rag-engine"
+SERVER="rugptlocal"
 REMOTE_PATH="~/rugpt"
 VENV_PIP="${REMOTE_PATH}/venv/bin/pip"
 
@@ -40,6 +40,7 @@ rsync -avz --progress \
   --exclude '.env' \
   --exclude '__pycache__' \
   --exclude 'uploads' \
+  --exclude 'logs' \
   ./ ${SERVER}:${REMOTE_PATH}/
 
 # === 1b. Mirror migrations exactly (--delete) ===
