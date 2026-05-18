@@ -298,7 +298,7 @@ async def _build_subagents(
             supervisor_name=supervisor_name,
         )
         subagent_llm = engine.agent_executor._create_llm(
-            role.model_name,
+            role.model_name or engine.agent_executor.default_model,
             **llm_kwargs,
         )
         subagent = create_agent(
