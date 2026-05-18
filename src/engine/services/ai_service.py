@@ -559,6 +559,19 @@ class AIService:
         cleaned = pattern.sub('', content).strip()
         return cleaned if cleaned else content
 
+    _LATEX_REPLACEMENTS = {
+        r"$\rightarrow$": "→",
+        r"$\leftarrow$": "←",
+        r"$\times$": "×",
+        r"$\sqrt": "√",
+    }
+
+    @classmethod
+    def _postprocess_content(cls, content: str) -> str:
+        for latex, ascii_char in cls._LATEX_REPLACEMENTS.items():
+            content = content.replace(latex, ascii_char)
+        return content
+
     async def _create_ai_message(
         self,
         chat_id: UUID,
@@ -569,6 +582,8 @@ class AIService:
         """Create and save AI message"""
         from datetime import datetime
         from uuid import uuid4
+
+        content = self._postprocess_content(content)
 
         message = Message(
             id=uuid4(),
