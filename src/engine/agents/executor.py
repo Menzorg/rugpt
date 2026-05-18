@@ -330,6 +330,11 @@ class AgentExecutor:
         Returns:
             AgentResult with response
         """
+        if role is None:
+            raise ValueError("AgentExecutor.execute: role is None — cannot run without a role scope")
+        if caller_user_id is None:
+            raise ValueError("AgentExecutor.execute: caller_user_id is None — refusing to run without caller identity")
+
         model = role.model_name or self.default_model
         
         # Qwen's chat template requires the first non-system message to be a user

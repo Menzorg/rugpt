@@ -134,9 +134,8 @@ def create_task_tools(
 
     def _log_identity(tool_name: str, configurable: dict) -> None:
         logger.info(
-            "%s identity: user_id=%s caller_user_id=%s callee_user_id=%s org_id=%s is_admin=%s invocation=%s",
+            "%s identity: caller_user_id=%s callee_user_id=%s org_id=%s is_admin=%s invocation=%s",
             tool_name,
-            configurable.get("user_id", ""),
             configurable.get("caller_user_id", ""),
             configurable.get("callee_user_id", ""),
             configurable.get("org_id", ""),
@@ -176,8 +175,8 @@ def create_task_tools(
         try:
             configurable = (config or {}).get("configurable", {})
             _log_identity("task_create", configurable)
-            user_id = configurable.get("user_id", "")
-            org_id = configurable.get("org_id", "")
+            caller_uuid = UUID(configurable["caller_user_id"])
+            task_org_id = UUID(configurable["org_id"])
 
             assignee_uuid = UUID(assignee_user_id)
             participant_uuids = _parse_uuid_list(participant_user_ids)
@@ -187,38 +186,30 @@ def create_task_tools(
                 logger.info("task_create invalid_deadline: deadline=%r", deadline)
                 return f"Invalid deadline format: {deadline!r}. Use ISO format, e.g. '2025-03-15T18:00:00'."
 
-            # org_id is injected by the executor from the caller's context; absent means
-            # the tool was invoked outside a proper agent run — refuse rather than guess.
-            task_org_id = UUID(org_id) if org_id else None
-            if task_org_id is None:
-                logger.info("task_create missing_org_id")
-                return "System can't see user's organization id"
-
             # Refuse if the caller's department visibility rules don't include the assignee.
-            if user_id and org_id:
-                from ...services.engine_service import get_engine_service
-                engine = get_engine_service()
-                visible = await engine.department_service.check_visible(
-                    UUID(user_id), assignee_uuid, UUID(org_id),
+            from ...services.engine_service import get_engine_service
+            engine = get_engine_service()
+            visible = await engine.department_service.check_visible(
+                caller_uuid, assignee_uuid, task_org_id,
+            )
+            logger.info(
+                "task_create permission: gate=assignee_visible assignee=%s visible=%s",
+                assignee_uuid,
+                visible,
+            )
+            if not visible:
+                return "Cannot assign task: user not visible to you."
+            for participant_uuid in participant_uuids:
+                participant_visible = await engine.department_service.check_visible(
+                    caller_uuid, participant_uuid, task_org_id,
                 )
                 logger.info(
-                    "task_create permission: gate=assignee_visible assignee=%s visible=%s",
-                    assignee_uuid,
-                    visible,
+                    "task_create permission: gate=participant_visible participant=%s visible=%s",
+                    participant_uuid,
+                    participant_visible,
                 )
-                if not visible:
-                    return "Cannot assign task: user not visible to you."
-                for participant_uuid in participant_uuids:
-                    participant_visible = await engine.department_service.check_visible(
-                        UUID(user_id), participant_uuid, UUID(org_id),
-                    )
-                    logger.info(
-                        "task_create permission: gate=participant_visible participant=%s visible=%s",
-                        participant_uuid,
-                        participant_visible,
-                    )
-                    if not participant_visible:
-                        return "Cannot add task participant: user not visible to you."
+                if not participant_visible:
+                    return "Cannot add task participant: user not visible to you."
 
             if priority is not None and priority not in (1, 2, 3):
                 logger.info("task_create invalid_priority: priority=%s", priority)
@@ -230,7 +221,7 @@ def create_task_tools(
                 description=description or None,
                 assignee_user_id=assignee_uuid,
                 deadline=dl,
-                created_by_user_id=UUID(user_id) if user_id else None,
+                created_by_user_id=caller_uuid,
                 priority=priority,
                 participant_user_ids=participant_uuids,
             )
@@ -279,13 +270,8 @@ def create_task_tools(
         try:
             configurable = (config or {}).get("configurable", {})
             _log_identity("task_query", configurable)
-            user_id = configurable.get("user_id", "")
-            org_id = configurable.get("org_id", "")
-
-            query_org_id = UUID(org_id) if org_id else None
-            if query_org_id is None:
-                logger.info("task_query missing_org_id")
-                return "System can't see user's organization id"
+            caller_uuid = UUID(configurable["caller_user_id"])
+            query_org_id = UUID(configurable["org_id"])
 
             from ...services.engine_service import get_engine_service
             engine = get_engine_service()
@@ -406,17 +392,16 @@ def create_task_tools(
             )
 
             # Strip tasks whose assignees are outside the caller's department visibility.
-            if user_id and org_id:
-                visible_ids = await engine.department_service.get_visible_user_ids(
-                    UUID(user_id), UUID(org_id),
-                )
-                tasks = [t for t in tasks if t.assignee_user_id in visible_ids]
-                logger.info(
-                    "task_query visibility: visible_users=%d before=%d after=%d",
-                    len(visible_ids),
-                    before_visibility_count,
-                    len(tasks),
-                )
+            visible_ids = await engine.department_service.get_visible_user_ids(
+                caller_uuid, query_org_id,
+            )
+            tasks = [t for t in tasks if t.assignee_user_id in visible_ids]
+            logger.info(
+                "task_query visibility: visible_users=%d before=%d after=%d",
+                len(visible_ids),
+                before_visibility_count,
+                len(tasks),
+            )
 
             if not tasks:
                 logger.info("task_query done: result=empty before_visibility=%d", before_visibility_count)
@@ -526,12 +511,8 @@ def create_task_tools(
         try:
             configurable = (config or {}).get("configurable", {})
             _log_identity("task_update", configurable)
-            user_id = configurable.get("user_id", "")
+            caller_uuid = UUID(configurable["caller_user_id"])
             is_admin = configurable.get("is_admin", False)
-
-            if not user_id:
-                logger.info("task_update missing_user_id: task=%s", task_id)
-                return "SYSTEM CAN'T SEE CURRENT USER ID"
 
             task_uuid = UUID(task_id)
             add_participant_uuids = _parse_uuid_list(new_participant_user_ids)
@@ -555,8 +536,6 @@ def create_task_tools(
             if not existing_task:
                 logger.info("task_update not_found: task=%s", task_id)
                 return f"Task {task_id} not found"
-
-            caller_uuid = UUID(user_id)
             is_creator = existing_task.created_by_user_id == caller_uuid
             is_assignee = existing_task.assignee_user_id == caller_uuid
             logger.info(
@@ -732,15 +711,12 @@ def create_task_tools(
         try:
             configurable = (config or {}).get("configurable", {})
             _log_identity("task_deadline_proposal", configurable)
-            user_id = configurable.get("user_id", "")
-            if not user_id:
-                logger.info("task_deadline_proposal missing_user_id: task=%s", task_id)
-                return "SYSTEM CAN'T SEE CURRENT USER ID"
+            caller_uuid = UUID(configurable["caller_user_id"])
 
             from ...services.engine_service import get_engine_service
             engine = get_engine_service()
 
-            caller_user = await engine.user_storage.get_by_id(UUID(user_id))
+            caller_user = await engine.user_storage.get_by_id(caller_uuid)
             if caller_user is None:
                 logger.info("task_deadline_proposal caller_not_found: task=%s user=%s", task_id, user_id)
                 return "CURRENT USER NOT FOUND"
@@ -827,14 +803,10 @@ def create_task_tools(
         try:
             configurable = (config or {}).get("configurable", {})
             _log_identity("get_own_tasks", configurable)
-            caller_user_id = configurable.get("caller_user_id", "")
             # callee_user_id == caller_user_id in direct calls (always set by executor).
-            target_user_id = configurable.get("callee_user_id", "") or caller_user_id
-            if not target_user_id:
-                logger.info("get_own_tasks missing_target_user_id")
-                return "SYSTEM CAN'T SEE TARGET USER ID"
+            target_uuid = UUID(configurable.get("callee_user_id") or configurable["caller_user_id"])
 
-            tasks = await task_service.list_by_assignee(UUID(target_user_id), status or None)
+            tasks = await task_service.list_by_assignee(target_uuid, status or None)
             initial_count = len(tasks)
             excluded_done = 0
             excluded_old_overdue = 0
@@ -860,7 +832,7 @@ def create_task_tools(
                 tasks = filtered
             logger.info(
                 "get_own_tasks filter: target=%s status=%s initial=%d after=%d excluded_done=%d excluded_old_overdue=%d excluded_overdue_no_deadline=%d",
-                target_user_id,
+                target_uuid,
                 status,
                 initial_count,
                 len(tasks),
@@ -882,7 +854,7 @@ def create_task_tools(
             shown = tasks[start:end]
             logger.info(
                 "get_own_tasks page: target=%s page=%d/%d span=%d-%d total=%d shown=%d",
-                target_user_id,
+                target_uuid,
                 page,
                 total_pages,
                 start + 1,
@@ -916,7 +888,7 @@ def create_task_tools(
                 )
 
             span = f"{start + 1}–{end} of {total}"
-            logger.info("get_own_tasks done: target=%s total=%d shown=%d", target_user_id, total, len(shown))
+            logger.info("get_own_tasks done: target=%s total=%d shown=%d", target_uuid, total, len(shown))
             return f"Tasks {span} (page {page}/{total_pages}):\n" + "\n".join(lines)
         except Exception as e:
             logger.error("get_own_tasks failed: %s", e, exc_info=True)

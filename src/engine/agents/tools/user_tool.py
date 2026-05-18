@@ -17,12 +17,16 @@ from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool, InjectedToolArg
+from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field
+
+from ..runtime import RuntimeContext
+from ...utils.token_counter import count_tokens
 
 logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
-_MAX_RESULTS = 60
+_MAX_RESULTS = 50
 
 class UserSearchInput(BaseModel):
     name_query: str = Field(
@@ -41,6 +45,7 @@ def create_user_tools(user_storage, role_storage, department_service):
         name_query: Optional[str] = "",
         role_code: Optional[str] = "",
         config: Annotated[RunnableConfig, InjectedToolArg] = None,
+        runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg] = None,
     ) -> str:
         """Search/list users visible to the caller.
 
@@ -49,17 +54,12 @@ def create_user_tools(user_storage, role_storage, department_service):
             role_code: Filter by role code.
         """
         logger.info(
-            f"tool user_search: name_query={name_query!r} role_code={role_code!r}"
+            "tool user_search: name_query=%r role_code=%r", name_query, role_code
         )
         try:
             configurable = (config or {}).get("configurable", {})
-            user_id_str = configurable.get("user_id", "")
-            org_id_str = configurable.get("org_id", "")
-            if not user_id_str or not org_id_str:
-                return "user_search unavailable: missing context."
-
-            viewer_id = UUID(user_id_str)
-            org_id = UUID(org_id_str)
+            viewer_id = UUID(configurable["caller_user_id"])
+            org_id = UUID(configurable["org_id"])
 
             # Filter by role_code if given — use list_by_role, then intersect with org.
             if role_code:
@@ -91,6 +91,9 @@ def create_user_tools(user_storage, role_storage, department_service):
 
             if not candidates:
                 return "No users match filter."
+
+            async with runtime.context.lock:
+                tokens_before = runtime.context.total_tokens_spent
 
             # Resolve role codes and department names for output — bulk to avoid N+1.
             role_ids = {u.role_id for u in candidates if u.role_id is not None}
@@ -125,7 +128,17 @@ def create_user_tools(user_storage, role_storage, department_service):
                 )
 
             more = f" (showing first {_MAX_RESULTS})" if total > _MAX_RESULTS else ""
-            return f"User search results ({total} total{more}):\n" + "\n".join(lines)
+            result = f"User search results ({total} total{more}):\n" + "\n".join(lines)
+
+            spent = count_tokens(result)
+            async with runtime.context.lock:
+                runtime.context.total_tokens_spent += spent
+            logger.info(
+                "user_search done: total=%d shown=%d output_tokens=%d tokens_before=%d tokens_after=%d",
+                total, len(candidates), spent, tokens_before,
+                tokens_before + spent,
+            )
+            return result
         except Exception as e:
             logger.error(f"user_search failed: {e}", exc_info=True)
             return _TOOL_ERROR_RESULT

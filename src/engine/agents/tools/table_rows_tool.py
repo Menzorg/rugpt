@@ -4,7 +4,7 @@ Table Rows Tool
 LangChain tool for fetching table rows from a document by row index range.
 Delegates all DB access to RAGService.
 
-org_id and user_id are injected via RunnableConfig — LLM sees only file_id,
+org_id and caller_user_id are injected via RunnableConfig — LLM sees only file_id,
 row_start, row_end.
 
 Service lifecycle: call init_table_rows_service(service, file_storage) once
@@ -70,8 +70,8 @@ async def table_rows_search(
         _MAX_ROWS = 50
 
         configurable = config.get("configurable", {})
-        org_id = configurable.get("org_id", "")
-        user_id = configurable.get("user_id", "")
+        org_id = configurable["org_id"]
+        user_id = configurable["caller_user_id"]
 
         row_end = min(row_end, row_start + _MAX_ROWS - 1)
 
@@ -79,10 +79,6 @@ async def table_rows_search(
             "table_rows_search called: file_id=%s, row_start=%d, row_end=%d, org_id=%s, user_id=%s",
             file_id, row_start, row_end, org_id, user_id,
         )
-
-        if not org_id or not user_id:
-            logger.error("table_rows_search: missing org_id or user_id in config")
-            return "Table rows search unavailable: missing context."
 
         if _rag_service is None:
             logger.error("table_rows_search: service not initialized")
