@@ -288,24 +288,40 @@ async def _search_scoped(
     return matched_docs[:_MAX_RESULTS], None
 
 
-def _filter_listed_files(files: list[UserFile], scope: DocumentToolScope) -> list[UserFile]:
-    """Apply no-search listing visibility rules to storage-loaded file rows."""
+def _filter_listed_files(
+    files: list[UserFile],
+    scope: DocumentToolScope,
+) -> tuple[list[UserFile], int]:
+    """Apply no-search listing visibility rules to storage-loaded file rows.
+
+    Returns (visible_files, hidden_private_count) where hidden_private_count is
+    the number of files that matched the owner/org filter but were hidden due to
+    private visibility (caller has no read access).
+    """
     if scope.own_only:
-        # When another user calls an owner by mention or uses his UUID as filter, only that owner's public docs are visible.
-        return [
+        owner_matched = [
             f for f in files
-            if f.user_id == scope.owner_user_id
-            and (not scope.public_only_owner or f.is_public or scope.is_admin)
-            and not _is_image_file(f)
+            if f.user_id == scope.owner_user_id and not _is_image_file(f)
         ]
+        visible = [
+            f for f in owner_matched
+            if not scope.public_only_owner or f.is_public or scope.is_admin
+        ]
+        hidden = len(owner_matched) - len(visible)
+        return visible, hidden
 
     # Organization mode includes public docs, caller-owned private docs, and admin-visible private docs.
-    return [
+    owner_matched = [
         f for f in files
-        if (scope.owner_filter_user_id is None or f.user_id == scope.owner_filter_user_id) # Is filtered by owner
-        and (f.is_public or f.user_id == scope.caller_user_id or scope.is_admin) # public/private/admin
-        and not _is_image_file(f) # exclude images from listing
+        if (scope.owner_filter_user_id is None or f.user_id == scope.owner_filter_user_id)
+        and not _is_image_file(f)
     ]
+    visible = [
+        f for f in owner_matched
+        if f.is_public or f.user_id == scope.caller_user_id or scope.is_admin
+    ]
+    hidden = len(owner_matched) - len(visible)
+    return visible, hidden
 
 
 # =================================================================
@@ -374,6 +390,7 @@ async def _list_documents_impl(
             return result
 
         # --- Search by queries ---
+        hidden_count = 0
         if name_query or summary_query:
             files, error = await _search_scoped(
                 scope,
@@ -387,9 +404,9 @@ async def _list_documents_impl(
             raw_count = len(files)
             visible_count = len(files)
         else:
-            # --- Or list all files without queries --- 
+            # --- Or list all files without queries ---
             all_files = await _user_file_storage.list_by_org(scope.org_id)
-            files = _filter_listed_files(all_files, scope)
+            files, hidden_count = _filter_listed_files(all_files, scope)
             empty_message = "No documents in your scope."
             compact_on_budget_exhausted = True
             raw_count = len(all_files)
@@ -400,7 +417,7 @@ async def _list_documents_impl(
             tool_name, path, raw_count, visible_count, compact_on_budget_exhausted,
         )
 
-        dedupe_state, page_slice, early_result = await dedupe_and_page(
+        dedupe_state, page_slice, shortcut_result = await dedupe_and_page(
             runtime,
             files,
             page,
@@ -408,12 +425,16 @@ async def _list_documents_impl(
             scope.tool_name,
             empty_message,
         )
-        if early_result is not None:
+        # shortcut_result is set when dedupe_and_page can answer without full formatting
+        # (empty list, budget exhausted, or all items already seen in a previous call).
+        if shortcut_result is not None:
+            if hidden_count:
+                shortcut_result = f"Some document(s) are private and not accessible to caller.\n" + shortcut_result
             logger.info(
-                "%s done: path=%s result=early output_tokens=%d deduped=%s",
-                tool_name, path, count_tokens(early_result), dedupe_state.deduplicated_across_runs,
+                "%s done: path=%s result=shortcut hidden=%d output_tokens=%d deduped=%s",
+                tool_name, path, hidden_count, count_tokens(shortcut_result), dedupe_state.deduplicated_across_runs,
             )
-            return early_result
+            return shortcut_result
 
         logger.info(
             "%s page: page=%d/%d span=%d-%d total=%d page_items=%d deduped=%s",
@@ -434,13 +455,16 @@ async def _list_documents_impl(
             compact_on_budget_exhausted,
             _SUMMARY_TOKENS_BUDGET,
         )
+        if hidden_count:
+            result = f"Some document(s) are private and not accessible to caller.\n" + result
         async with runtime.context.lock:
             summary_after = runtime.context.list_documents_runtime_data.spent_summary_tokens
             tokens_after = runtime.context.total_tokens_spent
         logger.info(
-            "%s done: path=%s output_tokens=%d summary_tokens=%d->%d total_tokens=%d->%d",
+            "%s done: path=%s hidden=%d output_tokens=%d summary_tokens=%d->%d total_tokens=%d->%d",
             tool_name,
             path,
+            hidden_count,
             count_tokens(result),
             summary_before,
             summary_after,
