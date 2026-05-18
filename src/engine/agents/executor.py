@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 logger = get_logger("agents")
 
 _TOTAL_TOOL_CALL_LIMIT = 35
-_RAG_SEARCH_TOOL_CALL_LIMIT = 25
+_RAG_SEARCH_TOOL_CALL_LIMIT = 20
 
 _MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. В квадратных скобках единицы информации пронумерованы согласно их давности (номер меньше = информация свежее) 
 Не говори пользователю о существовании сводки. 
