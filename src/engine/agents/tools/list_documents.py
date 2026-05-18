@@ -87,6 +87,8 @@ class DocumentToolScope:
     public_only_owner: bool
     is_admin: bool
     own_only: bool
+    # Explicit owner filter: callee for own_only, LLM-supplied user_id for list_documents.
+    owner_filter_user_id: Optional[UUID]
 
 
 class BaseListDocumentsInput(BaseModel):
@@ -166,7 +168,18 @@ def _resolve_tool_identity(configurable: dict) -> tuple[str, str, bool]:
     return callee_user_id or caller_user_id, org_id, public_only_owner
 
 
-def _build_scope(config: RunnableConfig, own_only: bool) -> DocumentToolScope:
+def _parse_scope_uuid(value: str, field: str) -> UUID:
+    try:
+        return UUID(value)
+    except (ValueError, AttributeError):
+        raise ValueError(f"malformed UUID in scope field '{field}': {value!r}")
+
+
+def _build_scope(
+    config: RunnableConfig,
+    own_only: bool,
+    user_id: Optional[str] = None,
+) -> DocumentToolScope:
     """Build the immutable visibility scope from injected RunnableConfig.
 
     Required fields:
@@ -178,15 +191,21 @@ def _build_scope(config: RunnableConfig, own_only: bool) -> DocumentToolScope:
     caller_user_id_str = configurable.get("caller_user_id", "")
     owner_user_id_str, org_id_str, public_only_owner = _resolve_tool_identity(configurable)
     callee_user_id_str = configurable.get("callee_user_id") or caller_user_id_str
+    callee_uuid = _parse_scope_uuid(callee_user_id_str, "callee_user_id")
+    if own_only:
+        owner_filter_user_id: Optional[UUID] = callee_uuid
+    else:
+        owner_filter_user_id = _parse_scope_uuid(user_id.strip(), "user_id") if user_id and user_id.strip() else None
     return DocumentToolScope(
         tool_name="list_own_documents" if own_only else "list_documents",
-        caller_user_id=UUID(caller_user_id_str),
-        owner_user_id=UUID(owner_user_id_str),
-        callee_user_id=UUID(callee_user_id_str),
-        org_id=UUID(org_id_str),
+        caller_user_id=_parse_scope_uuid(caller_user_id_str, "caller_user_id"),
+        owner_user_id=_parse_scope_uuid(owner_user_id_str, "owner_user_id"),
+        callee_user_id=callee_uuid,
+        org_id=_parse_scope_uuid(org_id_str, "org_id"),
         public_only_owner=public_only_owner,
         is_admin=bool(configurable.get("is_admin", False)),
         own_only=own_only,
+        owner_filter_user_id=owner_filter_user_id,
     )
 
 
@@ -195,11 +214,7 @@ def _build_scope(config: RunnableConfig, own_only: bool) -> DocumentToolScope:
 # =================================================================
 
 
-async def _get_single_document(
-    file_id: str,
-    scope: DocumentToolScope,
-    owner_filter_user_id: Optional[UUID] = None,
-) -> str:
+async def _get_single_document(file_id: str, scope: DocumentToolScope) -> str:
     """Fetch one file directly and enforce single-document visibility locally."""
     f = await _user_file_storage.get_by_id(UUID(file_id.strip()))
     if f is None:
@@ -212,7 +227,7 @@ async def _get_single_document(
         )
     else:
         visible = (
-            (owner_filter_user_id is None or f.user_id == owner_filter_user_id)
+            (scope.owner_filter_user_id is None or f.user_id == scope.owner_filter_user_id)
             and (f.is_public or f.user_id == scope.caller_user_id or scope.is_admin)
             and not _is_image_file(f)
         )
@@ -226,7 +241,6 @@ async def _search_scoped(
     scope: DocumentToolScope,
     name_query: str,
     summary_query: str,
-    owner_filter_user_id: Optional[UUID] = None,
 ) -> tuple[list[RelatedDoc], Optional[str]]:
     """Search visible docs in SQL and return ranked RelatedDoc rows as-is."""
     if _rag_service is None:
@@ -236,8 +250,7 @@ async def _search_scoped(
     seen_ids: set[str] = set()
     org_id = str(scope.org_id)
     caller_user_id = str(scope.caller_user_id)
-    filter_owner_id = scope.callee_user_id if scope.own_only else owner_filter_user_id
-    filter_user_id = str(filter_owner_id) if filter_owner_id else None
+    filter_user_id = str(scope.owner_filter_user_id) if scope.owner_filter_user_id else None
 
     def remember_matches(docs: list[RelatedDoc]) -> None:
         for doc in docs:
@@ -278,25 +291,37 @@ async def _search_scoped(
 def _filter_listed_files(
     files: list[UserFile],
     scope: DocumentToolScope,
-    owner_filter_user_id: Optional[UUID] = None,
-) -> list[UserFile]:
-    """Apply no-search listing visibility rules to storage-loaded file rows."""
+) -> tuple[list[UserFile], int]:
+    """Apply no-search listing visibility rules to storage-loaded file rows.
+
+    Returns (visible_files, hidden_private_count) where hidden_private_count is
+    the number of files that matched the owner/org filter but were hidden due to
+    private visibility (caller has no read access).
+    """
     if scope.own_only:
-        # When another user calls an owner by mention, only that owner's public docs are visible.
-        return [
+        owner_matched = [
             f for f in files
-            if f.user_id == scope.owner_user_id
-            and (not scope.public_only_owner or f.is_public)
-            and not _is_image_file(f)
+            if f.user_id == scope.owner_user_id and not _is_image_file(f)
         ]
+        visible = [
+            f for f in owner_matched
+            if not scope.public_only_owner or f.is_public or scope.is_admin
+        ]
+        hidden = len(owner_matched) - len(visible)
+        return visible, hidden
 
     # Organization mode includes public docs, caller-owned private docs, and admin-visible private docs.
-    return [
+    owner_matched = [
         f for f in files
-        if (owner_filter_user_id is None or f.user_id == owner_filter_user_id)
-        and (f.is_public or f.user_id == scope.caller_user_id or scope.is_admin)
+        if (scope.owner_filter_user_id is None or f.user_id == scope.owner_filter_user_id)
         and not _is_image_file(f)
     ]
+    visible = [
+        f for f in owner_matched
+        if f.is_public or f.user_id == scope.caller_user_id or scope.is_admin
+    ]
+    hidden = len(owner_matched) - len(visible)
+    return visible, hidden
 
 
 # =================================================================
@@ -327,10 +352,10 @@ async def _list_documents_impl(
         return f"{tool_name} unavailable: storage not initialized."
 
     try:
-        scope = _build_scope(config, own_only)
+        scope = _build_scope(config, own_only, user_id)
         name_query = name_query.strip()
         summary_query = summary_query.strip()
-        owner_filter_user_id = UUID(user_id.strip()) if user_id and user_id.strip() else None
+
         path = "single" if file_id and file_id.strip() else ("search" if name_query or summary_query else "list")
         async with runtime.context.lock:
             summary_before = runtime.context.list_documents_runtime_data.spent_summary_tokens
@@ -344,7 +369,7 @@ async def _list_documents_impl(
             raw_summary_query,
             file_id,
             page,
-            owner_filter_user_id,
+            scope.owner_filter_user_id,
             scope.caller_user_id,
             scope.owner_user_id,
             scope.public_only_owner,
@@ -357,7 +382,7 @@ async def _list_documents_impl(
 
         # --- Single-document lookup: bypasses pagination, deduplication, and budgets ---
         if file_id and file_id.strip():
-            result = await _get_single_document(file_id, scope, owner_filter_user_id)
+            result = await _get_single_document(file_id, scope)
             logger.info(
                 "%s done: path=single file_id=%s output_tokens=%d",
                 tool_name, file_id, count_tokens(result),
@@ -365,12 +390,12 @@ async def _list_documents_impl(
             return result
 
         # --- Search by queries ---
+        hidden_count = 0
         if name_query or summary_query:
             files, error = await _search_scoped(
                 scope,
                 name_query,
                 summary_query,
-                owner_filter_user_id,
             )
             if error:
                 return error
@@ -379,9 +404,9 @@ async def _list_documents_impl(
             raw_count = len(files)
             visible_count = len(files)
         else:
-            # --- Or list all files without queries --- 
+            # --- Or list all files without queries ---
             all_files = await _user_file_storage.list_by_org(scope.org_id)
-            files = _filter_listed_files(all_files, scope, owner_filter_user_id)
+            files, hidden_count = _filter_listed_files(all_files, scope)
             empty_message = "No documents in your scope."
             compact_on_budget_exhausted = True
             raw_count = len(all_files)
@@ -392,7 +417,7 @@ async def _list_documents_impl(
             tool_name, path, raw_count, visible_count, compact_on_budget_exhausted,
         )
 
-        dedupe_state, page_slice, early_result = await dedupe_and_page(
+        dedupe_state, page_slice, shortcut_result = await dedupe_and_page(
             runtime,
             files,
             page,
@@ -400,12 +425,16 @@ async def _list_documents_impl(
             scope.tool_name,
             empty_message,
         )
-        if early_result is not None:
+        # shortcut_result is set when dedupe_and_page can answer without full formatting
+        # (empty list, budget exhausted, or all items already seen in a previous call).
+        if shortcut_result is not None:
+            if hidden_count:
+                shortcut_result = f"Some document(s) are private and not accessible to caller.\n" + shortcut_result
             logger.info(
-                "%s done: path=%s result=early output_tokens=%d deduped=%s",
-                tool_name, path, count_tokens(early_result), dedupe_state.deduplicated_across_runs,
+                "%s done: path=%s result=shortcut hidden=%d output_tokens=%d deduped=%s",
+                tool_name, path, hidden_count, count_tokens(shortcut_result), dedupe_state.deduplicated_across_runs,
             )
-            return early_result
+            return shortcut_result
 
         logger.info(
             "%s page: page=%d/%d span=%d-%d total=%d page_items=%d deduped=%s",
@@ -426,13 +455,16 @@ async def _list_documents_impl(
             compact_on_budget_exhausted,
             _SUMMARY_TOKENS_BUDGET,
         )
+        if hidden_count:
+            result = f"Some document(s) are private and not accessible to caller.\n" + result
         async with runtime.context.lock:
             summary_after = runtime.context.list_documents_runtime_data.spent_summary_tokens
             tokens_after = runtime.context.total_tokens_spent
         logger.info(
-            "%s done: path=%s output_tokens=%d summary_tokens=%d->%d total_tokens=%d->%d",
+            "%s done: path=%s hidden=%d output_tokens=%d summary_tokens=%d->%d total_tokens=%d->%d",
             tool_name,
             path,
+            hidden_count,
             count_tokens(result),
             summary_before,
             summary_after,
@@ -443,8 +475,8 @@ async def _list_documents_impl(
 
     except Exception as e:
         logger.error(f"{tool_name} failed: {e}", exc_info=True)
-        if isinstance(e, ValueError) and "badly formed hexadecimal UUID string" in str(e):
-            return f"Invalid UUID in input: {e}"
+        if isinstance(e, ValueError):
+            return f"Invalid UUID: {e}"
         return _TOOL_ERROR_RESULT
 
 

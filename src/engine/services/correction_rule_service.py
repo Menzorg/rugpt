@@ -305,6 +305,7 @@ class CorrectionRuleService:
         memory_text: str,
         top_k: int = 3,
         role_id: Optional[UUID] = None,
+        search_looseness: float = 0.75,
     ) -> List[CorrectionRule]:
         """Search correction rules by semantic similarity to a user prompt and memory string."""
         embedding_extra_body = build_initial_extra_body(
@@ -325,6 +326,7 @@ class CorrectionRuleService:
             user_message_embedding=user_embedding,
             top_k=top_k,
             role_id=role_id,
+            search_looseness=search_looseness,
         )
         logger.info(
             "correction rules search returned %d rules",

@@ -3,12 +3,14 @@
 DROP FUNCTION IF EXISTS search_correction_rules(vector, vector, integer);
 DROP FUNCTION IF EXISTS search_correction_rules(vector, vector, integer, uuid, uuid);
 DROP FUNCTION IF EXISTS search_correction_rules(vector, vector, integer, uuid);
+DROP FUNCTION IF EXISTS search_correction_rules(vector, vector, integer, uuid, double precision);
 
 CREATE FUNCTION search_correction_rules(
     p_mem_embedding         vector(1024),
     p_user_msg_embedding    vector(1024),
     p_top_k                 integer DEFAULT 3,
-    p_role_id               uuid DEFAULT NULL
+    p_role_id               uuid DEFAULT NULL,
+    p_search_looseness      double precision DEFAULT 0.75
 )
 RETURNS TABLE (
     id                      uuid,
@@ -55,7 +57,7 @@ BEGIN
           AND cr.user_message_embedding IS NOT NULL
           AND cr.is_active
           AND (p_role_id IS NULL OR cr.role_id = p_role_id)
-          AND (cr.mem_embedding <=> p_mem_embedding) + (cr.user_message_embedding <=> p_user_msg_embedding) < 0.75
+          AND (cr.mem_embedding <=> p_mem_embedding) + (cr.user_message_embedding <=> p_user_msg_embedding) < p_search_looseness
         ORDER BY
             (cr.mem_embedding <=> p_mem_embedding) +
             (cr.user_message_embedding <=> p_user_msg_embedding)
@@ -90,5 +92,5 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION search_correction_rules(vector, vector, integer, uuid) IS
-  'Dense-rank fusion search over correction_rules with optional role_id filter.';
+COMMENT ON FUNCTION search_correction_rules(vector, vector, integer, uuid, double precision) IS
+  'Dense-rank fusion search over correction_rules with optional role_id filter and configurable distance threshold.';
