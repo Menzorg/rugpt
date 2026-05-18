@@ -6,7 +6,7 @@ Business logic for organization management.
 
 from src.engine.unified_logger import get_logger
 import re
-from typing import Optional, List
+from typing import Optional
 from uuid import UUID
 
 from ..models.organization import Organization
@@ -71,10 +71,6 @@ class OrgService:
     async def get_organization_by_slug(self, slug: str) -> Optional[Organization]:
         """Get organization by slug"""
         return await self.storage.get_by_slug(slug)
-
-    async def list_organizations(self, active_only: bool = True) -> List[Organization]:
-        """List all organizations"""
-        return await self.storage.list_all(active_only)
 
     async def update_organization(
         self,

@@ -5,7 +5,7 @@ Endpoints for organization management (admin only).
 """
 
 from src.engine.unified_logger import get_logger
-from typing import Optional, List
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
@@ -84,27 +84,13 @@ async def create_organization(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("", response_model=List[OrgResponse])
-@router.get("/", response_model=List[OrgResponse])
-async def list_organizations(current_user: dict = Depends(get_current_user)):
-    """List all organizations (admin only)"""
-    engine = get_engine_service()
-
-    # Check if current user is admin
-    user = await engine.user_storage.get_by_id(current_user["user_id"])
-    if not user or not user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-
-    org_service = OrgService(engine.org_storage)
-    orgs = await org_service.list_organizations()
-    return [OrgResponse(**org.to_dict()) for org in orgs]
-
 @router.get("/{org_id}", response_model=OrgResponse)
 async def get_organization(
     org_id: str,
     current_user: dict = Depends(get_current_user)
 ):
-    """Get organization by ID"""
+    """Get organization by ID. Юзер видит только свою org — иначе 404, чтобы
+    не палить факт существования чужих tenant'ов."""
     engine = get_engine_service()
     org_service = OrgService(engine.org_storage)
 
@@ -112,6 +98,9 @@ async def get_organization(
         org_uuid = UUID(org_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    if org_uuid != UUID(current_user["org_id"]):
+        raise HTTPException(status_code=404, detail="Organization not found")
 
     org = await org_service.get_organization(org_uuid)
     if not org:
