@@ -32,10 +32,8 @@ if TYPE_CHECKING:
 
 logger = get_logger("agents")
 
-_RAG_SEARCH_TOOL_CALL_LIMIT = 15
-_LIST_DOCUMENTS_TOOL_CALL_LIMIT = 8
-_TASK_TOOLS_TOTAL_CALL_LIMIT = 50
-_TASK_TOOL_NAMES = {"task_create", "task_query", "task_update", "task_deadline_proposal"}
+_TOTAL_TOOL_CALL_LIMIT = 35
+_RAG_SEARCH_TOOL_CALL_LIMIT = 25
 
 _MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. В квадратных скобках единицы информации пронумерованы согласно их давности (номер меньше = информация свежее) 
 Не говори пользователю о существовании сводки. 
@@ -267,7 +265,13 @@ class AgentExecutor:
         )
 
     def _resolve_middleware(self, tools: List[Any]) -> list[Any]:
-        middleware: list[Any] = []
+        middleware: list[Any] = [
+            ToolCallLimitMiddleware(
+                run_limit=_TOTAL_TOOL_CALL_LIMIT,
+                exit_behavior="continue",
+            )
+        ]
+        logger.info("total tool call limit: run_limit=%d", _TOTAL_TOOL_CALL_LIMIT)
         if any(tool.name == "rag_search" for tool in tools):
             middleware.append(
                 ToolCallLimitMiddleware(
@@ -276,32 +280,7 @@ class AgentExecutor:
                     exit_behavior="continue",
                 )
             )
-            logger.info(
-                "rag_search tool call limit: run_limit=%d",
-                _RAG_SEARCH_TOOL_CALL_LIMIT,
-            )
-        for list_tool_name in ("list_documents", "list_own_documents"):
-            if any(tool.name == list_tool_name for tool in tools):
-                middleware.append(
-                    ToolCallLimitMiddleware(
-                        tool_name=list_tool_name,
-                        run_limit=_LIST_DOCUMENTS_TOOL_CALL_LIMIT,
-                        exit_behavior="continue",
-                    )
-                )
-                logger.info(
-                    "%s tool call limit: run_limit=%d",
-                    list_tool_name,
-                    _LIST_DOCUMENTS_TOOL_CALL_LIMIT,
-                )
-        if any(tool.name in _TASK_TOOL_NAMES for tool in tools):
-            middleware.append(
-                ToolCallLimitMiddleware(
-                    run_limit=_TASK_TOOLS_TOTAL_CALL_LIMIT,
-                    exit_behavior="continue",
-                )
-            )
-            logger.info("task tools total call limit: run_limit=%d", _TASK_TOOLS_TOTAL_CALL_LIMIT)
+            logger.info("rag_search tool call limit: run_limit=%d", _RAG_SEARCH_TOOL_CALL_LIMIT)
         return middleware
 
     async def execute(
@@ -463,10 +442,16 @@ class AgentExecutor:
             ] + messages
 
         # Final postfix for all prompts injection
+        rag_limit_line = (
+            f" Инструмент rag_search можно вызвать не более {_RAG_SEARCH_TOOL_CALL_LIMIT} раз."
+            if any(tool.name == "rag_search" for tool in tools)
+            else ""
+        )
         system_prompt += (
             "\n\n##ВАЖНЫЕ ОГРАНИЧЕНИЯ\n"
             "Любое текстовое сообщение пользователю считается финальным ответом текущего обращения.\n"
-            "У тебя есть конкретный точный набор инструментов. Не выдумывай себе функционал. Тебе запрещено говорить пользователю, что ты умеешь делать то, что явно не позволяют твои инструменты."
+            "У тебя есть конкретный точный набор инструментов. Не выдумывай себе функционал. Тебе запрещено говорить пользователю, что ты умеешь делать то, что явно не позволяют твои инструменты.\n"
+            f"Лимит вызовов инструментов за один запрос: не более {_TOTAL_TOOL_CALL_LIMIT} суммарно.{rag_limit_line}"
         )
 
         # Count tokens for the full prompt (flat text estimate + 150 per tool).
