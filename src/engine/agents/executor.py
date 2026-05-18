@@ -447,9 +447,12 @@ class AgentExecutor:
             subagent_context_blocks.append(memory_block)
             system_prompt += _MEMORY_PROMPT_BLOCK
 
+        if correction_rules_block:
+            context_blocks.append(correction_rules_block)
+
         context_block = "\n\n".join(context_blocks)
         subagent_context_block = "\n\n".join(subagent_context_blocks)
-        
+
         # Build and inject context message
         if context_block:
             messages = [
@@ -458,12 +461,6 @@ class AgentExecutor:
                     "content": f"<context>\n{context_block}\n</context>",
                 }
             ] + messages
-
-        # System prompt injections
-        
-        # Rules injection
-        if correction_rules_block:
-            system_prompt += correction_rules_block
 
         # Final postfix for all prompts injection
         system_prompt += (

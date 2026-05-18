@@ -55,6 +55,7 @@ BEGIN
           AND cr.user_message_embedding IS NOT NULL
           AND cr.is_active
           AND (p_role_id IS NULL OR cr.role_id = p_role_id)
+          AND (cr.mem_embedding <=> p_mem_embedding) + (cr.user_message_embedding <=> p_user_msg_embedding) < 0.75
         ORDER BY
             (cr.mem_embedding <=> p_mem_embedding) +
             (cr.user_message_embedding <=> p_user_msg_embedding)
