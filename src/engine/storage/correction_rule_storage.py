@@ -126,13 +126,14 @@ class CorrectionRuleStorage(BaseStorage):
         user_message_embedding: List[float],
         top_k: int = 5,
         role_id: Optional[UUID] = None,
+        search_looseness: float = 0.75,
     ) -> List[CorrectionRule]:
         """Search correction rules by semantic similarity using both memory and user prompt embeddings."""
         rows = await self.fetch(
             """
-            SELECT * FROM search_correction_rules($1::vector, $2::vector, $3, $4::uuid)
+            SELECT * FROM search_correction_rules($1::vector, $2::vector, $3, $4::uuid, $5)
             """,
-            _to_pgvector(mem_embedding), _to_pgvector(user_message_embedding), top_k, role_id,
+            _to_pgvector(mem_embedding), _to_pgvector(user_message_embedding), top_k, role_id, search_looseness,
         )
         return [self._row_to_rule(row) for row in rows]
 
