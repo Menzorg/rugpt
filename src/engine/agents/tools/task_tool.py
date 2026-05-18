@@ -11,9 +11,10 @@ errors that the sync-wrapper approach produced under langchain-openai.
 """
 
 from src.engine.unified_logger import get_logger
-from datetime import date, datetime
+from datetime import date, datetime, timezone as dt_timezone
 from typing import Annotated, List, Literal, Optional
 from uuid import UUID
+import zoneinfo
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool, InjectedToolArg
@@ -126,6 +127,16 @@ def create_task_tools(
     Returns (task_create_tool, task_query_tool, task_update_tool, task_deadline_proposal_tool).
     """
 
+    def _parse_deadline(deadline: str, tz_name: str) -> Optional[datetime]:
+        """Parse ISO deadline string, treating naive datetimes as org-local time, returning UTC-aware."""
+        if not deadline:
+            return None
+        dt = datetime.fromisoformat(deadline)
+        if dt.tzinfo is None:
+            tz = zoneinfo.ZoneInfo(tz_name)
+            dt = dt.replace(tzinfo=tz).astimezone(dt_timezone.utc)
+        return dt
+
     def _parse_uuid_list(values: Optional[List[str]]) -> List[UUID]:
         """Parse optional UUID list args from LangChain/Pydantic."""
         if values is None:
@@ -177,11 +188,12 @@ def create_task_tools(
             _log_identity("task_create", configurable)
             caller_uuid = UUID(configurable["caller_user_id"])
             task_org_id = UUID(configurable["org_id"])
+            org_tz = configurable.get("timezone", "Europe/Moscow")
 
             assignee_uuid = UUID(assignee_user_id)
             participant_uuids = _parse_uuid_list(participant_user_ids)
             try:
-                dl = datetime.fromisoformat(deadline) if deadline else None
+                dl = _parse_deadline(deadline, org_tz)
             except ValueError:
                 logger.info("task_create invalid_deadline: deadline=%r", deadline)
                 return f"Invalid deadline format: {deadline!r}. Use ISO format, e.g. '2025-03-15T18:00:00'."
@@ -272,6 +284,7 @@ def create_task_tools(
             _log_identity("task_query", configurable)
             caller_uuid = UUID(configurable["caller_user_id"])
             query_org_id = UUID(configurable["org_id"])
+            org_tz = zoneinfo.ZoneInfo(configurable.get("timezone", "Europe/Moscow"))
 
             from ...services.engine_service import get_engine_service
             engine = get_engine_service()
@@ -445,10 +458,10 @@ def create_task_tools(
 
             lines = []
             for t in shown:
-                dl = f", deadline: {t.deadline.isoformat()}" if t.deadline else ""
+                dl = f", deadline: {t.deadline.astimezone(org_tz).isoformat()}" if t.deadline else ""
                 if t.proposed_deadline:
                     proposer = name_map.get(t.proposed_deadline_by, str(t.proposed_deadline_by)) if t.proposed_deadline_by else "assignee"
-                    dl += f", proposed_deadline: {t.proposed_deadline.isoformat()} (by {proposer})"
+                    dl += f", proposed_deadline: {t.proposed_deadline.astimezone(org_tz).isoformat()} (by {proposer})"
                 assignee = name_map.get(t.assignee_user_id, str(t.assignee_user_id))
                 creator = name_map.get(t.created_by_user_id, str(t.created_by_user_id)) if t.created_by_user_id else ""
                 participant_names = [
@@ -513,6 +526,7 @@ def create_task_tools(
             _log_identity("task_update", configurable)
             caller_uuid = UUID(configurable["caller_user_id"])
             is_admin = configurable.get("is_admin", False)
+            org_tz = configurable.get("timezone", "Europe/Moscow")
 
             task_uuid = UUID(task_id)
             add_participant_uuids = _parse_uuid_list(new_participant_user_ids)
@@ -520,7 +534,7 @@ def create_task_tools(
             updated = None
             participant_changes = []
             try:
-                deadline_dt = datetime.fromisoformat(deadline) if deadline else None
+                deadline_dt = _parse_deadline(deadline, org_tz) if deadline else None
             except ValueError:
                 logger.info("task_update invalid_deadline: task=%s deadline=%r", task_id, deadline)
                 return f"Invalid deadline format: {deadline!r}. Use ISO format, e.g. '2025-03-15T18:00:00'."
@@ -805,6 +819,7 @@ def create_task_tools(
             _log_identity("get_own_tasks", configurable)
             # callee_user_id == caller_user_id in direct calls (always set by executor).
             target_uuid = UUID(configurable.get("callee_user_id") or configurable["caller_user_id"])
+            org_tz = zoneinfo.ZoneInfo(configurable.get("timezone", "Europe/Moscow"))
 
             tasks = await task_service.list_by_assignee(target_uuid, status or None)
             initial_count = len(tasks)
@@ -874,10 +889,10 @@ def create_task_tools(
 
             lines = []
             for t in shown:
-                dl = f", deadline: {t.deadline.isoformat()}" if t.deadline else ""
+                dl = f", deadline: {t.deadline.astimezone(org_tz).isoformat()}" if t.deadline else ""
                 if t.proposed_deadline:
                     proposer = name_map.get(t.proposed_deadline_by, str(t.proposed_deadline_by)) if t.proposed_deadline_by else "assignee"
-                    dl += f", proposed_deadline: {t.proposed_deadline.isoformat()} (by {proposer})"
+                    dl += f", proposed_deadline: {t.proposed_deadline.astimezone(org_tz).isoformat()} (by {proposer})"
                 creator = name_map.get(t.created_by_user_id, str(t.created_by_user_id)) if t.created_by_user_id else ""
                 participant_names = [p["name"] for p in participants_by_task.get(t.id, [])]
                 participants = f", participants={', '.join(participant_names)}" if participant_names else ""
