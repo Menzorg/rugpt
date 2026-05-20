@@ -24,6 +24,7 @@ class Organization:
     timezone: str = "Europe/Moscow"         # IANA timezone for scheduler
     org_context: str = ""                   # Org structure description for AI prompts
     is_active: bool = True                  # Active/inactive status
+    accountant_user_id: Optional[UUID] = None  # User designated to mark invoices as processed (migration 044)
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -37,6 +38,7 @@ class Organization:
             "timezone": self.timezone,
             "org_context": self.org_context,
             "is_active": self.is_active,
+            "accountant_user_id": str(self.accountant_user_id) if self.accountant_user_id else None,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
@@ -52,6 +54,7 @@ class Organization:
             timezone=data.get("timezone", "Europe/Moscow"),
             org_context=data.get("org_context", ""),
             is_active=data.get("is_active", True),
+            accountant_user_id=UUID(data["accountant_user_id"]) if isinstance(data.get("accountant_user_id"), str) else data.get("accountant_user_id"),
             created_at=datetime.fromisoformat(data["created_at"]) if isinstance(data.get("created_at"), str) else data.get("created_at", datetime.utcnow()),
             updated_at=datetime.fromisoformat(data["updated_at"]) if isinstance(data.get("updated_at"), str) else data.get("updated_at", datetime.utcnow()),
         )

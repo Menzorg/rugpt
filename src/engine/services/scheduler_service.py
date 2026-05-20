@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from ..storage.chat_storage import ChatStorage
     from ..storage.message_storage import MessageStorage
     from ..storage.agent_run_storage import AgentRunStorage
+    from ..storage.invoice_storage import InvoiceStorage
+    from ..storage.user_file_storage import UserFileStorage
     from .task_service import TaskService
     from .task_poll_service import TaskPollService
     from .task_report_service import TaskReportService
@@ -94,6 +96,11 @@ class SchedulerService:
         self.agent_run_storage: Optional["AgentRunStorage"] = None
         self.ai_service: Optional["AIService"] = None
         self.in_app_notification_service: Optional["InAppNotificationService"] = None
+
+        # Invoice-due reminder deps — wired post-construction by EngineService
+        # (same circular-import reason as above). Used by _notify_invoice_due.
+        self.invoice_storage: Optional["InvoiceStorage"] = None
+        self.user_file_storage: Optional["UserFileStorage"] = None
 
     async def start(self):
         """Start the scheduler background task"""
@@ -312,8 +319,12 @@ class SchedulerService:
         has_admin_briefing = (
             self.user_storage and self.task_service and self.in_app_notification_service
         )
+        has_invoice_due = (
+            self.invoice_storage and self.user_file_storage
+            and self.in_app_notification_service
+        )
 
-        if not has_morning and not has_evening and not has_admin_briefing:
+        if not (has_morning or has_evening or has_admin_briefing or has_invoice_due):
             return
 
         # Load active organizations and check local hour for each
@@ -337,6 +348,9 @@ class SchedulerService:
 
             if has_admin_briefing and local_hour in self.morning_hours:
                 await self._run_admin_briefing_for_org(org.id, org.timezone)
+
+            if has_invoice_due and local_hour in self.morning_hours:
+                await self._notify_invoice_due(org)
 
             if has_evening and local_hour in self.evening_hours:
                 await self._run_evening_reports_for_org(org.id, now_utc)
@@ -515,6 +529,50 @@ class SchedulerService:
 
         except Exception as e:
             logger.error(f"Evening reports for org {org_id} failed: {e}")
+
+    # ── Invoice-due reminders ─────────────────────────────────────
+
+    async def _notify_invoice_due(self, org) -> None:
+        """Send invoice-due reminders to the org's designated accountant.
+
+        Each invoice with due_date == today or today+1 yields one notification
+        per calendar day (via last_notified_for_date dedupe).
+        """
+        if not org.accountant_user_id:
+            return
+        if not (self.invoice_storage and self.user_file_storage
+                and self.in_app_notification_service):
+            return
+
+        tz = ZoneInfo(org.timezone)
+        today_local = datetime.now(tz).date()
+        rows = await self.invoice_storage.list_due_today_or_tomorrow_pending_notif(
+            org.id, today_local,
+        )
+        for inv in rows:
+            try:
+                f = await self.user_file_storage.get_by_id(inv.file_id)
+                file_name = f.original_filename if f else "счёт"
+                delta = (inv.due_date - today_local).days if inv.due_date else 0
+                when_str = "сегодня" if delta == 0 else f"завтра ({inv.due_date})"
+                await self.in_app_notification_service.create(
+                    user_id=org.accountant_user_id,
+                    org_id=org.id,
+                    type="invoice_due",
+                    title=f"Счёт «{file_name}» — {when_str}",
+                    content=(f.summary if (f and f.summary) else "Открой счёт для деталей."),
+                    reference_type="invoice",
+                    reference_id=inv.id,
+                )
+                await self.invoice_storage.update_last_notified_for_date(inv.id, today_local)
+                logger.info(
+                    f"Invoice-due reminder sent: org={org.id} "
+                    f"accountant={org.accountant_user_id} invoice={inv.id} due={inv.due_date}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Invoice-due reminder failed: org={org.id} invoice={inv.id}: {e}"
+                )
 
     # ── Poll-initial retry job ────────────────────────────────────
 

@@ -80,6 +80,7 @@ class OrgService:
         description: Optional[str] = None,
         timezone: Optional[str] = None,
         org_context: Optional[str] = None,
+        accountant_user_id: Optional[UUID] = None,
     ) -> Optional[Organization]:
         """
         Update organization.
@@ -89,6 +90,7 @@ class OrgService:
             name: New name (optional)
             slug: New slug (optional)
             description: New description (optional)
+            accountant_user_id: User designated to mark invoices as processed (optional)
 
         Returns:
             Updated organization or None if not found
@@ -115,6 +117,9 @@ class OrgService:
 
         if org_context is not None:
             org.org_context = org_context
+
+        if accountant_user_id is not None:
+            org.accountant_user_id = accountant_user_id
 
         updated = await self.storage.update(org)
         logger.info(f"Updated organization: {updated.name}")
