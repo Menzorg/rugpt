@@ -5,12 +5,12 @@ Output is a compact textual list with id, file name, status, due_date,
 uploader name. The LLM uses ids from this output to drive get_invoice /
 show_modal.
 """
-from typing import Optional, Literal
+from typing import Annotated, Optional, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import InjectedToolArg, StructuredTool
 
 
 class ListInvoicesInput(BaseModel):
@@ -28,7 +28,7 @@ def create_list_invoices_tool(engine):
     """Factory wires the tool to a live EngineService."""
 
     async def _list(
-        config: RunnableConfig,
+        config: Annotated[RunnableConfig, InjectedToolArg],
         status: Optional[str] = None,
     ) -> str:
         cfg = (config or {}).get("configurable", {}) or {}
