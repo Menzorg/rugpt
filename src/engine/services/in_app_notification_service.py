@@ -30,7 +30,7 @@ class InAppNotificationService:
         reference_id: Optional[UUID] = None,
     ) -> InAppNotification:
         """Create a new in-app notification"""
-        valid_types = {"new_task", "poll", "report", "mention", "task_status_change", "system", "daily_admin_briefing"}
+        valid_types = {"new_task", "poll", "report", "mention", "task_status_change", "system", "daily_admin_briefing", "invoice_due"}
         if type not in valid_types:
             raise ValueError(f"Invalid notification type: {type}. Must be one of {valid_types}")
 

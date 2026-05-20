@@ -22,7 +22,7 @@ class InAppNotification:
     id: UUID = field(default_factory=uuid4)
     user_id: UUID = field(default_factory=uuid4)
     org_id: UUID = field(default_factory=uuid4)
-    type: str = ""                                  # new_task | poll | report | mention | task_status_change | system | daily_admin_briefing
+    type: str = ""                                  # new_task | poll | report | mention | task_status_change | system | daily_admin_briefing | invoice_due
     title: str = ""
     content: Optional[str] = None
     reference_type: Optional[str] = None            # task | task_poll | task_report | message

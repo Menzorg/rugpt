@@ -36,6 +36,7 @@ from ..storage.agent_run_storage import AgentRunStorage
 from ..storage.support_ticket_storage import SupportTicketStorage
 from ..storage.support_ticket_event_storage import SupportTicketEventStorage
 from ..storage.memory_snapshot_storage import MemorySnapshotStorage
+from ..storage.invoice_storage import InvoiceStorage
 from ..storage.storage_adapter import LocalStorageAdapter
 from .chat_service import ChatService
 from .project_service import ProjectService
@@ -56,6 +57,7 @@ from .task_poll_service import TaskPollService
 from .task_report_service import TaskReportService
 from .file_service import FileService
 from .folder_service import FolderService
+from .invoice_service import InvoiceService
 from .correction_rule_service import CorrectionRuleService
 from .memory_service import MemoryService
 from .department_service import DepartmentService
@@ -66,6 +68,8 @@ from .role_subagent_service import RoleSubagentService
 from ..storage.rag_store import RAG_store
 from ..notifications.telegram_sender import TelegramSender
 from ..notifications.email_sender import EmailSender
+from ..actions.registry import ActionRegistry
+from ..actions.bootstrap import register_all as register_all_actions
 
 logger = get_logger("services")
 
@@ -117,6 +121,7 @@ class EngineService:
         self.support_ticket_storage = SupportTicketStorage(self.postgres_dsn)
         self.support_ticket_event_storage = SupportTicketEventStorage(self.postgres_dsn)
         self.memory_snapshot_storage = MemorySnapshotStorage(self.postgres_dsn)
+        self.invoice_storage = InvoiceStorage(self.postgres_dsn)
 
         # Initialize prompt cache (prompts dir relative to project root)
         prompts_dir = str(Config.BASE_DIR / "src" / "engine" / "prompts")
@@ -213,6 +218,10 @@ class EngineService:
             allowed_types=set(Config.FILE_ALLOWED_TYPES.split(",")),
         )
 
+        # Invoice service — depends on invoice_storage + file_service (binary
+        # reuses user_files; RAG-summary lands in user_files.summary).
+        self.invoice_service = InvoiceService(self.invoice_storage, self.file_service)
+
         # Initialize RAG store and service
         self.rag_store = RAG_store(
             dsn=Config.RAG_STORE_DSN,
@@ -287,6 +296,9 @@ class EngineService:
             self.user_file_storage,
             self.storage_adapter,
         )
+
+        # Initialize action registry (populated in initialize() via register_all_actions)
+        self.action_registry = ActionRegistry()
 
         # Initialize tool registry
         self.tool_registry = ToolRegistry()
@@ -385,6 +397,11 @@ class EngineService:
         self.scheduler_service.ai_service = self.ai_service
         self.scheduler_service.in_app_notification_service = self.in_app_notification_service
 
+        # Wire invoice-due reminder deps into SchedulerService (post-construction).
+        # Used by SchedulerService._notify_invoice_due.
+        self.scheduler_service.invoice_storage = self.invoice_storage
+        self.scheduler_service.user_file_storage = self.user_file_storage
+
         # Kafka consumer for agent.requests topic (async inference).
         # Created here; started in initialize() after storages are connected.
         self._agent_request_handler = AgentRequestHandler(
@@ -454,6 +471,7 @@ class EngineService:
         await self.support_ticket_storage.init()
         await self.support_ticket_event_storage.init()
         await self.memory_snapshot_storage.init()
+        await self.invoice_storage.init()
 
         await self.rag_store.init()
 
@@ -484,6 +502,26 @@ class EngineService:
             await self.agent_request_consumer.start()
         except Exception as e:
             logger.error(f"Kafka agent.requests consumer failed to start: {e}")
+
+        # Populate action registry (production action types). No-op in v1 — feature
+        # plans add invoice_approve, etc. Must run before scheduler/Kafka handlers
+        # can dispatch actions.
+        register_all_actions(self.action_registry)
+        logger.info("Action registry initialized: %s", self.action_registry.list_action_types())
+
+        # Register show_modal tool — wraps the populated action_registry so the LLM
+        # can request structured action confirmations from the user. Must run AFTER
+        # register_all_actions so the registry is fully populated.
+        from ..agents.tools.show_modal import create_show_modal_tool
+        show_modal_tool = create_show_modal_tool(self.action_registry)
+        self.tool_registry.register("show_modal", show_modal_tool)
+
+        # Register invoice tools — factories capture the live engine instance so
+        # the closures reach self.invoice_storage / self.invoice_service.
+        from ..agents.tools.list_invoices import create_list_invoices_tool
+        from ..agents.tools.get_invoice import create_get_invoice_tool
+        self.tool_registry.register("list_invoices", create_list_invoices_tool(self))
+        self.tool_registry.register("get_invoice", create_get_invoice_tool(self))
 
         # Start background scheduler
         await self.scheduler_service.start()
@@ -521,6 +559,7 @@ class EngineService:
         await self.support_ticket_storage.close()
         await self.support_ticket_event_storage.close()
         await self.memory_snapshot_storage.close()
+        await self.invoice_storage.close()
         await self.rag_store.close()
         await self.scheduler_service.stop()
         await self.notification_service.close()
