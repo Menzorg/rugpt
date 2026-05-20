@@ -380,6 +380,7 @@ class AgentExecutor:
                 "callee_user_id": str(effective_callee_user_id),
                 "invocation_kind": invocation_kind,
                 "is_admin": bool(caller.is_admin) if caller else False,
+                "timezone": org.timezone if org else "Europe/Moscow",
                 "role": role,
             },
         )
