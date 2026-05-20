@@ -35,8 +35,6 @@ rag_tool = importlib.import_module("src.engine.agents.tools.rag_tool")
 
 RuntimeContext = runtime_module.RuntimeContext
 _list_documents_impl = list_documents._list_documents_impl
-list_global_documents = list_documents.list_global_documents
-list_own_documents = list_documents.list_own_documents
 _can_access_file = rag_tool._can_access_file
 
 

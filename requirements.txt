@@ -27,12 +27,12 @@ tokenizers>=0.21.0
 tiktoken>=0.7.0
 jinja2>=3.1.0
 huggingface_hub>=1.0.0
-langchain>=0.3.0
-langchain-core>=0.3.0
-langchain-openai>=0.2.0
-langchain-community>=0.3.0
-langchain-text-splitters>=0.3.0
-langgraph>=0.2.0
+langchain>=1.2.15
+langchain-core>=1.2.31
+langchain-openai>=1.1.11
+langchain-community>=0.4.1
+langchain-text-splitters>=1.1.1
+langgraph>=1.1.6
 langgraph-supervisor>=0.0.31
 
 # Kafka event bus (item 10: PM agent notifications + async agent execution)

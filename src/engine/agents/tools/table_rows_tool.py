@@ -12,10 +12,10 @@ during engine startup.
 """
 
 from src.engine.unified_logger import get_logger
-from typing import Annotated, Optional
+from typing import Optional
 from uuid import UUID
 
-from langchain_core.tools import tool, InjectedToolArg
+from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 
 from ...services.rag_service import RAGService
@@ -58,7 +58,7 @@ async def table_rows_search(
     file_id: str,
     row_start: int,
     row_end: int,
-    config: Annotated[RunnableConfig, InjectedToolArg],
+    config: RunnableConfig,
 ) -> str:
     """Fetch rows from a table document by row index range. Maximum 50 rows returned per call.
     Args:

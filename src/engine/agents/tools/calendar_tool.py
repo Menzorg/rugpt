@@ -10,11 +10,11 @@ Tools are async — invoked directly in the running event loop, so we just
 """
 
 from src.engine.unified_logger import get_logger
-from typing import Annotated, Optional
+from typing import Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import StructuredTool, InjectedToolArg
+from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 logger = get_logger("agents")
@@ -51,7 +51,7 @@ def create_calendar_tools(
         title: str,
         description: str = "",
         date: str = "",
-        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+        config: RunnableConfig = None,
     ) -> str:
         """Create a calendar event. Use when user mentions dates, deadlines, or meetings.
         Args:
@@ -83,7 +83,7 @@ def create_calendar_tools(
 
     async def _calendar_query_async(
         query: str = "",
-        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+        config: RunnableConfig = None,
     ) -> str:
         """Query upcoming calendar events.
         Args:

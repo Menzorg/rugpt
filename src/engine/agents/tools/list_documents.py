@@ -34,11 +34,11 @@ How it works:
 
 from src.engine.unified_logger import get_logger
 from dataclasses import dataclass
-from typing import Annotated, Optional
+from typing import Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import InjectedToolArg, StructuredTool
+from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field
 
@@ -329,8 +329,8 @@ def _filter_listed_files(
 # =================================================================
 
 async def _list_documents_impl(
-    config: Annotated[RunnableConfig, InjectedToolArg],
-    runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg],
+    config: RunnableConfig,
+    runtime: ToolRuntime[RuntimeContext],
     own_only: bool,
     name_query: str = "",
     summary_query: str = "",
@@ -481,8 +481,8 @@ async def _list_documents_impl(
 
 
 async def _list_documents_async(
-    config: Annotated[RunnableConfig, InjectedToolArg],
-    runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg],
+    config: RunnableConfig,
+    runtime: ToolRuntime[RuntimeContext],
     name_query: str = "",
     summary_query: str = "",
     file_id: Optional[str] = None,
@@ -496,8 +496,8 @@ async def _list_documents_async(
 
 
 async def _list_own_documents_async(
-    config: Annotated[RunnableConfig, InjectedToolArg],
-    runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg],
+    config: RunnableConfig,
+    runtime: ToolRuntime[RuntimeContext],
     name_query: str = "",
     summary_query: str = "",
     file_id: Optional[str] = None,
