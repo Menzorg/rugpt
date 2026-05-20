@@ -4,7 +4,7 @@ If langchain/langgraph changes how InjectedToolArg works (e.g. a version bump
 that breaks injection), these tests will fail before any real tool is affected.
 """
 import uuid
-from typing import Annotated, Any, Iterator
+from typing import Any, Iterator
 
 import pytest
 from langchain.agents import create_agent
@@ -12,7 +12,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import InjectedToolArg, StructuredTool
+from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel
 

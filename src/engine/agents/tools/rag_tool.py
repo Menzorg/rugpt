@@ -10,10 +10,10 @@ Service lifecycle: call init_rag_service(service) once during engine startup.
 """
 
 from src.engine.unified_logger import get_logger
-from typing import Annotated, Optional
+from typing import Optional
 from uuid import UUID
 
-from langchain_core.tools import tool, InjectedToolArg
+from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolRuntime
 
