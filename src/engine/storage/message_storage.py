@@ -44,18 +44,21 @@ class MessageStorage(BaseStorage):
             INSERT INTO messages (
                 id, chat_id, sender_type, sender_id, content, mentions,
                 reply_to_id, ai_is_valid, ai_edited, is_deleted,
+                metadata,
                 created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING *
         """
         mentions_json = json.dumps([m.to_dict() for m in message.mentions])
+        metadata_json = json.dumps(message.metadata or {})
         row = await self.fetchrow(
             query,
             message.id, message.chat_id, message.sender_type.value,
             message.sender_id, message.content, mentions_json,
             message.reply_to_id, message.ai_is_valid, message.ai_edited,
-            message.is_deleted, message.created_at, message.updated_at
+            message.is_deleted, metadata_json,
+            message.created_at, message.updated_at
         )
         return self._row_to_message(row)
 
@@ -233,6 +236,19 @@ class MessageStorage(BaseStorage):
         mentions = [Mention.from_dict(m) for m in (mentions_data or [])]
 
         keys = set(row.keys())
+
+        # metadata column may be absent in legacy fixture rows (older test schemas);
+        # gracefully default to {}. asyncpg returns jsonb as already-decoded dict,
+        # but accept str too for robustness against custom fetchers.
+        if "metadata" in keys:
+            metadata_raw = row["metadata"]
+            if isinstance(metadata_raw, str):
+                metadata = json.loads(metadata_raw)
+            else:
+                metadata = metadata_raw or {}
+        else:
+            metadata = {}
+
         return Message(
             id=row["id"],
             chat_id=row["chat_id"],
@@ -245,6 +261,7 @@ class MessageStorage(BaseStorage):
             ai_edited=row["ai_edited"],
             is_deleted=row["is_deleted"],
             mem_id=row["mem_id"] if "mem_id" in keys else None,
+            metadata=metadata,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

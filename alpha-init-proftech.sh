@@ -336,32 +336,3 @@ echo "  tender_manager, logistics_head, chief_accountant, accountant_primary, st
 echo ""
 echo "Visibility: все 6 отделов видят друг друга (15 пар)"
 echo ""
-
-# ============================================
-# role_subagents: каждая роль org → doc_search + PM
-# ============================================
-DOC_SEARCH_ROLE_ID="73a2f6bc-1d5f-4dd2-aed4-eaebc2a09cd4"
-PM_ROLE_ID="411db738-fa5c-4451-80e3-2d00067ee1a7"
-
-echo -e "${YELLOW}Привязка subagent-ролей (doc_search + PM) к каждой роли org...${NC}"
-ORG_ROLES=(
-    "$ROLE_SALES_HEAD_ID"
-    "$ROLE_DIRECT_SALES_ID"
-    "$ROLE_IT_SUPPORT_ID"
-    "$ROLE_AI_ML_DEV_ID"
-    "$ROLE_ELEC_ENG_ID"
-    "$ROLE_TENDER_MGR_ID"
-    "$ROLE_LOGISTICS_HEAD_ID"
-    "$ROLE_CHIEF_ACCOUNTANT_ID"
-    "$ROLE_ACCOUNTANT_PRIMARY_ID"
-    "$ROLE_STRATEGIC_COMMS_ID"
-)
-for rid in "${ORG_ROLES[@]}"; do
-    run_sql "
-    INSERT INTO role_subagents (role_id, subagent_role_id) VALUES
-        ('$rid', '$DOC_SEARCH_ROLE_ID'),
-        ('$rid', '$PM_ROLE_ID')
-    ON CONFLICT DO NOTHING;
-    " > /dev/null
-done
-echo -e "${GREEN}OK: 20 записей role_subagents (10 ролей × 2 subagent)${NC}"

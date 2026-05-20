@@ -45,6 +45,7 @@ async def create_department(
 
 @router.get("/")
 async def list_departments(current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
     engine = get_engine_service()
     depts = await engine.department_service.list_departments(current_user["org_id"])
     return [d.to_dict() for d in depts]
@@ -54,6 +55,7 @@ async def get_department(
     department_id: str,
     current_user: dict = Depends(get_current_user),
 ):
+    _require_admin(current_user)
     engine = get_engine_service()
     dept = await engine.department_service.get_department(UUID(department_id))
     if not dept or dept.org_id != current_user["org_id"]:
@@ -146,6 +148,7 @@ async def delete_visibility_rule(
 
 @router.get("/visibility")
 async def list_visibility_rules(current_user: dict = Depends(get_current_user)):
+    _require_admin(current_user)
     engine = get_engine_service()
     rules = await engine.department_service.list_visibility_rules(current_user["org_id"])
     return [r.to_dict() for r in rules]

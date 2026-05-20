@@ -8,7 +8,6 @@ Supports cache clear without restart.
 
 from src.engine.unified_logger import get_logger
 import os
-import zoneinfo
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -24,13 +23,12 @@ _RU_MONTHS = [
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 ]
 
-def _today_ru(timezone: str = "Europe/Moscow") -> str:
-    now = datetime.now(tz=zoneinfo.ZoneInfo(timezone))
+def _today_ru() -> str:
+    now = datetime.now()
     return (
         f"Сегодня: {_RU_WEEKDAYS[now.weekday()]}, "
-        f"{now.day} {_RU_MONTHS[now.month - 1]} {now.year}, "
-        f"{now.strftime('%H:%M')} (часовой пояс: {timezone}, "
-        f"ISO: {now.isoformat(timespec='minutes')})"
+        f"{now.day} {_RU_MONTHS[now.month - 1]} {now.year} "
+        f"(ISO: {now.date().isoformat()})"
     )
 
 class PromptCache:
@@ -46,7 +44,7 @@ class PromptCache:
         self._prompts_dir = prompts_dir
         self._subagents_dir = os.path.join(prompts_dir, "subagents")
 
-    def get_prompt(self, role, org_context: str = "", is_subagent: bool = False, timezone: str = "Europe/Moscow") -> str:
+    def get_prompt(self, role, org_context: str = "", is_subagent: bool = False) -> str:
         """
         Get system prompt for a role.
 
@@ -96,7 +94,7 @@ class PromptCache:
             role_prompt = role.system_prompt or ""
 
         if "{today}" in role_prompt:
-            role_prompt = role_prompt.replace("{today}", _today_ru(timezone))
+            role_prompt = role_prompt.replace("{today}", _today_ru())
 
         if org_context:
             return f"{org_context}\n\n---\n\n{role_prompt}"

@@ -22,6 +22,8 @@ from .projects import router as projects_router
 from .support import router as support_router
 from .corrections import router as corrections_router
 from .folders import router as folders_router
+from .actions import router as actions_router
+from .invoices import router as invoices_router
 
 __all__ = [
     'health_router',
@@ -43,4 +45,6 @@ __all__ = [
     'support_router',
     'corrections_router',
     'folders_router',
+    'actions_router',
+    'invoices_router',
 ]

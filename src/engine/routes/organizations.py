@@ -36,6 +36,7 @@ class UpdateOrgRequest(BaseModel):
     description: Optional[str] = None
     timezone: Optional[str] = None
     org_context: Optional[str] = None
+    accountant_user_id: Optional[str] = None
 
 class OrgResponse(BaseModel):
     """Organization response"""
@@ -46,6 +47,7 @@ class OrgResponse(BaseModel):
     timezone: str
     org_context: Optional[str] = None
     is_active: bool
+    accountant_user_id: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -129,6 +131,15 @@ async def update_organization(
 
     org_service = OrgService(engine.org_storage)
 
+    # v1: only set accountant when caller provides a non-empty value.
+    # Unsetting via PATCH is unsupported — admin re-PATCHes with another id.
+    accountant_uuid: Optional[UUID] = None
+    if request.accountant_user_id:
+        try:
+            accountant_uuid = UUID(request.accountant_user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid accountant_user_id")
+
     try:
         org = await org_service.update_organization(
             org_id=org_uuid,
@@ -137,6 +148,7 @@ async def update_organization(
             description=request.description,
             timezone=request.timezone,
             org_context=request.org_context,
+            accountant_user_id=accountant_uuid,
         )
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
