@@ -34,11 +34,11 @@ How it works:
 
 from src.engine.unified_logger import get_logger
 from dataclasses import dataclass
-from typing import Annotated, Optional
+from typing import Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import InjectedToolArg, StructuredTool
+from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field
 
@@ -291,24 +291,26 @@ async def _search_scoped(
 def _filter_listed_files(
     files: list[UserFile],
     scope: DocumentToolScope,
-) -> tuple[list[UserFile], int]:
+) -> tuple[list[UserFile], int, int]:
     """Apply no-search listing visibility rules to storage-loaded file rows.
 
-    Returns (visible_files, hidden_private_count) where hidden_private_count is
-    the number of files that matched the owner/org filter but were hidden due to
-    private visibility (caller has no read access).
+    Returns (visible_files, hidden_private_count, not_indexed_count) where
+    hidden_private_count is the number of files hidden due to private visibility
+    and not_indexed_count is the number of files excluded because rag_status='not_indexed'.
     """
     if scope.own_only:
         owner_matched = [
             f for f in files
             if f.user_id == scope.owner_user_id and not _is_image_file(f)
         ]
+        not_indexed_count = sum(1 for f in owner_matched if f.rag_status == "not_indexed")
+        indexed = [f for f in owner_matched if f.rag_status != "not_indexed"]
         visible = [
-            f for f in owner_matched
+            f for f in indexed
             if not scope.public_only_owner or f.is_public or scope.is_admin
         ]
-        hidden = len(owner_matched) - len(visible)
-        return visible, hidden
+        hidden = len(indexed) - len(visible)
+        return visible, hidden, not_indexed_count
 
     # Organization mode includes public docs, caller-owned private docs, and admin-visible private docs.
     owner_matched = [
@@ -316,12 +318,14 @@ def _filter_listed_files(
         if (scope.owner_filter_user_id is None or f.user_id == scope.owner_filter_user_id)
         and not _is_image_file(f)
     ]
+    not_indexed_count = sum(1 for f in owner_matched if f.rag_status == "not_indexed")
+    indexed = [f for f in owner_matched if f.rag_status != "not_indexed"]
     visible = [
-        f for f in owner_matched
+        f for f in indexed
         if f.is_public or f.user_id == scope.caller_user_id or scope.is_admin
     ]
-    hidden = len(owner_matched) - len(visible)
-    return visible, hidden
+    hidden = len(indexed) - len(visible)
+    return visible, hidden, not_indexed_count
 
 
 # =================================================================
@@ -329,8 +333,8 @@ def _filter_listed_files(
 # =================================================================
 
 async def _list_documents_impl(
-    config: Annotated[RunnableConfig, InjectedToolArg],
-    runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg],
+    config: RunnableConfig,
+    runtime: ToolRuntime[RuntimeContext],
     own_only: bool,
     name_query: str = "",
     summary_query: str = "",
@@ -391,6 +395,7 @@ async def _list_documents_impl(
 
         # --- Search by queries ---
         hidden_count = 0
+        not_indexed_count = 0
         if name_query or summary_query:
             files, error = await _search_scoped(
                 scope,
@@ -406,7 +411,7 @@ async def _list_documents_impl(
         else:
             # --- Or list all files without queries ---
             all_files = await _user_file_storage.list_by_org(scope.org_id)
-            files, hidden_count = _filter_listed_files(all_files, scope)
+            files, hidden_count, not_indexed_count = _filter_listed_files(all_files, scope)
             empty_message = "No documents in your scope."
             compact_on_budget_exhausted = True
             raw_count = len(all_files)
@@ -428,6 +433,8 @@ async def _list_documents_impl(
         # shortcut_result is set when dedupe_and_page can answer without full formatting
         # (empty list, budget exhausted, or all items already seen in a previous call).
         if shortcut_result is not None:
+            if not_indexed_count:
+                shortcut_result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + shortcut_result
             if hidden_count:
                 shortcut_result = f"Some document(s) are private and not accessible to caller.\n" + shortcut_result
             logger.info(
@@ -455,6 +462,8 @@ async def _list_documents_impl(
             compact_on_budget_exhausted,
             _SUMMARY_TOKENS_BUDGET,
         )
+        if not_indexed_count:
+            result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + result
         if hidden_count:
             result = f"Some document(s) are private and not accessible to caller.\n" + result
         async with runtime.context.lock:
@@ -481,8 +490,8 @@ async def _list_documents_impl(
 
 
 async def _list_documents_async(
-    config: Annotated[RunnableConfig, InjectedToolArg],
-    runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg],
+    config: RunnableConfig,
+    runtime: ToolRuntime[RuntimeContext],
     name_query: str = "",
     summary_query: str = "",
     file_id: Optional[str] = None,
@@ -496,8 +505,8 @@ async def _list_documents_async(
 
 
 async def _list_own_documents_async(
-    config: Annotated[RunnableConfig, InjectedToolArg],
-    runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg],
+    config: RunnableConfig,
+    runtime: ToolRuntime[RuntimeContext],
     name_query: str = "",
     summary_query: str = "",
     file_id: Optional[str] = None,

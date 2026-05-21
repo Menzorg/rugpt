@@ -9,11 +9,11 @@ and chunk_index.
 """
 
 from src.engine.unified_logger import get_logger
-from typing import Annotated, Optional
+from typing import Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import InjectedToolArg, StructuredTool
+from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ...services.rag_service import RAGService
@@ -48,7 +48,7 @@ def create_expand_chunk_tool(
     async def _expand_chunk_async(
         file_id: str,
         chunk_index: int,
-        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+        config: RunnableConfig = None,
     ) -> str:
         """Fetch one chunk and its immediate neighbors by file_id and chunk_index.
         Args:

@@ -10,10 +10,10 @@ Service lifecycle: call init_rag_service(service) once during engine startup.
 """
 
 from src.engine.unified_logger import get_logger
-from typing import Annotated, Optional
+from typing import Optional
 from uuid import UUID
 
-from langchain_core.tools import tool, InjectedToolArg
+from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolRuntime
 
@@ -94,7 +94,7 @@ def _remember_seen_chunks(runtime_data: object, chunks: list) -> None:
 async def rag_search(
     file_id: str,
     query: str,
-    config: Annotated[RunnableConfig, InjectedToolArg],
+    config: RunnableConfig,
     runtime: ToolRuntime[RuntimeContext],
 ) -> str:
     """Search for relevant chunks within a specific document.

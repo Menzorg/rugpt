@@ -12,11 +12,11 @@ the running event loop alongside asyncpg pool.
 """
 
 from src.engine.unified_logger import get_logger
-from typing import Annotated, Optional
+from typing import Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import StructuredTool, InjectedToolArg
+from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field
 
@@ -44,8 +44,8 @@ def create_user_tools(user_storage, role_storage, department_service):
     async def _user_search_async(
         name_query: Optional[str] = "",
         role_code: Optional[str] = "",
-        config: Annotated[RunnableConfig, InjectedToolArg] = None,
-        runtime: Annotated[ToolRuntime[RuntimeContext], InjectedToolArg] = None,
+        config: RunnableConfig = None,
+        runtime: ToolRuntime[RuntimeContext] = None,
     ) -> str:
         """Search/list users visible to the caller.
 
