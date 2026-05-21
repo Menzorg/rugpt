@@ -49,6 +49,7 @@ async def test_execute_without_chat_id_is_system_and_skips_memory_and_correction
     async def fake_run_simple_agent(**kwargs):
         captured["config"] = kwargs["config"]
         captured["messages"] = kwargs["messages"]
+        kwargs["context_schema"].called_modals.append({"title": "T"})
         return AgentResult(content="ok", model="test-model", agent_type="simple")
 
     monkeypatch.setattr(
@@ -91,7 +92,7 @@ async def test_execute_without_chat_id_is_system_and_skips_memory_and_correction
         model_name="test-model",
     )
 
-    await executor.execute(
+    result, metadata = await executor.execute(
         role=role,
         messages=[{"role": "user", "content": "Build a report"}],
         caller_user_id=caller_user_id,
@@ -100,6 +101,8 @@ async def test_execute_without_chat_id_is_system_and_skips_memory_and_correction
         chat_id=None,
     )
 
+    assert result.content == "ok"
+    assert metadata == {"modal": {"title": "T"}}
     assert captured["config"]["configurable"]["invocation_kind"] == "system"
     assert captured["config"]["configurable"]["callee_user_id"] == str(caller_user_id)
     executor.memory_service.get_summary_for_chat.assert_not_called()

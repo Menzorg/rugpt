@@ -4,15 +4,17 @@ The tool is read-only: it does not write to DB. It validates that the calling
 role is allowed to emit the requested action_types (per Role.agent_config.
 allowed_action_types) and that each action's params match the registered
 params_schema. On success it returns a brief confirmation string to the LLM;
-the structured payload is stashed in the runnable's tool metadata for the
-ai_service to pick up and write into messages.metadata.modal during message
-persistence.
+the structured payload is recorded in ToolRuntime so ai_service can write it
+into messages.metadata.modal during message persistence.
 """
 from typing import Optional
 from pydantic import BaseModel, Field, ValidationError
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool, ToolException
+from langgraph.prebuilt import ToolRuntime
+
+from src.engine.agents.runtime import RuntimeContext
 
 
 class ShowModalAction(BaseModel):
@@ -62,6 +64,7 @@ def create_show_modal_tool(action_registry):
         body: str,
         actions: list[ShowModalAction],
         config: RunnableConfig,
+        runtime: ToolRuntime[RuntimeContext] | None = None,
         target: Optional[dict] = None,
     ) -> str:
         cfg = (config or {}).get("configurable", {}) or {}
@@ -75,21 +78,16 @@ def create_show_modal_tool(action_registry):
             # and reason about it (or retry with different params).
             return err
 
-        # Stash payload for ai_service to attach to the persisted message.
-        # We use the standard LangChain "tool output metadata" channel: when
-        # the tool returns a string, the ai_service inspects `intermediate_steps`
-        # of the agent run and pulls the modal payload from there. See
-        # ai_service modal payload handling.
         payload = {
             "title": title,
             "body": body,
             "actions": [a.model_dump() for a in actions],
             "target": target,
         }
-        # We tag the success string deterministically so ai_service can find it
-        # in the tool log when extracting payloads.
-        import json
-        return f"<<MODAL_EMITTED>>{json.dumps(payload, ensure_ascii=False)}<</MODAL_EMITTED>>"
+        if runtime is not None:
+            async with runtime.context.lock:
+                runtime.context.called_modals.append(payload)
+        return "Modal shown."
 
     return StructuredTool.from_function(
         coroutine=_show_modal,

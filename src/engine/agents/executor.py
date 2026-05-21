@@ -293,7 +293,7 @@ class AgentExecutor:
         max_tokens: int = 2048, # For now it breaks tool calls if set too low, so keeping it high and relying on individual tool limits and HistoryCompactionMiddleware to control token usage.
         invocation_kind: str = "direct",
         chat_id: Optional[UUID] = None,
-    ) -> AgentResult:
+    ) -> tuple[AgentResult, dict]:
         """
         Execute agent for a role.
 
@@ -307,7 +307,8 @@ class AgentExecutor:
             invocation_kind: "direct", "mention", or "system"
 
         Returns:
-            AgentResult with response
+            Tuple of (AgentResult, metadata). Metadata is a dict suitable for
+            message persistence, e.g. {"modal": <last show_modal payload>}.
         """
         if role is None:
             raise ValueError("AgentExecutor.execute: role is None — cannot run without a role scope")
@@ -541,14 +542,20 @@ class AgentExecutor:
                 result.tokens_used,
                 logger=logger,
             )
-            return result
+            # Use the runtime context's called_modals list directly
+            called_modals = runtime_context.called_modals
+            metadata = ({"modal": called_modals[-1]} if called_modals else {})
+            return result, metadata
 
         except Exception as e:
             logger.error(f"Agent execution failed: {e}")
-            return AgentResult(
-                content=f"[Error: {e}]",
-                model=model,
-                agent_type=role.agent_type,
-                finish_reason="error",
-                error=str(e),
+            return (
+                AgentResult(
+                    content=f"[Error: {e}]",
+                    model=model,
+                    agent_type=role.agent_type,
+                    finish_reason="error",
+                    error=str(e),
+                ),
+                {},
             )

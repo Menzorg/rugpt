@@ -248,7 +248,7 @@ class TaskReportService:
                 expired_polls=expired_polls,
             )
 
-            result = await self.agent_executor.execute(
+            result, metadata  = await self.agent_executor.execute(
                 role=role,
                 messages=[{"role": "user", "content": user_input}],
                 temperature=0.3,

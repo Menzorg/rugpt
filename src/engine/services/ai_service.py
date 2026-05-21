@@ -7,7 +7,6 @@ Core rule: system user → their role responds (mirror → sender's role).
 from __future__ import annotations
 
 from src.engine.unified_logger import get_logger
-import json
 import re
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -54,43 +53,6 @@ _OTHER_ROLE_HISTORY_PLACEHOLDER = (
 POLL_INTERVIEWER_ROLE_CODE = "poll_interviewer"
 POLL_SUMMARIZER_ROLE_CODE = "poll_summarizer"
 RUGPT_SYSTEM_ORG_ID = UUID("00000000-0000-0000-0000-000000000000")
-
-
-# Modal protocol: show_modal tool returns its JSON payload wrapped in these
-# sentinel tags as `tool_output`. We extract it back out here and stash it on
-# messages.metadata.modal so the frontend can render the modal overlay.
-# Pattern is DOTALL so multi-line JSON bodies are matched correctly.
-_MODAL_PATTERN = re.compile(
-    r"<<MODAL_EMITTED>>(?P<payload>.*?)<</MODAL_EMITTED>>",
-    re.DOTALL,
-)
-
-
-def _extract_modal_payload(result: AgentResult) -> Optional[dict]:
-    """Walk tool calls; return LAST show_modal payload (or None).
-
-    "Last" because an agent might call show_modal more than once in a single
-    run — we surface the final intent. Non-JSON tool outputs are silently
-    skipped (logged at debug level only — show_modal contract is internal).
-    """
-    last_payload: Optional[dict] = None
-    for tc in result.tool_calls or []:
-        if tc.tool_name != "show_modal":
-            continue
-        output = tc.tool_output or ""
-        if not isinstance(output, str):
-            continue
-        m = _MODAL_PATTERN.search(output)
-        if not m:
-            continue
-        try:
-            last_payload = json.loads(m.group("payload"))
-        except json.JSONDecodeError:
-            logger.warning(
-                "show_modal tool output had MODAL_EMITTED tags but invalid JSON; skipping",
-            )
-            continue
-    return last_payload
 
 
 class AIService:
@@ -414,7 +376,7 @@ class AIService:
 
         # Generate
         try:
-            agent_result = await self._call_llm(
+            agent_call = await self._call_llm(
                 role,
                 conv_messages,
                 caller_user_id=message.sender_id,
@@ -422,6 +384,9 @@ class AIService:
                 invocation_kind="mention" if is_mention_call else "direct",
                 chat_id=message.chat_id,
             )
+            if agent_call is None:
+                return None
+            agent_result, metadata = agent_call
             if agent_result is None or agent_result.content is None:
                 return None
 
@@ -433,6 +398,7 @@ class AIService:
                 chat_id=message.chat_id,
                 sender_id=responder_id,
                 agent_result=agent_result,
+                metadata=metadata,
                 role_id=role.id,
                 reply_to_id=message.id,
             )
@@ -492,18 +458,17 @@ class AIService:
         callee_user_id: Optional[UUID] = None,
         invocation_kind: str = "direct",
         chat_id: Optional[UUID] = None,
-    ) -> Optional[AgentResult]:
+    ) -> Optional[tuple[AgentResult, dict]]:
         """Call LLM via AgentExecutor.
 
-        Returns the full AgentResult so callers can inspect tool_calls
-        (e.g. for show_modal payload extraction). Returns None only on
-        executor-level error or missing executor — content-empty results
-        are returned through so the caller can decide.
+        Returns (AgentResult, metadata). Returns None only on executor-level
+        error or missing executor — content-empty results are returned through
+        so the caller can decide.
         """
         if not self.agent_executor:
             logger.error("AIService has no agent_executor — cannot generate response")
             return None
-        result = await self.agent_executor.execute(
+        result, metadata  = await self.agent_executor.execute(
             role=role,
             messages=conv_messages,
             temperature=0.3,
@@ -512,10 +477,11 @@ class AIService:
             invocation_kind=invocation_kind,
             chat_id=chat_id,
         )
+        
         if result.finish_reason == "error":
             logger.error(f"Agent error: {result.error}")
             return None
-        return result
+        return result, metadata
 
     async def _build_conversation(
         self,
@@ -634,7 +600,7 @@ class AIService:
         """Create and save AI message.
 
         `metadata` carries arbitrary JSONB payload — e.g. {"modal": {...}}
-        extracted from a show_modal tool call (see persist_ai_message_with_modal).
+        collected from a show_modal tool call.
         """
         from datetime import datetime
         from uuid import uuid4
@@ -666,16 +632,16 @@ class AIService:
         chat_id: UUID,
         sender_id: UUID,
         agent_result: AgentResult,
+        metadata: Optional[dict] = None,
         role_id: Optional[UUID] = None,
         reply_to_id: Optional[UUID] = None,
     ) -> Message:
-        """Persist an AI message, extracting any show_modal payload into metadata.
+        """Persist an AI message with metadata collected during the agent run.
 
-        Looks through `agent_result.tool_calls` for the last `show_modal` call
-        whose output matches the <<MODAL_EMITTED>>...<</MODAL_EMITTED>> contract,
-        decodes the JSON body, and stores it as `metadata = {"modal": <payload>}`.
-        If no such call is present, metadata is empty — behavior identical to a
-        plain AI-message persist.
+        `show_modal` payloads are collected through ToolRuntime by
+        AgentExecutor.execute and passed here as `metadata={"modal": ...}`.
+        If metadata is empty, behavior is identical to a plain AI-message
+        persist.
 
         `role_id` is currently accepted for forward compat (Task 8 plan API);
         we don't persist it directly here because sender_id already drives the
@@ -683,14 +649,12 @@ class AIService:
         callers (e.g. multi-role agent paths) can wire it in without breaking
         this method.
         """
-        modal = _extract_modal_payload(agent_result)
-        metadata = {"modal": modal} if modal else {}
         return await self._create_ai_message(
             chat_id=chat_id,
             sender_id=sender_id,
             content=agent_result.content,
             reply_to_id=reply_to_id,
-            metadata=metadata,
+            metadata=metadata or {},
         )
 
     async def generate_poll_initial(
@@ -751,7 +715,7 @@ class AIService:
         )
         user_input = "\n".join(lines)
 
-        result = await self.agent_executor.execute(
+        result, metadata  = await self.agent_executor.execute(
             role=role,
             messages=[{"role": "user", "content": user_input}],
             temperature=0.5,
@@ -874,7 +838,7 @@ class AIService:
             f"Извлеки сводку по структуре, описанной в системном промпте."
         )
 
-        result = await self.agent_executor.execute(
+        result, metadata  = await self.agent_executor.execute(
             role=role,
             messages=[{"role": "user", "content": user_input}],
             temperature=0.3,

@@ -30,6 +30,8 @@ class RuntimeContext:
     list_documents_runtime_data: ListDocumentsRuntimeData = field(
         default_factory=ListDocumentsRuntimeData,
     )
+    list_invoices_summary_tokens_spent: int = 0
+    called_modals: list[dict] = field(default_factory=list)
     rag_search_runtime_data: RagSearchRuntimeData = field(
         default_factory=RagSearchRuntimeData,
     )

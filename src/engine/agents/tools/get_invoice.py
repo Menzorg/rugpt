@@ -10,6 +10,10 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
+from langgraph.prebuilt import ToolRuntime
+
+from src.engine.agents.runtime import RuntimeContext
+from src.engine.utils.token_counter import count_tokens
 
 
 class GetInvoiceInput(BaseModel):
@@ -20,28 +24,41 @@ def create_get_invoice_tool(engine):
     async def _get(
         invoice_id: str,
         config: RunnableConfig,
+        runtime: ToolRuntime[RuntimeContext] | None = None,
     ) -> str:
         cfg = (config or {}).get("configurable", {}) or {}
         caller_raw = cfg.get("caller_user_id")
-        if not caller_raw:
-            return "Error: caller_user_id missing"
+        async def _count_and_return(s: str) -> str:
+            try:
+                if runtime is not None:
+                    async with runtime.context.lock:
+                        runtime.context.total_tokens_spent += count_tokens(s)
+            except Exception:
+                # Token counting is best-effort; don't fail the tool if it errors
+                pass
+            return s
 
+        if not caller_raw:
+            return await _count_and_return("Error: caller_user_id missing")
+        
         try:
             inv_uuid = UUID(invoice_id)
         except ValueError:
-            return f"Error: invalid invoice_id {invoice_id!r}"
-
+            return await _count_and_return(f"Error: invalid invoice_id {invoice_id!r}")
+        
         caller_id = UUID(str(caller_raw))
         user = await engine.user_storage.get_by_id(caller_id)
         if not user:
-            return "Error: caller not found"
-
+            return await _count_and_return("Error: caller not found")
+        
         inv = await engine.invoice_storage.get_by_id(inv_uuid)
-        if not inv or inv.org_id != user.org_id:
-            return "Invoice not found or not visible"
-        if not user.is_admin and inv.uploaded_by_user_id != user.id:
-            return "Invoice not found or not visible"
-
+        if (
+            not inv
+            or inv.org_id != user.org_id
+            or (not user.is_admin and inv.uploaded_by_user_id != user.id)
+        ):
+            return await _count_and_return("Invoice not found or not visible")
+        
         uploader = await engine.user_storage.get_by_id(inv.uploaded_by_user_id)
         f = await engine.user_file_storage.get_by_id(inv.file_id)
 
@@ -56,7 +73,9 @@ def create_get_invoice_tool(engine):
             lines.append(f"summary: {f.summary}")
         if inv.status.value == "rejected" and inv.rejection_reason:
             lines.append(f"rejection_reason: {inv.rejection_reason}")
-        return "\n".join(lines)
+        result = "\n".join(lines)
+
+        return await _count_and_return(result)
 
     return StructuredTool.from_function(
         coroutine=_get,

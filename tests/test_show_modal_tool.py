@@ -50,8 +50,6 @@ async def test_show_modal_emits_payload_for_allowed_action(registry_stub, role_s
         },
         config=make_config(role_stub),
     )
-    # tool returns the payload string the LLM sees; the real payload is stashed
-    # in tool_output_metadata for ai_service to pluck out later.
     assert "shown" in payload.lower() or "modal" in payload.lower()
 
 
