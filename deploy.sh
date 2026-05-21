@@ -13,7 +13,7 @@ set -e
 #
 # SSH alias `rag-engine` должен быть настроен в ~/.ssh/config.
 
-SERVER="rugptlocal"
+SERVER="rag-engine"
 REMOTE_PATH="~/rugpt"
 VENV_PIP="${REMOTE_PATH}/venv/bin/pip"
 
