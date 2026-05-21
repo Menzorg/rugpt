@@ -485,7 +485,9 @@ def test_reopen_within_window_succeeds():
                 # closed_at is now() — within window for default 7 days
                 reopened = await svc.reopen_if_within_window(ticket.id)
                 assert reopened is not None
-                assert reopened.status == SupportTicketStatus.IN_PROGRESS
+                # Ticket was never taken (no assignee) → reopen returns it to
+                # the queue as OPEN, not IN_PROGRESS (status routes by assignee).
+                assert reopened.status == SupportTicketStatus.OPEN
                 events = await storages[4].list_by_ticket(ticket.id)
                 assert any(
                     e.event_type == SupportTicketEventType.REOPENED for e in events
@@ -606,9 +608,10 @@ def test_handle_incoming_message_reopens_closed_in_window():
                 # closed_at is now() — within window
                 # Should NOT raise; should call reopen
                 await svc.handle_incoming_message(chat, user.id)
-                # Confirm ticket is now in_progress
+                # Ticket was never taken (no assignee) → reopen routes it back
+                # to the queue as OPEN (status routes by assignee).
                 refreshed = await ticket_storage.get_by_id(ticket.id)
-                assert refreshed.status == SupportTicketStatus.IN_PROGRESS
+                assert refreshed.status == SupportTicketStatus.OPEN
             finally:
                 await _cleanup(ticket_storage, ticket.id)
         finally:

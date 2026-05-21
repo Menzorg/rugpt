@@ -190,13 +190,44 @@ def test_notify_reopened_pings_assignee_if_present():
     assert in_app.create.await_args.kwargs["user_id"] == operator_id
 
 
-def test_notify_reopened_no_assignee_is_silent():
-    """A reopened ticket without assignee (auto-reopen during queue lifecycle)
-    has no operator to notify."""
-    svc, in_app, _ = _make_service()
+def test_notify_reopened_no_assignee_no_operators_is_silent():
+    """No assignee + handed off → ticket returns to the queue, so the operator
+    list IS consulted; with zero active operators there is no one to notify."""
+    svc, in_app, user_storage = _make_service()  # default operators=[]
     t = _ticket(assignee_user_id=None)
+    t.ai_handoff_at = datetime.utcnow()  # handed off → belongs in the queue
+    _run(svc.notify_reopened(t))
+    user_storage.list_by_org.assert_awaited_once()
+    in_app.create.assert_not_called()
+
+
+def test_reopen_no_assignee_handed_off_fans_out_to_operators():
+    op1 = MagicMock(id=uuid4(), org_id=Config.RUGPT_SUPPORT_ORG_ID)
+    op2 = MagicMock(id=uuid4(), org_id=Config.RUGPT_SUPPORT_ORG_ID)
+    svc, in_app, user_storage = _make_service(operators=[op1, op2])
+    # No assignee but already handed off → belongs in the operator queue.
+    t = MagicMock(assignee_user_id=None, ai_handoff_at=datetime.utcnow(),
+                  requester_org_id=uuid4(), title="t", id=uuid4())
+    _run(svc.notify_reopened(t))
+    assert in_app.create.await_count == 2
+
+
+def test_reopen_no_assignee_no_handoff_does_not_notify():
+    # how_to reopened while still AI first-line (never escalated): AI handles it,
+    # and list_queue won't show it, so operators must NOT be pinged.
+    op1 = MagicMock(id=uuid4(), org_id=Config.RUGPT_SUPPORT_ORG_ID)
+    svc, in_app, user_storage = _make_service(operators=[op1])
+    t = MagicMock(assignee_user_id=None, ai_handoff_at=None,
+                  requester_org_id=uuid4(), title="t", id=uuid4())
     _run(svc.notify_reopened(t))
     in_app.create.assert_not_called()
+
+
+def test_reopen_with_assignee_pings_operator_once():
+    svc, in_app, user_storage = _make_service()
+    t = MagicMock(assignee_user_id=uuid4(), title="t", id=uuid4())
+    _run(svc.notify_reopened(t))
+    assert in_app.create.await_count == 1
 
 
 # ---------- common payload shape ----------

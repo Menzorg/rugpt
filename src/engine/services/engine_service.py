@@ -136,8 +136,15 @@ class EngineService:
         # Initialize department service
         self.department_service = DepartmentService(self.department_storage, self.user_storage)
 
+        # Kafka producer — event bus to NestJS (chat.events) + internal queue (agent.requests).
+        # No-op when Config.KAFKA_ENABLED=false, so tests without Kafka keep working.
+        self.kafka_producer = KafkaProducerService()
+
         # Initialize in-app notification service
-        self.in_app_notification_service = InAppNotificationService(self.in_app_notification_storage)
+        self.in_app_notification_service = InAppNotificationService(
+            self.in_app_notification_storage,
+            kafka_producer=self.kafka_producer,
+        )
 
         # Support ticket notification service — fan-out to RuGPT Support operators
         # via in-app notifications (type='system', reference_type='support_ticket').
@@ -165,14 +172,11 @@ class EngineService:
             message_storage=self.message_storage,
             user_storage=self.user_storage,
             notification_service=self.support_notification_service,
+            kafka_producer=self.kafka_producer,
         )
 
         self.task_event_service = TaskEventService(self.task_event_storage)
         self.project_service = ProjectService(self.project_storage, self.chat_service)
-
-        # Kafka producer — event bus to NestJS (chat.events) + internal queue (agent.requests).
-        # No-op when Config.KAFKA_ENABLED=false, so tests without Kafka keep working.
-        self.kafka_producer = KafkaProducerService()
 
         # Initialize task service with chat/event/project/notification integration
         self.task_service = TaskService(
@@ -380,6 +384,10 @@ class EngineService:
             task_storage=self.task_storage,
             storage_adapter=self.storage_adapter,
         )
+
+        # support_ticket_service is constructed before ai_service; wire the AI
+        # responder now so create_ticket(HOW_TO) can kick off the first reply.
+        self.support_ticket_service.ai_service = self.ai_service
 
         # Wire poll-chat + AI deps into TaskPollService (post-construction —
         # AIService and ChatService are constructed after TaskPollService to
