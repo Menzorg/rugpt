@@ -23,6 +23,17 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Адрес для health-check и вывода берём из .env — движок биндится на API_HOST,
+# поэтому проверять надо именно его, а не localhost (иначе health-check врёт).
+API_HOST=$(grep -E '^API_HOST=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
+API_PORT=$(grep -E '^API_PORT=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
+API_HOST="${API_HOST:-127.0.0.1}"
+API_PORT="${API_PORT:-8100}"
+# 0.0.0.0 нельзя курлить напрямую — бьём в loopback.
+CURL_HOST="$API_HOST"
+[ "$CURL_HOST" = "0.0.0.0" ] && CURL_HOST="127.0.0.1"
+HEALTH_URL="http://${CURL_HOST}:${API_PORT}/api/v1/health"
+
 # Функция остановки Engine
 stop_engine() {
     echo "🛑 Останавливаем Engine..."
@@ -65,21 +76,29 @@ print('✅ Миграции выполнены')
     # Запускаем Engine в screen
     screen -dmS rugpt-engine bash -c "cd $SCRIPT_DIR && source venv/bin/activate && python -m src.engine.run; exec bash"
 
-    # Ждем запуска
-    echo "⏳ Ожидаем запуска Engine..."
-    sleep 5
+    # Ждём запуска: опрашиваем health до ~60с. Старт тяжёлый (импорты langchain,
+    # пре-варм токенайзера, коннект к Kafka), один sleep 5 + одиночный curl врал.
+    echo "⏳ Ожидаем запуска Engine (${HEALTH_URL})..."
+    HEALTHY=false
+    for _ in $(seq 1 30); do
+        if curl -s "$HEALTH_URL" > /dev/null 2>&1; then
+            HEALTHY=true
+            break
+        fi
+        sleep 2
+    done
 
     # Проверяем статус
-    if curl -s http://localhost:8100/api/v1/health > /dev/null 2>&1; then
+    if [ "$HEALTHY" = true ]; then
         echo "  ✅ Engine API запущен и отвечает"
-        curl -s http://localhost:8100/api/v1/health | python3 -c "
+        curl -s "$HEALTH_URL" | python3 -c "
 import json,sys
 d = json.load(sys.stdin)
 print(f\"  📊 Статус: {d.get('status', 'unknown')}\")
 print(f\"  📊 Сервис: {d.get('service', 'unknown')}\")
 " 2>/dev/null || true
     else
-        echo "  ❌ Engine API не отвечает"
+        echo "  ❌ Engine API не ответил за ~60с"
         echo "  💡 Проверьте логи: screen -r rugpt-engine"
     fi
 }
@@ -94,9 +113,9 @@ show_info() {
     echo "  📱 Список экранов:     screen -ls"
     echo ""
     echo "🌐 Доступные эндпоинты:"
-    echo "  📡 Engine API:         http://localhost:8100"
-    echo "  📖 API документация:   http://localhost:8100/docs"
-    echo "  💚 Health check:       http://localhost:8100/api/v1/health"
+    echo "  📡 Engine API:         http://${CURL_HOST}:${API_PORT}"
+    echo "  📖 API документация:   http://${CURL_HOST}:${API_PORT}/docs"
+    echo "  💚 Health check:       ${HEALTH_URL}"
     echo ""
     echo "🔧 Конфигурация (из .env):"
     if [ -f "$SCRIPT_DIR/.env" ]; then

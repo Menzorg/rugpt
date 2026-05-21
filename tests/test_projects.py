@@ -38,12 +38,16 @@ def make_service():
     return svc, storage, chat
 
 
-def test_create_requires_head_or_admin():
+def test_create_allowed_for_any_user():
     async def go():
         svc, storage, _ = make_service()
         storage.create = AsyncMock(side_effect=lambda p: p)
-        with pytest.raises(PermissionError):
-            await svc.create("P", make_user())
+        dep = uuid4()
+        user = User(id=uuid4(), org_id=uuid4(), name="u", username="u", email="u@u",
+                    department_id=dep)
+        p = await svc.create("P", user)
+        assert p.name == "P"
+        assert storage.create.call_args[0][0].department_id == dep  # frozen from creator
     asyncio.run(go())
 
 
@@ -105,26 +109,121 @@ def test_get_same_org_returns_project():
     asyncio.run(go())
 
 
-def test_update_head_can_rename():
+def test_modify_by_creator_ok():
     async def go():
         svc, storage, _ = make_service()
-        user = make_user(is_head=True)
-        proj = Project(org_id=user.org_id, name="Old")
+        org = uuid4()
+        creator = User(id=uuid4(), org_id=org, name="c", username="c", email="c@u")
+        proj = Project(org_id=org, name="P", created_by_user_id=creator.id)
         storage.get_by_id = AsyncMock(return_value=proj)
         storage.update = AsyncMock(side_effect=lambda p: p)
-        out = await svc.update(proj.id, user, name="New")
-        assert out.name == "New"
+        out = await svc.update(proj.id, creator, name="P2")
+        assert out.name == "P2"
     asyncio.run(go())
 
 
-def test_update_regular_rejected():
+def test_modify_by_admin_ok():
     async def go():
         svc, storage, _ = make_service()
-        user = make_user()
-        proj = Project(org_id=user.org_id, name="X")
+        org = uuid4()
+        proj = Project(org_id=org, name="P", created_by_user_id=uuid4())
         storage.get_by_id = AsyncMock(return_value=proj)
+        storage.update = AsyncMock(side_effect=lambda p: p)
+        admin = User(id=uuid4(), org_id=org, name="a", username="a", email="a@u", is_admin=True)
+        out = await svc.update(proj.id, admin, name="P2")
+        assert out.name == "P2"
+    asyncio.run(go())
+
+
+def test_modify_by_head_same_department_ok():
+    async def go():
+        svc, storage, _ = make_service()
+        org = uuid4(); dep = uuid4()
+        proj = Project(org_id=org, name="P", created_by_user_id=uuid4(), department_id=dep)
+        storage.get_by_id = AsyncMock(return_value=proj)
+        storage.update = AsyncMock(side_effect=lambda p: p)
+        head = User(id=uuid4(), org_id=org, name="h", username="h", email="h@u",
+                    is_head=True, department_id=dep)
+        out = await svc.update(proj.id, head, name="P2")
+        assert out.name == "P2"
+    asyncio.run(go())
+
+
+def test_modify_by_head_other_department_forbidden():
+    async def go():
+        svc, storage, _ = make_service()
+        org = uuid4()
+        proj = Project(org_id=org, name="P", created_by_user_id=uuid4(), department_id=uuid4())
+        storage.get_by_id = AsyncMock(return_value=proj)
+        head = User(id=uuid4(), org_id=org, name="h", username="h", email="h@u",
+                    is_head=True, department_id=uuid4())
         with pytest.raises(PermissionError):
-            await svc.update(proj.id, user, name="New")
+            await svc.update(proj.id, head, name="P2")
+    asyncio.run(go())
+
+
+def test_modify_by_unrelated_user_forbidden():
+    async def go():
+        svc, storage, _ = make_service()
+        org = uuid4()
+        proj = Project(org_id=org, name="P", created_by_user_id=uuid4(), department_id=uuid4())
+        storage.get_by_id = AsyncMock(return_value=proj)
+        other = User(id=uuid4(), org_id=org, name="o", username="o", email="o@u")
+        with pytest.raises(PermissionError):
+            await svc.update(proj.id, other, name="P2")
+    asyncio.run(go())
+
+
+def test_modify_by_null_dept_head_on_null_dept_project_forbidden():
+    # Privilege-hole guard: a head with no department must NOT be able to modify
+    # a project with no department (NULL == NULL must not pass the head branch).
+    async def go():
+        svc, storage, _ = make_service()
+        org = uuid4()
+        proj = Project(org_id=org, name="P", created_by_user_id=uuid4(), department_id=None)
+        storage.get_by_id = AsyncMock(return_value=proj)
+        head = User(id=uuid4(), org_id=org, name="h", username="h", email="h@u",
+                    is_head=True, department_id=None)
+        with pytest.raises(PermissionError):
+            await svc.update(proj.id, head, name="P2")
+    asyncio.run(go())
+
+
+def test_list_visible_admin_lists_whole_org():
+    async def go():
+        svc, storage, _ = make_service()
+        org = uuid4()
+        storage.list_by_org = AsyncMock(return_value=[])
+        storage.list_visible_for_user = AsyncMock(return_value=[])
+        admin = User(id=uuid4(), org_id=org, name="a", username="a", email="a@u", is_admin=True)
+        await svc.list_visible(admin, include_archived=False)
+        storage.list_by_org.assert_awaited_once()
+        storage.list_visible_for_user.assert_not_awaited()
+    asyncio.run(go())
+
+
+def test_list_visible_head_passes_department():
+    async def go():
+        svc, storage, _ = make_service()
+        org = uuid4(); dep = uuid4()
+        storage.list_visible_for_user = AsyncMock(return_value=[])
+        head = User(id=uuid4(), org_id=org, name="h", username="h", email="h@u",
+                    is_head=True, department_id=dep)
+        await svc.list_visible(head, include_archived=False)
+        kwargs = storage.list_visible_for_user.call_args.kwargs
+        assert kwargs.get("department_id") == dep
+    asyncio.run(go())
+
+
+def test_list_visible_regular_no_department():
+    async def go():
+        svc, storage, _ = make_service()
+        org = uuid4()
+        storage.list_visible_for_user = AsyncMock(return_value=[])
+        reg = User(id=uuid4(), org_id=org, name="r", username="r", email="r@u")
+        await svc.list_visible(reg, include_archived=False)
+        kwargs = storage.list_visible_for_user.call_args.kwargs
+        assert kwargs.get("department_id") is None
     asyncio.run(go())
 
 

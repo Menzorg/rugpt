@@ -129,7 +129,7 @@ echo -e "${GREEN}OK${NC}"
 
 echo -e "${YELLOW}Проверка что org/admin ещё не созданы...${NC}"
 EXISTING_SLUG=$(run_sql "SELECT slug FROM organizations WHERE slug = '$ORG_SLUG'" 2>/dev/null | grep -c "$ORG_SLUG" || true)
-EXISTING_EMAIL=$(run_sql "SELECT email FROM users WHERE email = '$ADMIN_EMAIL'" 2>/dev/null | grep -c "$ADMIN_EMAIL" || true)
+EXISTING_EMAIL=$(run_sql "SELECT email FROM users WHERE lower(email) = lower('$ADMIN_EMAIL')" 2>/dev/null | grep -ci "$ADMIN_EMAIL" || true)
 if [ "$EXISTING_SLUG" -gt 0 ] || [ "$EXISTING_EMAIL" -gt 0 ]; then
     echo -e "${RED}Ошибка: org со slug=$ORG_SLUG или admin email=$ADMIN_EMAIL уже существует.${NC}"
     echo -e "${RED}Удалите вручную перед повторным запуском, либо смените параметры.${NC}"
@@ -272,7 +272,7 @@ echo -e "${YELLOW}Создание admin: $ADMIN_NAME...${NC}"
 run_sql "
 INSERT INTO users (id, org_id, name, username, email, password_hash,
                    is_admin, is_active, created_at, updated_at)
-VALUES ('$ADMIN_ID', '$ORG_ID', '$ADMIN_NAME', '$ADMIN_USERNAME', '$ADMIN_EMAIL',
+VALUES ('$ADMIN_ID', '$ORG_ID', '$ADMIN_NAME', '$ADMIN_USERNAME', lower('$ADMIN_EMAIL'),
         '$H_ADMIN', true, true, NOW(), NOW());
 " > /dev/null
 echo -e "${GREEN}OK admin: $ADMIN_NAME ($ADMIN_ID)${NC}"
@@ -286,7 +286,7 @@ insert_user() {
     run_sql "
     INSERT INTO users (id, org_id, name, username, email, password_hash,
                        role_id, department_id, is_head, is_admin, is_active, created_at, updated_at)
-    VALUES ('$uid', '$ORG_ID', '$name', '$uname', '$email', '$hash',
+    VALUES ('$uid', '$ORG_ID', '$name', '$uname', lower('$email'), '$hash',
             '$role', '$dept', $is_head, false, true, NOW(), NOW());
     " > /dev/null
     echo -e "${GREEN}OK user: $name${NC}"
