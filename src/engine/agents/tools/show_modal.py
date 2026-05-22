@@ -15,6 +15,9 @@ from langchain_core.tools import StructuredTool, ToolException
 from langgraph.prebuilt import ToolRuntime
 
 from src.engine.agents.runtime import RuntimeContext
+from src.engine.unified_logger import get_logger
+
+logger = get_logger("agents")
 
 
 class ShowModalAction(BaseModel):
@@ -87,6 +90,7 @@ def create_show_modal_tool(action_registry):
         if runtime is not None:
             async with runtime.context.lock:
                 runtime.context.called_modals.append(payload)
+                logger.info("show_modal: appended payload to called_modals, total=%d payload=%s", len(runtime.context.called_modals), payload)
         return "Modal shown."
 
     return StructuredTool.from_function(
