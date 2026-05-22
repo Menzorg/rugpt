@@ -11,7 +11,26 @@ from uuid import UUID
 
 from langchain.agents.middleware import ToolCallLimitMiddleware
 from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI as _ChatOpenAI
+from langchain_core.language_models import LanguageModelInput
+
+
+class ChatOpenAI(_ChatOpenAI):
+    """ChatOpenAI with a workaround for vLLM chat templates that can't handle
+    content=null on assistant messages with tool calls (e.g. Gemma 4)."""
+
+    def _get_request_payload(
+        self,
+        input_: LanguageModelInput,
+        *,
+        stop: list[str] | None = None,
+        **kwargs,
+    ) -> dict:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        for msg in payload.get("messages", []):
+            if msg.get("role") == "assistant" and msg.get("content") is None:
+                msg["content"] = ""
+        return payload
 
 from ..config import Config
 from ..models.role import Role
