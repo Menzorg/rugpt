@@ -70,6 +70,7 @@ def create_show_modal_tool(action_registry):
         runtime: ToolRuntime[RuntimeContext] | None = None,
         target: Optional[dict] = None,
     ) -> str:
+        logger.info("show_modal: called title=%r runtime_is_none=%s", title, runtime is None)
         cfg = (config or {}).get("configurable", {}) or {}
         role = cfg.get("role")
         if role is None:
@@ -77,6 +78,7 @@ def create_show_modal_tool(action_registry):
 
         err = _validate(role, action_registry, actions)
         if err:
+            logger.warning("show_modal: validation failed: %s", err)
             # Returning an error string lets the LLM see it in the tool result
             # and reason about it (or retry with different params).
             return err
@@ -91,6 +93,8 @@ def create_show_modal_tool(action_registry):
             async with runtime.context.lock:
                 runtime.context.called_modals.append(payload)
                 logger.info("show_modal: appended payload to called_modals, total=%d payload=%s", len(runtime.context.called_modals), payload)
+        else:
+            logger.warning("show_modal: runtime is None — payload NOT appended to called_modals")
         return "Modal shown."
 
     return StructuredTool.from_function(
