@@ -67,7 +67,7 @@ def create_show_modal_tool(action_registry):
         body: str,
         actions: list[ShowModalAction],
         config: RunnableConfig,
-        runtime: ToolRuntime[RuntimeContext] | None = None,
+        runtime: ToolRuntime[RuntimeContext],
         target: Optional[dict] = None,
     ) -> str:
         logger.info("show_modal: called title=%r runtime_is_none=%s", title, runtime is None)
