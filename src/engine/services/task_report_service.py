@@ -253,7 +253,7 @@ class TaskReportService:
                 messages=[{"role": "user", "content": user_input}],
                 temperature=0.3,
                 max_tokens=2048,
-                user_id=manager_user_id,
+                caller_user_id=manager_user_id,
             )
             content = (result.content or "").strip() if result else ""
             if not content:

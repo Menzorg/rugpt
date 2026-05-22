@@ -13,7 +13,8 @@ from src.engine.unified_logger import get_logger
 from typing import Optional
 from uuid import UUID
 
-from langchain_core.tools import tool
+from pydantic import BaseModel, Field
+from langchain_core.tools import StructuredTool
 from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolRuntime
 
@@ -21,6 +22,11 @@ from ..runtime import RagSearchRuntimeData, RuntimeContext
 from ...services.rag_service import RAGService
 from ...storage.user_file_storage import UserFileStorage
 from ...utils.token_counter import count_tokens
+
+
+class RagSearchInput(BaseModel):
+    file_id: str = Field(description="Document ID to search within.")
+    query: str = Field(description="Search query in Russian or English.")
 
 logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
@@ -90,19 +96,12 @@ def _remember_seen_chunks(runtime_data: object, chunks: list) -> None:
     if isinstance(runtime_data, RagSearchRuntimeData):
         runtime_data.chunk_ids.update(str(chunk.chunk_id) for chunk in chunks)
 
-@tool(response_format="content")
-async def rag_search(
+async def _rag_search(
     file_id: str,
     query: str,
     config: RunnableConfig,
     runtime: ToolRuntime[RuntimeContext],
 ) -> str:
-    """Search for relevant chunks within a specific document.
-    Use list_documents or list_own_documents first to find the document ID, then call this tool.
-    Args:
-        file_id: Document ID to search within.
-        query: Search query in Russian or English.
-    """
     try:
         configurable = config.get("configurable", {})
         user_id, org_id, public_only_owner = _resolve_tool_identity(configurable)
@@ -228,3 +227,15 @@ async def rag_search(
         if isinstance(e, ValueError) and "badly formed hexadecimal UUID string" in str(e):
             return f"Invalid UUID in input: {e}"
         return _TOOL_ERROR_RESULT
+
+
+rag_search = StructuredTool.from_function(
+    coroutine=_rag_search,
+    name="rag_search",
+    description=(
+        "Search for relevant chunks within a specific document. "
+        "Use list_documents or list_own_documents first to find the document ID, then call this tool."
+    ),
+    args_schema=RagSearchInput,
+    response_format="content",
+)
