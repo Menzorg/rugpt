@@ -405,7 +405,7 @@ class AIService:
 
             logger.info(
                 f"AI response from {role.name} ({role.model_name}): "
-                f"{len(agent_result.content)} chars"
+                f"{len(agent_result.content)} chars, metadata={ai_message.metadata or {}}"
             )
             return ai_message
 
