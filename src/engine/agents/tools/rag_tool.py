@@ -25,8 +25,8 @@ from ...utils.token_counter import count_tokens
 
 
 class RagSearchInput(BaseModel):
-    file_id: str = Field(description="Document ID to search within.")
-    query: str = Field(description="Search query in Russian or English.")
+    file_id: str = Field(description="ID документа для поиска")
+    query: str = Field(description="Поисковый запрос")
 
 logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
