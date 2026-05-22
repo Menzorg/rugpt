@@ -545,6 +545,12 @@ class AgentExecutor:
             # Use the runtime context's called_modals list directly
             called_modals = runtime_context.called_modals
             metadata = ({"modal": called_modals[-1]} if called_modals else {})
+            logger.info(
+                "executor: metadata after execution role=%s chat_id=%s metadata=%s",
+                role.code,
+                chat_id,
+                metadata,
+            )
             return result, metadata
 
         except Exception as e:
