@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -sS -m 2 -o /dev/null -w \"ollama root: %{http_code}\\\\n\" http://localhost:11434/)",
+      "Bash(curl -sS -m 2 -o /dev/null -w \"ollama /health/liveness: %{http_code}\\\\n\" http://localhost:11434/health/liveness)",
+      "Read(//tmp/**)",
+      "Bash(curl *)",
+      "Bash(python3 -c \"import json,sys; pkg=json.load\\(sys.stdin\\); print\\('scripts:'\\); [print\\(f'  {k}: {v}'\\) for k,v in pkg.get\\('scripts',{}\\).items\\(\\)]\")",
+      "Bash(npx tsc *)",
+      "Bash(psql -h 127.0.0.1 -U postgres -d rugpt -c \"\\\\dt\")",
+      "Read(//home/wolflord/webclient_rugpt/**)",
+      "Bash(ls packages/common)",
+      "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./packages/common/package.json'\\).scripts||{},null,1\\)\\)\")",
+      "Bash(ls packages/common/dist/index.js)",
+      "Bash(ls node_modules/nestjs-pino/package.json packages/backend/node_modules/nestjs-pino/package.json)",
+      "Bash(node -e \"const d=require\\('./packages/backend/package.json'\\);console.log\\('nestjs-pino:',\\(d.dependencies||{}\\)['nestjs-pino']||'ABSENT'\\);console.log\\('pino:',\\(d.dependencies||{}\\)['pino']||'ABSENT'\\)\")",
+      "Bash(node -e \"console.log\\(require\\('./package.json'\\).workspaces||'none'\\)\")",
+      "Bash(timeout 180 npm install nestjs-pino pino --no-save)"
+    ]
+  }
+}

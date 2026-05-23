@@ -31,7 +31,8 @@ Query-параметры (или body) для подписанных запро�
 - `GET /config` (maintenance status)
 - `GET /health*`
 - `POST /notifications/telegram/webhook`
-- `POST /files/upload`, `GET /files/:id/download` — **legacy** (план перевести на signed; security-пункт 9 из `tech-debt.md`)
+
+> `POST /files/upload` и `GET /files/:id/download` **переведены на signed** (2026-05) — больше не `@SkipSignature`. Пункт 9 в `tech-debt.md` закрыт.
 
 ### Rate-limit
 

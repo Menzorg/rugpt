@@ -49,7 +49,7 @@
 
 | # | Проблема | Приоритет | Описание |
 |---|----------|-----------|----------|
-| 9 | File upload/download без signature | Высокий | `/files/upload` и `/files/:id/download` помечены `@SkipSignature` (legacy). Украденный JWT = полный доступ к файлам org. |
+| ~~9~~ | ✅ ~~File upload/download без signature~~ — **РЕШЕНО (2026-05)** | — | `@SkipSignature` снят с `/files/upload` и `/files/:id/download`; теперь требуют валидную ECDSA-подпись (multipart подписывается через query params, т.к. guard идёт до multer). Один украденный JWT без устройства больше не даёт доступ к файлам. Остаётся общий пункт 32 (signed user_id vs JWT) применительно к `files.py`. |
 | 10 | WebSocket без подписи | Высокий | После JWT-handshake события доверяются. Украденный JWT → можно открыть WS и слушать/отправлять в комнатах `chat:<id>`. |
 | 11 | Нет admin revoke device endpoint | Средний | При компрометации устройства нет API убрать его `public_key` из `user_devices`. Только прямой SQL. |
 | 12 | Nonce-cache не persistent | Средний | In-memory TTL-cache в engine-процессе. Рестарт → replay-window ±5 min. Нужен Redis-backed или БД-backed cache. |

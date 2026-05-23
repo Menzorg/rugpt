@@ -195,7 +195,8 @@ Controller → Service → engineAdapter.execute()
 - `/config` (maintenance mode)
 - `/health*`
 - `/notifications/telegram/webhook`
-- `/files/upload`, `/files/:id/download` — **legacy** (security-пункт 16, план перевести на signed)
+
+> `/files/upload` и `/files/:id/download` **переведены на signed** (2026-05) — из списка `@SkipSignature` исключены. Подпись идёт через query params (multipart-тело не подписывается, payload `POST::nonce:ts`), т.к. глобальный `SignatureGuard` выполняется до multer и тела не видит.
 
 **WebSocket** подписи **нет** — только JWT на handshake (security-пункт 17).
 
@@ -217,7 +218,7 @@ FastAPI слушает **только localhost** внутри rugpt-container. 
 | Engine LAN (PG/Kafka/Tika/LiteLLM) | plaintext, trust by LAN. **TLS отсутствует** (security-пункт 1) |
 | App-layer запросы (mutation) | JWT + ECDSA signature + nonce cache |
 | WebSocket | только JWT (без signature — известный gap) |
-| File upload/download | `@SkipSignature` (legacy) |
+| File upload/download | JWT + ECDSA signature (signed с 2026-05; multipart-подпись в query params) |
 | CORS Engine | `allow_origins=["*"]` — dev-настройка в prod (security-пункт 4) |
 
 ### Известные замечания

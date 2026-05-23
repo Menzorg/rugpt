@@ -6,7 +6,7 @@ Configuration class for the RuGPT corporate AI assistant engine.
 import os
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit
 from uuid import UUID
 from dotenv import load_dotenv
 
@@ -82,6 +82,8 @@ class Config:
     # single OpenAI-compatible gateway (LiteLLM proxy on Zver). LiteLLM itself
     # fans out to Ollama / vLLM behind the scenes based on model name.
     LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://192.168.1.80:4000/v1")
+    _llm_parts = urlsplit(LLM_BASE_URL)
+    LLM_ROOT_URL = f"{_llm_parts.scheme}://{_llm_parts.netloc}"
     LLM_API_KEY = os.getenv("LLM_API_KEY", "sk-dummy")
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "google/gemma-4-31B-it")
     IMAGE_ANALYSIS_MODEL = os.getenv("IMAGE_ANALYSIS_MODEL", DEFAULT_MODEL)

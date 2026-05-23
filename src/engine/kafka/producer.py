@@ -75,3 +75,16 @@ class KafkaProducerService:
             value = {**value, _USER_FIELD: get_user_id()}
         logger.info(f"Kafka send: topic={topic} key={key}")
         await self._producer.send_and_wait(topic, value=value, key=key)
+    
+    async def ping(self) -> None:
+        """Lightweight metadata fetch — for health probes.
+
+        Raises if Kafka is disabled, producer not started, or cluster
+        unreachable. Caller (health route) wraps in asyncio.wait_for
+        and catches exceptions.
+        """       
+        if not self.enabled:
+            raise RuntimeError("Kafka producer disabled")
+        if self._producer is None:
+            raise RuntimeError("Kafka producer not started")
+        await self._producer.client.fetch_all_metadata()

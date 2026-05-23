@@ -68,7 +68,7 @@ RuGPT размещён на 7 узлах. Подробности по желез
 - **VPN** (A ↔ B): WireGuard ChaCha20-Poly1305, подсеть `10.0.0.0/24`
 - **LAN** (B внутри, B ↔ C): **plaintext** (TLS отсутствует) — trust by VPN/LAN isolation
 - **App-layer**: JWT HMAC-SHA256 + ECDSA P-256 device signature (non-extractable в IndexedDB браузера). Validation на engine `POST /auth/verify-signature`, nonce-cache ±5 min. См. `docs/networking.md` + архитектурный отчёт
-- **Публичные endpoints без JWT/signature** (`@SkipSignature`): `/auth/login`, `/auth/register`, `/auth/verify-signature`, `/config`, `/health*`, `/notifications/telegram/webhook`, `/files/upload` (legacy), `/files/:id/download` (legacy)
+- **Публичные endpoints без JWT/signature** (`@SkipSignature`): `/auth/login`, `/auth/register`, `/auth/verify-signature`, `/config`, `/health*`, `/notifications/telegram/webhook` (file-роуты `/files/upload` и `/files/:id/download` переведены на signed в 2026-05 — из этого списка исключены)
 - **Engine без rate-limit** (открыт в VPN) — rate-limit только в webclient
 
 ### Хранилище состояния
