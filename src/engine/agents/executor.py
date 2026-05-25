@@ -302,6 +302,101 @@ class AgentExecutor:
             logger.info("rag_search tool call limit: run_limit=%d", _RAG_SEARCH_TOOL_CALL_LIMIT)
         return middleware
 
+    async def route(
+        self,
+        messages: List[dict],
+        users: List[Any],
+        sender_id: UUID,
+    ) -> Optional[Any]:
+        """
+        Ask the LLM to pick which system user should respond to the conversation.
+
+        Resolves each user's role internally (mirror → sender's role).
+        Users without a resolvable role are excluded.
+        Returns the chosen user object, or None on failure.
+        """
+        import json
+        from pathlib import Path
+        from typing import Tuple
+
+        if not users:
+            return None
+
+        from ..services.engine_service import get_engine_service
+        engine = get_engine_service()
+
+        async def _resolve(user: Any) -> Optional[Role]:
+            if user.role_id:
+                return await engine.role_storage.get_by_id(user.role_id)
+            if user.is_system:
+                sender = await engine.user_storage.get_by_id(sender_id)
+                if sender and sender.role_id:
+                    return await engine.role_storage.get_by_id(sender.role_id)
+            return None
+
+        candidates: List[Tuple[Any, Role]] = []
+        for u in users:
+            r = await _resolve(u)
+            if r is not None:
+                candidates.append((u, r))
+
+        if not candidates:
+            return None
+
+        system_prompt = (Path(__file__).parent.parent / "prompts" / "router.md").read_text(encoding="utf-8").strip()
+
+        agents_json = json.dumps(
+            {i: {"name": r.name, "description": r.agent_scope_description} for i, (_, r) in enumerate(candidates)},
+            ensure_ascii=False,
+            indent=2,
+        )
+
+        history_lines = []
+        for msg in messages[-10:]:
+            label = "User" if msg.get("role") == "user" else "Assistant"
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    p.get("text", "") if isinstance(p, dict) else str(p) for p in content
+                )
+            history_lines.append(f"{label}: {str(content)[:300]}")
+
+        routing_messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"Agents:\n{agents_json}\n\n"
+                    "Conversation:\n" + "\n".join(history_lines) + "\n\nAgent index:"
+                ),
+            },
+        ]
+
+        llm = self._create_llm(
+            self.default_model,
+            temperature=0.0,
+            max_tokens=8,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        try:
+            response = await llm.ainvoke(routing_messages)
+            raw_index = int(response.content.strip())
+            index = max(0, min(raw_index, len(candidates) - 1))
+            if index != raw_index:
+                logger.warning(
+                    "route: LLM returned out-of-range index=%d, clamped to %d (candidates=%d)",
+                    raw_index, index, len(candidates),
+                )
+            chosen_user, chosen_role = candidates[index]
+            logger.info(
+                "route: selected index=%d user=%s role=%s from %d candidates",
+                index, chosen_user.id, chosen_role.code, len(candidates),
+            )
+            return chosen_user
+        except Exception:
+            logger.exception("route: failed for %d users", len(candidates))
+            return None
+
     async def execute(
         self,
         role: Role,

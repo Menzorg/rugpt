@@ -258,7 +258,7 @@ async def _build_subagents(
     for role in subagent_roles:
         agent_name = _agent_name(role.code)
         subagent_descriptions[agent_name] = (
-            role.as_subagent_description
+            role.agent_scope_description
             or role.description
             or f"Ask role '{role.name or role.code}' for help"
         )

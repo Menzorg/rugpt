@@ -195,46 +195,71 @@ class AIService:
                 )
                 return None
 
+        # Collect system participants (excluding sender)
+        system_users = []
         for pid in chat.participants:
             if pid == sender_id:
                 continue
-            participant = await self.user_storage.get_by_id(pid)
-            if participant and participant.is_system:
-                logger.info(
-                    f"try_auto_respond: chat={chat_id} responder={participant.id} "
-                    f"mode={'async' if self._is_async_mode() else 'sync'}"
-                )
-                if self._is_async_mode():
-                    await self._enqueue_agent_run(
-                        message=message,
-                        responder_id=participant.id,
-                    )
-                    # NOTE: async-path support stamping (ai_first_response_at +
-                    # AI_RESPONDED audit) is handled by AgentRequestHandler
-                    # after it generates the response. See Task 18 follow-up.
-                    return None
-                ai_response = await self.generate_response(
-                    message=message,
-                    responder_id=participant.id,
-                )
-                # Post-hook: stamp first AI response + audit event for
-                # SUPPORT chats. Only fires in sync path; async path stamps
-                # via AgentRequestHandler. Idempotent on the storage side
-                # (set_ai_first_response is a guarded UPDATE).
-                if (
-                    ai_response is not None
-                    and chat.type == ChatType.SUPPORT
-                    and self._is_support_aware()
-                    and chat.support_ticket_id is not None
-                ):
-                    await self._record_support_ai_response(
-                        ticket_id=chat.support_ticket_id,
-                        ai_user_id=participant.id,
-                        response_message_id=ai_response.id,
-                    )
-                return ai_response
+            u = await self.user_storage.get_by_id(pid)
+            if u and u.is_system:
+                system_users.append(u)
 
-        return None
+        # Add active_agent if set and not already in the list
+        if (
+            chat.active_agent is not None
+            and not any(u.id == chat.active_agent for u in system_users)
+        ):
+            active_agent_user = await self.user_storage.get_by_id(chat.active_agent)
+            if active_agent_user and active_agent_user.id != sender_id:
+                system_users.append(active_agent_user)
+
+        if not system_users:
+            return None
+
+        # Determine responder: route if multiple candidates, otherwise use the only one
+        responder = system_users[0]
+        if len(system_users) > 1 and self.agent_executor is not None:
+            chosen = await self.agent_executor.route(
+                await self._build_conversation(message),
+                system_users,
+                sender_id,
+            )
+            if chosen is not None:
+                responder = chosen
+
+        logger.info(
+            f"try_auto_respond: chat={chat_id} responder={responder.id} "
+            f"mode={'async' if self._is_async_mode() else 'sync'}"
+        )
+        if self._is_async_mode():
+            await self._enqueue_agent_run(
+                message=message,
+                responder_id=responder.id,
+            )
+            # NOTE: async-path support stamping (ai_first_response_at +
+            # AI_RESPONDED audit) is handled by AgentRequestHandler
+            # after it generates the response. See Task 18 follow-up.
+            return None
+        ai_response = await self.generate_response(
+            message=message,
+            responder_id=responder.id,
+        )
+        # Post-hook: stamp first AI response + audit event for
+        # SUPPORT chats. Only fires in sync path; async path stamps
+        # via AgentRequestHandler. Idempotent on the storage side
+        # (set_ai_first_response is a guarded UPDATE).
+        if (
+            ai_response is not None
+            and chat.type == ChatType.SUPPORT
+            and self._is_support_aware()
+            and chat.support_ticket_id is not None
+        ):
+            await self._record_support_ai_response(
+                ticket_id=chat.support_ticket_id,
+                ai_user_id=responder.id,
+                response_message_id=ai_response.id,
+            )
+        return ai_response
 
     async def _record_support_ai_response(
         self,
@@ -488,12 +513,12 @@ class AIService:
         message: Message,
         strip_username: Optional[str] = None,
         responder_id: Optional[UUID] = None,
+        limit: int = 10,
     ) -> List[dict]:
         """Build conversation as list of {"role": str, "content": str} dicts."""
         messages = []
 
-        # Recent chat history (last 10 messages)
-        history = await self.message_storage.list_by_chat(message.chat_id, limit=10)
+        history = await self.message_storage.list_by_chat(message.chat_id, limit=limit)
 
         for msg in history:
             if msg.id == message.id:
