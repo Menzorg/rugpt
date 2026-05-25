@@ -205,27 +205,33 @@ class AIService:
                 system_users.append(u)
 
         # Add active_agent if set and not already in the list
-        if (
-            chat.active_agent is not None
-            and not any(u.id == chat.active_agent for u in system_users)
-        ):
-            active_agent_user = await self.user_storage.get_by_id(chat.active_agent)
-            if active_agent_user and active_agent_user.id != sender_id:
-                system_users.append(active_agent_user)
+        last_active_user = None
+        if chat.active_agent is not None:
+            last_active_user = next((u for u in system_users if u.id == chat.active_agent), None)
+            if last_active_user is None:
+                fetched = await self.user_storage.get_by_id(chat.active_agent)
+                if fetched and fetched.id != sender_id:
+                    system_users.append(fetched)
+                    last_active_user = fetched
 
         if not system_users:
             return None
 
-        # Determine responder: route if multiple candidates, otherwise use the only one
-        responder = system_users[0]
+        # Determine responder: route if multiple candidates, otherwise use the only one.
+        # default_user is the primary system user (first in participants list).
+        # last_active_user hints the router about the previously active agent.
+        primary_responder = system_users[0]
         if len(system_users) > 1 and self.agent_executor is not None:
-            chosen = await self.agent_executor.route(
+            responder = await self.agent_executor.route(
                 await self._build_conversation(message),
                 system_users,
                 sender_id,
+                default_responder=primary_responder,
+                last_active_responder=last_active_user,
             )
-            if chosen is not None:
-                responder = chosen
+        else:
+            responder = primary_responder
+        await self.chat_storage.set_active_agent(chat_id, responder.id)
 
         logger.info(
             f"try_auto_respond: chat={chat_id} responder={responder.id} "
@@ -317,6 +323,7 @@ class AIService:
 
         if self._is_async_mode():
             for mention in ai_mentions:
+                await self.chat_storage.set_active_agent(message.chat_id, mention.user_id)
                 await self._enqueue_agent_run(
                     message=message,
                     responder_id=mention.user_id,
@@ -326,6 +333,7 @@ class AIService:
 
         responses = []
         for mention in ai_mentions:
+            await self.chat_storage.set_active_agent(message.chat_id, mention.user_id)
             response = await self.generate_response(
                 message=message,
                 responder_id=mention.user_id,

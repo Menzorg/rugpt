@@ -34,6 +34,7 @@ class ChatOpenAI(_ChatOpenAI):
 
 from ..config import Config
 from ..models.role import Role
+from ..models.user import User
 from ..services.prompt_cache import PromptCache
 from ..utils.token_counter import count_tokens
 from ..utils.token_logger import log_token_summary
@@ -305,16 +306,20 @@ class AgentExecutor:
     async def route(
         self,
         messages: List[dict],
-        users: List[Any],
+        users: List[User],
         sender_id: UUID,
-        default_user: Any,
-    ) -> Any:
+        default_responder: User,
+        last_active_responder: Optional[User] = None,
+    ) -> User:
         """
         Ask the LLM to pick which system user should respond to the conversation.
 
         Resolves each user's role internally (mirror → sender's role).
         Users without a resolvable role are excluded.
         Always returns a user: the LLM choice on success, default_user on any failure.
+
+        last_active_user: hints the router that this agent was last used in the chat.
+        default_user: primary system user — used as fallback on routing failure.
         """
         import json
         from pathlib import Path
@@ -323,7 +328,7 @@ class AgentExecutor:
         from pydantic import create_model
 
         if not users:
-            return default_user
+            return default_responder
 
         from ..services.engine_service import get_engine_service
         engine = get_engine_service()
@@ -344,16 +349,19 @@ class AgentExecutor:
                 candidates.append((u, r))
 
         if not candidates:
-            return default_user
+            return default_responder
 
         system_prompt = (Path(__file__).parent.parent / "prompts" / "router.md").read_text(encoding="utf-8").strip()
 
         agent_codes = [r.code for _, r in candidates]
+        last_active_id = last_active_responder.id if last_active_responder is not None else None
         agents_dict = {}
         for u, r in candidates:
             desc = r.agent_scope_description
-            if u.id == default_user.id:
+            if u.id == default_responder.id:
                 desc = desc + "\nЭта роль используется в чате по умолчанию"
+            if last_active_id is not None and u.id == last_active_id:
+                desc = desc + "\nЭта роль была последней активной в этом чате"
             agents_dict[r.code] = {"name": r.name, "description": desc}
         agents_json = json.dumps(agents_dict, ensure_ascii=False, indent=2)
 
@@ -403,7 +411,7 @@ class AgentExecutor:
             return chosen_user
         except Exception:
             logger.exception("route: failed for %d users, falling back to default_user", len(candidates))
-            return default_user
+            return default_responder
 
     async def execute(
         self,
