@@ -17,7 +17,7 @@ from langchain_core.language_models import LanguageModelInput
 
 class ChatOpenAI(_ChatOpenAI):
     """ChatOpenAI with a workaround for vLLM chat templates that can't handle
-    content=null on assistant messages with tool calls (e.g. Gemma 4)."""
+    content=null on any message (e.g. Gemma 4 Jinja template crashes on None)."""
 
     def _get_request_payload(
         self,
@@ -28,7 +28,7 @@ class ChatOpenAI(_ChatOpenAI):
     ) -> dict:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         for msg in payload.get("messages", []):
-            if msg.get("role") == "assistant" and msg.get("content") is None:
+            if msg.get("content") is None:
                 msg["content"] = ""
         return payload
 
