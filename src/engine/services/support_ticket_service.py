@@ -54,6 +54,8 @@ class SupportTicketService:
         message_storage,
         user_storage,
         notification_service,
+        kafka_producer=None,
+        ai_service=None,
     ):
         self.ticket_storage = ticket_storage
         self.event_storage = event_storage
@@ -61,6 +63,9 @@ class SupportTicketService:
         self.message_storage = message_storage
         self.user_storage = user_storage
         self.notification_service = notification_service
+        # kafka_producer: wired here, used for WS ticket_update pushes (later task).
+        self.kafka_producer = kafka_producer
+        self.ai_service = ai_service
 
     # ============================================
     # create
@@ -120,7 +125,7 @@ class SupportTicketService:
         chat = await self.chat_storage.create(chat)
 
         # First user message.
-        await self._add_user_message(chat, requester, initial_message)
+        first_message = await self._add_user_message(chat, requester, initial_message)
 
         # Audit event.
         await self._record_event(
@@ -131,8 +136,17 @@ class SupportTicketService:
             {"category": category.value},
         )
 
-        # Notify operator queue for non-how_to (immediate handoff).
-        if category != SupportTicketCategory.HOW_TO:
+        if category == SupportTicketCategory.HOW_TO:
+            # The opening message is inserted directly (bypassing the send_message
+            # route, the only other place try_auto_respond runs), so the AI must be
+            # kicked off here or it never replies to the first message. No-op if
+            # ai_service isn't wired (tests / sync fallback without AI).
+            if self.ai_service is not None:
+                await self.ai_service.try_auto_respond(
+                    first_message, chat.id, requester.id,
+                )
+        else:
+            # BUG / OTHER: immediate handoff → notify operator queue.
             await self.notification_service.notify_new_in_queue(ticket)
 
         logger.info(
@@ -203,6 +217,7 @@ class SupportTicketService:
             {},
         )
         await self.notification_service.notify_taken(taken)
+        await self._publish_ticket_update(taken)
         logger.info("take_ticket: ticket=%s operator=%s", ticket_id, operator.id)
         return taken
 
@@ -237,6 +252,7 @@ class SupportTicketService:
             {"by_role": role.value},
         )
         await self.notification_service.notify_closed(closed)
+        await self._publish_ticket_update(closed)
         logger.info(
             "close_ticket: ticket=%s by=%s role=%s",
             ticket_id, by_user.id, role.value,
@@ -294,6 +310,7 @@ class SupportTicketService:
             SupportTicketEventType.REOPENED, {},
         )
         await self.notification_service.notify_reopened(reopened)
+        await self._publish_ticket_update(reopened)
         logger.info("reopen_if_within_window: ticket=%s reopened", ticket_id)
         return reopened
 
@@ -346,6 +363,30 @@ class SupportTicketService:
     # ============================================
     # internal helpers
     # ============================================
+
+    async def _publish_ticket_update(self, ticket) -> None:
+        """Publish ticket-state change to chat.events so NestJS broadcasts it to
+        the ticket's chat room (live status for both parties). No-op without
+        kafka_producer (sync/test mode); best-effort on failure."""
+        if self.kafka_producer is None or ticket is None:
+            return
+        chat = await self.chat_storage.get_by_support_ticket(ticket.id)
+        if chat is None:
+            return
+        try:
+            await self.kafka_producer.send(
+                Config.KAFKA_TOPIC_CHAT_EVENTS,
+                {
+                    "kind": "ticket_update",
+                    "chat_id": str(chat.id),
+                    "ticket": ticket.to_dict(),
+                },
+                key=str(chat.id),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to publish ticket_update for ticket=%s", ticket.id,
+            )
 
     async def _record_event(
         self,

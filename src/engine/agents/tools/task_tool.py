@@ -11,12 +11,13 @@ errors that the sync-wrapper approach produced under langchain-openai.
 """
 
 from src.engine.unified_logger import get_logger
-from datetime import date, datetime
-from typing import Annotated, List, Literal, Optional
+
+from datetime import date, datetime, timezone as dt_timezone
+from typing import List, Literal, Optional
 from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import StructuredTool, InjectedToolArg
+from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ...config import Config
@@ -150,7 +151,7 @@ def create_task_tools(
         description: Optional[str] = "",
         participant_user_ids: Optional[List[str]] = None,
         priority: Optional[int] = None,
-        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+        config: RunnableConfig = None,
     ) -> str:
         """Create a task for an employee. Use when a manager assigns work via chat.
         Args:
@@ -249,7 +250,7 @@ def create_task_tools(
         created_from: Optional[date] = None,
         created_to: Optional[date] = None,
         page: int = 1,
-        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+        config: RunnableConfig = None,
     ) -> str:
         """Query tasks. Filter by assignee, creator, status, full-text search, and/or date ranges.
         Args:
@@ -492,7 +493,7 @@ def create_task_tools(
         deadline: Optional[str] = None,
         new_participant_user_ids: Optional[List[str]] = None,
         delete_participant_user_ids: Optional[List[str]] = None,
-        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+        config: RunnableConfig = None,
     ) -> str:
         """Modify an existing task. Use this when changing an already-created task — do NOT call task_create for edits.
         Args:
@@ -704,7 +705,7 @@ def create_task_tools(
     async def _task_deadline_proposal_async(
         task_id: str,
         accept: bool,
-        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+        config: RunnableConfig = None,
     ) -> str:
         """Accept or reject an assignee's proposed deadline. Only the task creator can call this."""
         logger.info("tool task_deadline_proposal: task=%s accept=%s", task_id, accept)
@@ -791,7 +792,7 @@ def create_task_tools(
     async def _get_own_tasks_async(
         status: Optional[Literal["done", "created", "in_progress"]] = None,
         page: int = 1,
-        config: Annotated[RunnableConfig, InjectedToolArg] = None,
+        config: RunnableConfig = None,
     ) -> str:
         """Return tasks assigned to the role owner.
         In a mention invocation (@@role) returns the callee's tasks; otherwise the caller's.

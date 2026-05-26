@@ -16,6 +16,7 @@ class Project:
     name: str = ""
     description: Optional[str] = None
     created_by_user_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
     is_active: bool = True
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
@@ -27,6 +28,7 @@ class Project:
             "name": self.name,
             "description": self.description,
             "created_by_user_id": str(self.created_by_user_id) if self.created_by_user_id else None,
+            "department_id": str(self.department_id) if self.department_id else None,
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),

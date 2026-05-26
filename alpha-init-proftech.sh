@@ -129,7 +129,7 @@ echo -e "${GREEN}OK${NC}"
 
 echo -e "${YELLOW}Проверка что org/admin ещё не созданы...${NC}"
 EXISTING_SLUG=$(run_sql "SELECT slug FROM organizations WHERE slug = '$ORG_SLUG'" 2>/dev/null | grep -c "$ORG_SLUG" || true)
-EXISTING_EMAIL=$(run_sql "SELECT email FROM users WHERE email = '$ADMIN_EMAIL'" 2>/dev/null | grep -c "$ADMIN_EMAIL" || true)
+EXISTING_EMAIL=$(run_sql "SELECT email FROM users WHERE lower(email) = lower('$ADMIN_EMAIL')" 2>/dev/null | grep -ci "$ADMIN_EMAIL" || true)
 if [ "$EXISTING_SLUG" -gt 0 ] || [ "$EXISTING_EMAIL" -gt 0 ]; then
     echo -e "${RED}Ошибка: org со slug=$ORG_SLUG или admin email=$ADMIN_EMAIL уже существует.${NC}"
     echo -e "${RED}Удалите вручную перед повторным запуском, либо смените параметры.${NC}"
@@ -242,28 +242,28 @@ TOOLS_JSON='["list_own_documents", "get_own_tasks", "analyze_image"]'
 MODEL='google/gemma-4-31B-it'
 
 insert_role() {
-    local rid="$1" code="$2" name="$3" prompt_file="$4"
+    local rid="$1" code="$2" name="$3" prompt_file="$4" desc="$5"
     run_sql "
     INSERT INTO roles (id, org_id, name, code, description, system_prompt, model_name,
                        agent_type, agent_config, tools, prompt_file, is_active, created_at, updated_at)
     VALUES ('$rid', '$ORG_ID', '$name', '$code',
-            '', '',
+            \$desc\$$desc\$desc\$,
             '$MODEL', 'supervisor', '{}', '$TOOLS_JSON', '$prompt_file',
             true, NOW(), NOW());
     " > /dev/null
     echo -e "${GREEN}OK role: $code${NC}"
 }
 
-insert_role "$ROLE_SALES_HEAD_ID"         "sales_head"          "Руководитель отдела продаж"          "proftech_sales_head.md"
-insert_role "$ROLE_DIRECT_SALES_ID"       "direct_sales_manager" "Старший менеджер по прямым контрактам" "proftech_direct_sales_manager.md"
-insert_role "$ROLE_IT_SUPPORT_ID"         "it_support"          "IT специалист client support"        "proftech_it_support.md"
-insert_role "$ROLE_AI_ML_DEV_ID"          "ai_ml_dev"           "AI-ML разработчик"                   "proftech_ai_ml_dev.md"
-insert_role "$ROLE_ELEC_ENG_ID"           "electrical_engineer" "Инженер-электрик"                    "proftech_electrical_engineer.md"
-insert_role "$ROLE_TENDER_MGR_ID"         "tender_manager"      "Менеджер по тендерам"                "proftech_tender_manager.md"
-insert_role "$ROLE_LOGISTICS_HEAD_ID"     "logistics_head"      "Руководитель отдела логистики"       "proftech_logistics_head.md"
-insert_role "$ROLE_CHIEF_ACCOUNTANT_ID"   "chief_accountant"    "Главбух"                             "proftech_chief_accountant.md"
-insert_role "$ROLE_ACCOUNTANT_PRIMARY_ID" "accountant_primary"  "Бухгалтер первичной документации"    "proftech_accountant_primary.md"
-insert_role "$ROLE_STRATEGIC_COMMS_ID"    "strategic_comms"     "Менеджер по стратегическим коммуникациям" "proftech_strategic_comms.md"
+insert_role "$ROLE_SALES_HEAD_ID"         "sales_head"           "Руководитель отдела продаж"               "proftech_sales_head.md"           "Вопросы по стратегии продаж, клиентам и сделкам по трансформаторному оборудованию"
+insert_role "$ROLE_DIRECT_SALES_ID"       "direct_sales_manager" "Старший менеджер по прямым контрактам"    "proftech_direct_sales_manager.md" "Вопросы по прямым контрактам, переговорам и работе с B2B-клиентами"
+insert_role "$ROLE_IT_SUPPORT_ID"         "it_support"           "IT специалист client support"             "proftech_it_support.md"           "Вопросы по ИТ-инфраструктуре, техподдержке и ИТ-сервисам компании"
+insert_role "$ROLE_AI_ML_DEV_ID"          "ai_ml_dev"            "AI-ML разработчик"                        "proftech_ai_ml_dev.md"            "Вопросы по AI/ML-разработке и программным продуктам компании"
+insert_role "$ROLE_ELEC_ENG_ID"           "electrical_engineer"  "Инженер-электрик"                         "proftech_electrical_engineer.md"  "Вопросы по техническим характеристикам трансформаторов и электрооборудования"
+insert_role "$ROLE_TENDER_MGR_ID"         "tender_manager"       "Менеджер по тендерам"                     "proftech_tender_manager.md"       "Вопросы по тендерам, госзакупкам по 223-ФЗ и статусу заявок"
+insert_role "$ROLE_LOGISTICS_HEAD_ID"     "logistics_head"       "Руководитель отдела логистики"            "proftech_logistics_head.md"       "Вопросы по доставке, маршрутам и логистике грузов"
+insert_role "$ROLE_CHIEF_ACCOUNTANT_ID"   "chief_accountant"     "Главбух"                                  "proftech_chief_accountant.md"     "Вопросы по финансам, налогам и бухгалтерской отчётности"
+insert_role "$ROLE_ACCOUNTANT_PRIMARY_ID" "accountant_primary"   "Бухгалтер первичной документации"         "proftech_accountant_primary.md"   "Вопросы по первичным документам: счетам, актам, накладным"
+insert_role "$ROLE_STRATEGIC_COMMS_ID"    "strategic_comms"      "Менеджер по стратегическим коммуникациям" "proftech_strategic_comms.md"      "Вопросы по PR, коммуникациям и имиджу компании"
 
 # ============================================
 # Admin (без отдела, без role)
@@ -272,7 +272,7 @@ echo -e "${YELLOW}Создание admin: $ADMIN_NAME...${NC}"
 run_sql "
 INSERT INTO users (id, org_id, name, username, email, password_hash,
                    is_admin, is_active, created_at, updated_at)
-VALUES ('$ADMIN_ID', '$ORG_ID', '$ADMIN_NAME', '$ADMIN_USERNAME', '$ADMIN_EMAIL',
+VALUES ('$ADMIN_ID', '$ORG_ID', '$ADMIN_NAME', '$ADMIN_USERNAME', lower('$ADMIN_EMAIL'),
         '$H_ADMIN', true, true, NOW(), NOW());
 " > /dev/null
 echo -e "${GREEN}OK admin: $ADMIN_NAME ($ADMIN_ID)${NC}"
@@ -286,7 +286,7 @@ insert_user() {
     run_sql "
     INSERT INTO users (id, org_id, name, username, email, password_hash,
                        role_id, department_id, is_head, is_admin, is_active, created_at, updated_at)
-    VALUES ('$uid', '$ORG_ID', '$name', '$uname', '$email', '$hash',
+    VALUES ('$uid', '$ORG_ID', '$name', '$uname', lower('$email'), '$hash',
             '$role', '$dept', $is_head, false, true, NOW(), NOW());
     " > /dev/null
     echo -e "${GREEN}OK user: $name${NC}"

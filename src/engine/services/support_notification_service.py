@@ -86,9 +86,29 @@ class SupportNotificationService:
         )
 
     async def notify_reopened(self, ticket: SupportTicket) -> None:
-        """Notify the assignee operator that the ticket was reopened.
-        No-op if no assignee (queue-level reopen)."""
+        """Reopened ticket:
+          - no assignee + handed off → back in the operator queue; fan-out.
+          - no assignee + never handed off → still AI first-line (a how_to that
+            was never escalated); the AI handles it, so do NOT ping operators
+            about a ticket `list_queue` won't surface (it requires ai_handoff_at).
+          - has assignee → returned to that operator; single ping.
+        """
         if ticket.assignee_user_id is None:
+            if ticket.ai_handoff_at is None:
+                return  # still AI-handled — not in the operator queue
+            operators = await self.user_storage.list_by_org(
+                Config.RUGPT_SUPPORT_ORG_ID, active_only=True
+            )
+            for op in operators:
+                await self.in_app.create(
+                    user_id=op.id,
+                    org_id=op.org_id,
+                    type="system",
+                    title="Тикет переоткрыт и вернулся в очередь",
+                    content=ticket.title,
+                    reference_type="support_ticket",
+                    reference_id=ticket.id,
+                )
             return
         await self.in_app.create(
             user_id=ticket.assignee_user_id,

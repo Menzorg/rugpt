@@ -39,6 +39,8 @@ class PromptCache:
     Cache can be cleared per-file or entirely via admin API.
     """
 
+    _SUPERVISOR_PART_FILE = "supervisor_universal_prompt_part.md"
+
     def __init__(self, prompts_dir: str):
         self._cache: dict[str, str] = {}
         self._prompts_dir = prompts_dir
@@ -93,12 +95,27 @@ class PromptCache:
         else:
             role_prompt = role.system_prompt or ""
 
+        if "{supervisor_prompt_part}" in role_prompt:
+            role_prompt = role_prompt.replace("{supervisor_prompt_part}", self._load_supervisor_part())
+
         if "{today}" in role_prompt:
             role_prompt = role_prompt.replace("{today}", _today_ru())
 
         if org_context:
             return f"{org_context}\n\n---\n\n{role_prompt}"
         return role_prompt
+
+    def _load_supervisor_part(self) -> str:
+        key = self._SUPERVISOR_PART_FILE
+        if key not in self._cache:
+            path = os.path.join(self._prompts_dir, key)
+            try:
+                self._cache[key] = Path(path).read_text(encoding="utf-8").rstrip("\n")
+                logger.info("Loaded supervisor prompt part from file: %s", key)
+            except FileNotFoundError:
+                logger.warning("Supervisor prompt part file not found: %s", path)
+                self._cache[key] = ""
+        return self._cache[key]
 
     def clear(self, prompt_file: Optional[str] = None):
         """

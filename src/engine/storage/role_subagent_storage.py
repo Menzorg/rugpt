@@ -46,7 +46,7 @@ class RoleSubagentStorage(BaseStorage):
             name=row["name"],
             code=row["code"],
             description=row["description"],
-            as_subagent_description=row["as_subagent_description"] or "",
+            agent_scope_description=row["agent_scope_description"] or "",
             system_prompt=row["system_prompt"],
             rag_collection=row["rag_collection"],
             model_name=row["model_name"],

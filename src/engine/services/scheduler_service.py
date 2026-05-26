@@ -211,7 +211,7 @@ class SchedulerService:
 
             messages = [{"role": "user", "content": proactive_message}]
 
-            result = await self.agent_executor.execute(
+            result, metadata = await self.agent_executor.execute(
                 role=role,
                 messages=messages,
                 temperature=0.5,

@@ -7,7 +7,7 @@ from ....models.rag import RelatedDoc
 from ....models.user import User
 from ....models.user_file import UserFile
 from ....storage.user_storage import UserStorage
-from ....utils.token_counter import count_tokens, cut_text_by_token_count
+from ....utils.token_counter import count_tokens
 from ...runtime import ListDocumentsRuntimeData, RuntimeContext
 from .list_documents_dedupe import (
     PageSlice,
@@ -15,6 +15,7 @@ from .list_documents_dedupe import (
     remember_seen_documents,
     with_dedup_header,
 )
+from .summary_budget import format_summary_part_with_budget, per_summary_token_limit
 
 logger = logging.getLogger("rugpt.agents.tools.document")
 
@@ -71,37 +72,21 @@ def format_full_batch(
     """Format file rows with summaries while respecting the summary budget."""
     remaining = summary_tokens_budget - runtimedata.spent_summary_tokens
     summary_docs_count = sum(1 for f in files if f.rag_status == "indexed" and f.summary)
-    single_item_max_tokens = (
-        max(1, remaining // summary_docs_count)
-        if summary_docs_count > 0
-        else remaining
-    )
+    single_item_max_tokens = per_summary_token_limit(remaining, summary_docs_count)
 
     lines = []
     total_tokens_spent = 0
 
     for f in files:
         if f.rag_status == "indexed" and f.summary:
-            if remaining <= 0:
-                summary_part = "summary: [BUDGET EXHAUSTED]"
-            else:
-                summary_text = f.summary
-                raw_tokens = count_tokens(summary_text)
-                effective_limit = min(single_item_max_tokens, remaining)
-
-                if raw_tokens > effective_limit:
-                    ellipsis_tokens = count_tokens("...")
-                    cut_limit = max(1, effective_limit - ellipsis_tokens)
-                    summary_text = cut_text_by_token_count(summary_text, cut_limit).rstrip() + "..."
-
-                tokens_for_this = count_tokens(summary_text)
-
-                if tokens_for_this <= remaining:
-                    summary_part = f'summary: "{summary_text}"'
-                    total_tokens_spent += tokens_for_this
-                    remaining -= tokens_for_this
-                else:
-                    summary_part = "summary: [TOKEN BUDGET EXHAUSTED]"
+            budget_result = format_summary_part_with_budget(
+                f.summary,
+                remaining,
+                single_item_max_tokens,
+            )
+            summary_part = budget_result.summary_part
+            total_tokens_spent += budget_result.tokens_spent
+            remaining = budget_result.remaining_tokens
         else:
             summary_part = "summary: -"
 
@@ -176,37 +161,21 @@ def format_related_docs_batch(
     """Format search results while preserving SQL order and tracking budget."""
     remaining = summary_tokens_budget - runtimedata.spent_summary_tokens
     summary_docs_count = sum(1 for doc in docs if doc.summary)
-    single_item_max_tokens = (
-        max(1, remaining // summary_docs_count)
-        if summary_docs_count > 0
-        else remaining
-    )
+    single_item_max_tokens = per_summary_token_limit(remaining, summary_docs_count)
 
     lines = []
     total_tokens_spent = 0
 
     for doc in docs:
         if doc.summary:
-            if remaining <= 0:
-                summary_part = "summary: [BUDGET EXHAUSTED]"
-            else:
-                summary_text = doc.summary
-                raw_tokens = count_tokens(summary_text)
-                effective_limit = min(single_item_max_tokens, remaining)
-
-                if raw_tokens > effective_limit:
-                    ellipsis_tokens = count_tokens("...")
-                    cut_limit = max(1, effective_limit - ellipsis_tokens)
-                    summary_text = cut_text_by_token_count(summary_text, cut_limit).rstrip() + "..."
-
-                tokens_for_this = count_tokens(summary_text)
-
-                if tokens_for_this <= remaining:
-                    summary_part = f'summary: "{summary_text}"'
-                    total_tokens_spent += tokens_for_this
-                    remaining -= tokens_for_this
-                else:
-                    summary_part = "summary: [TOKEN BUDGET EXHAUSTED]"
+            budget_result = format_summary_part_with_budget(
+                doc.summary,
+                remaining,
+                single_item_max_tokens,
+            )
+            summary_part = budget_result.summary_part
+            total_tokens_spent += budget_result.tokens_spent
+            remaining = budget_result.remaining_tokens
         else:
             summary_part = "summary: -"
 

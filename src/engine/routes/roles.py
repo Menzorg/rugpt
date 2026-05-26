@@ -30,7 +30,7 @@ class RoleResponse(BaseModel):
     name: str
     code: str
     description: Optional[str]
-    as_subagent_description: str
+    agent_scope_description: str
     system_prompt: str
     rag_collection: Optional[str]
     model_name: str

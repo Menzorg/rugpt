@@ -4,14 +4,13 @@ AI message has its modal payload attached to messages.metadata.modal.
 Plan-1 Task 8 (modal-protocol-infra).
 """
 import os
-import json
 import pytest
 import pytest_asyncio
 from uuid import uuid4
 import asyncpg
 
 from src.engine.services.engine_service import get_engine_service
-from src.engine.agents.result import AgentResult, ToolCall
+from src.engine.agents.result import AgentResult
 
 
 DSN = os.environ.get("DATABASE_URL", "postgresql://postgres@localhost/rugpt")
@@ -54,11 +53,10 @@ async def env():
 
 @pytest.mark.asyncio(loop_scope="module")
 async def test_modal_payload_attached_to_message(env):
-    """ai_service.persist_ai_message_with_modal extracts <<MODAL_EMITTED>> tag
-    from a tool call result and writes payload to messages.metadata.modal."""
+    """ai_service.persist_ai_message_with_modal writes executor metadata to
+    messages.metadata.modal."""
     engine = env["engine"]
 
-    # Simulate an AgentResult that called show_modal once.
     modal_payload = {
         "title": "Утвердить?",
         "body": "test body",
@@ -67,16 +65,10 @@ async def test_modal_payload_attached_to_message(env):
         ],
         "target": {"type": "test", "id": "x"},
     }
-    tool_result_str = (
-        f"<<MODAL_EMITTED>>{json.dumps(modal_payload, ensure_ascii=False)}<</MODAL_EMITTED>>"
-    )
     result = AgentResult(
         content="Готово.",
         model="test",
         agent_type="simple",
-        tool_calls=[
-            ToolCall(tool_name="show_modal", tool_input={}, tool_output=tool_result_str)
-        ],
         tokens_used=0,
         finish_reason="stop",
         error=None,
@@ -86,6 +78,7 @@ async def test_modal_payload_attached_to_message(env):
         chat_id=env["chat_id"],
         sender_id=env["user_id"],
         agent_result=result,
+        metadata={"modal": modal_payload},
         role_id=None,
     )
     assert msg.metadata.get("modal") == modal_payload

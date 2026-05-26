@@ -198,6 +198,13 @@ class ChatStorage(BaseStorage):
             chat_id, mem_id, datetime.utcnow(),
         )
 
+    async def set_active_agent(self, chat_id: UUID, user_id: UUID) -> None:
+        """Set the active agent for a chat (last mentioned or last auto-responded system user)"""
+        await self.execute(
+            "UPDATE chats SET active_agent = $2, updated_at = $3 WHERE id = $1",
+            chat_id, user_id, datetime.utcnow(),
+        )
+
     async def add_participant(self, chat_id: UUID, user_id: UUID) -> bool:
         """Add participant to chat"""
         query = """
@@ -236,6 +243,7 @@ class ChatStorage(BaseStorage):
         support_ticket_id = row["support_ticket_id"] if "support_ticket_id" in keys else None
         poll_id = row["poll_id"] if "poll_id" in keys else None
         mem_id = row["mem_id"] if "mem_id" in keys else None
+        active_agent = row["active_agent"] if "active_agent" in keys else None
 
         return Chat(
             id=row["id"],
@@ -249,6 +257,7 @@ class ChatStorage(BaseStorage):
             support_ticket_id=support_ticket_id,
             poll_id=poll_id,
             mem_id=mem_id,
+            active_agent=active_agent,
             is_active=row["is_active"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],

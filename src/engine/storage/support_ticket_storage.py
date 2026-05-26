@@ -75,10 +75,18 @@ class SupportTicketStorage(BaseStorage):
         return [self._row_to_ticket(r) for r in rows]
 
     async def list_queue(self, limit: int = 100) -> List[SupportTicket]:
+        """Operator queue: open, unassigned tickets that have reached a human.
+
+        `ai_handoff_at IS NOT NULL` excludes how_to tickets still handled by the
+        AI first line — they enter the queue only after escalation (bug/other
+        stamp handoff at creation, so they appear immediately).
+        """
         rows = await self.fetch(
             """
             SELECT * FROM support_tickets
-            WHERE status = 'open' AND assignee_user_id IS NULL
+            WHERE status = 'open'
+              AND assignee_user_id IS NULL
+              AND ai_handoff_at IS NOT NULL
             ORDER BY created_at ASC
             LIMIT $1
             """,
@@ -180,13 +188,15 @@ class SupportTicketStorage(BaseStorage):
 
     async def reopen(self, ticket_id: UUID) -> Optional[SupportTicket]:
         """
-        Reopen a closed ticket back to in_progress (clears closed_* fields).
-        Returns None if ticket was not in 'closed' state.
+        Reopen a closed ticket. Routes by ownership:
+          - had an assignee  → 'in_progress' (returns to that operator's list)
+          - no assignee      → 'open' (returns to the queue)
+        Clears closed_* fields. Returns None if not in 'closed' state.
         """
         row = await self.fetchrow(
             """
             UPDATE support_tickets
-               SET status = 'in_progress',
+               SET status = CASE WHEN assignee_user_id IS NULL THEN 'open' ELSE 'in_progress' END,
                    closed_at = NULL,
                    closed_by_user_id = NULL,
                    closed_by_role = NULL,

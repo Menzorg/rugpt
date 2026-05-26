@@ -11,10 +11,30 @@ from uuid import UUID
 
 from langchain.agents.middleware import ToolCallLimitMiddleware
 from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI as _ChatOpenAI
+from langchain_core.language_models import LanguageModelInput
+
+
+class ChatOpenAI(_ChatOpenAI):
+    """ChatOpenAI with a workaround for vLLM chat templates that can't handle
+    content=null on any message (e.g. Gemma 4 Jinja template crashes on None)."""
+
+    def _get_request_payload(
+        self,
+        input_: LanguageModelInput,
+        *,
+        stop: list[str] | None = None,
+        **kwargs,
+    ) -> dict:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        for msg in payload.get("messages", []):
+            if msg.get("content") is None:
+                msg["content"] = ""
+        return payload
 
 from ..config import Config
 from ..models.role import Role
+from ..models.user import User
 from ..services.prompt_cache import PromptCache
 from ..utils.token_counter import count_tokens
 from ..utils.token_logger import log_token_summary
@@ -283,6 +303,116 @@ class AgentExecutor:
             logger.info("rag_search tool call limit: run_limit=%d", _RAG_SEARCH_TOOL_CALL_LIMIT)
         return middleware
 
+    async def route(
+        self,
+        messages: List[dict],
+        users: List[User],
+        sender_id: UUID,
+        default_responder: User,
+        last_active_responder: Optional[User] = None,
+    ) -> User:
+        """
+        Ask the LLM to pick which system user should respond to the conversation.
+
+        Resolves each user's role internally (mirror → sender's role).
+        Users without a resolvable role are excluded.
+        Always returns a user: the LLM choice on success, default_user on any failure.
+
+        last_active_user: hints the router that this agent was last used in the chat.
+        default_user: primary system user — used as fallback on routing failure.
+        """
+        import json
+        from pathlib import Path
+        from typing import Literal, Tuple
+
+        from pydantic import create_model
+
+        if not users:
+            return default_responder
+
+        from ..services.engine_service import get_engine_service
+        engine = get_engine_service()
+
+        async def _resolve(user: Any) -> Optional[Role]:
+            if user.role_id:
+                return await engine.role_storage.get_by_id(user.role_id)
+            if user.is_system:
+                sender = await engine.user_storage.get_by_id(sender_id)
+                if sender and sender.role_id:
+                    return await engine.role_storage.get_by_id(sender.role_id)
+            return None
+
+        candidates: List[Tuple[Any, Role]] = []
+        for u in users:
+            r = await _resolve(u)
+            if r is not None:
+                candidates.append((u, r))
+
+        if not candidates:
+            return default_responder
+
+        system_prompt = (Path(__file__).parent.parent / "prompts" / "router.md").read_text(encoding="utf-8").strip()
+
+        agent_codes = [r.code for _, r in candidates]
+        last_active_id = last_active_responder.id if last_active_responder is not None else None
+        agents_dict = {}
+        for u, r in candidates:
+            desc = r.agent_scope_description
+            if u.id == default_responder.id:
+                desc = desc + "\nЭта роль используется в чате по умолчанию"
+            if last_active_id is not None and u.id == last_active_id:
+                desc = desc + "\nЭта роль была последней активной в этом чате"
+            agents_dict[r.code] = {"name": r.name, "description": desc}
+        agents_json = json.dumps(agents_dict, ensure_ascii=False, indent=2)
+
+        history_lines = []
+        for msg in messages[-10:]:
+            label = "User" if msg.get("role") == "user" else "Assistant"
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    p.get("text", "") if isinstance(p, dict) else str(p) for p in content
+                )
+            history_lines.append(f"{label}: {str(content)[:300]}")
+
+        routing_messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"Agents:\n{agents_json}\n\n"
+                    "Conversation:\n" + "\n".join(history_lines) + "\n\nChoose agent code:"
+                ),
+            },
+        ]
+
+        # Constrain LLM output to exactly the known agent codes — no parsing, no clamping.
+        RouterDecision = create_model(
+            "RouterDecision",
+            agent=(Literal[tuple(agent_codes)], ...),  # type: ignore[valid-type]
+        )
+
+        llm = self._create_llm(
+            self.default_model,
+            temperature=0.0,
+            max_tokens=16,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        try:
+            decision = await llm.with_structured_output(RouterDecision).ainvoke(routing_messages)
+            chosen_code = decision.agent
+            chosen_user, chosen_role = next(
+                (u, r) for u, r in candidates if r.code == chosen_code
+            )
+            logger.info(
+                "route: selected agent=%s user=%s from %d candidates",
+                chosen_code, chosen_user.id, len(candidates),
+            )
+            return chosen_user
+        except Exception:
+            logger.exception("route: failed for %d users, falling back to default_user", len(candidates))
+            return default_responder
+
     async def execute(
         self,
         role: Role,
@@ -293,7 +423,7 @@ class AgentExecutor:
         max_tokens: int = 2048, # For now it breaks tool calls if set too low, so keeping it high and relying on individual tool limits and HistoryCompactionMiddleware to control token usage.
         invocation_kind: str = "direct",
         chat_id: Optional[UUID] = None,
-    ) -> AgentResult:
+    ) -> tuple[AgentResult, dict]:
         """
         Execute agent for a role.
 
@@ -307,7 +437,8 @@ class AgentExecutor:
             invocation_kind: "direct", "mention", or "system"
 
         Returns:
-            AgentResult with response
+            Tuple of (AgentResult, metadata). Metadata is a dict suitable for
+            message persistence, e.g. {"modal": <last show_modal payload>}.
         """
         if role is None:
             raise ValueError("AgentExecutor.execute: role is None — cannot run without a role scope")
@@ -451,9 +582,11 @@ class AgentExecutor:
         )
         system_prompt += (
             "\n\n##ВАЖНЫЕ ОГРАНИЧЕНИЯ\n"
-            "Любое текстовое сообщение пользователю считается финальным ответом текущего обращения.\n"
-            "У тебя есть конкретный точный набор инструментов. Не выдумывай себе функционал. Тебе запрещено говорить пользователю, что ты умеешь делать то, что явно не позволяют твои инструменты.\n"
-            f"Лимит вызовов инструментов за один запрос: не более {_TOTAL_TOOL_CALL_LIMIT} суммарно.{rag_limit_line}"
+            "- любое текстовое сообщение пользователю считается финальным ответом текущего обращения.\n"
+            "- во всех случаях, когда ты применяешь числовой формат времени, всегда обязательно указывай пользователю, в каком часовом поясе ты работаешь. (на русском языке)\n"
+            "- у тебя есть конкретный точный набор инструментов. Не выдумывай себе функционал. Тебе запрещено говорить пользователю, что ты умеешь делать то, что явно не позволяют твои инструменты.\n"
+            f"- лимит вызовов инструментов за один запрос: не более {_TOTAL_TOOL_CALL_LIMIT} суммарно.{rag_limit_line}"
+            f"\n\nВ чате сообщения ассистентов маркируются по системному имени отправителя. Твоё имя: {role.name}"
         )
 
         # Count tokens for the full prompt (flat text estimate + 150 per tool).
@@ -538,14 +671,26 @@ class AgentExecutor:
                 result.tokens_used,
                 logger=logger,
             )
-            return result
+            # Use the runtime context's called_modals list directly
+            called_modals = runtime_context.called_modals
+            metadata = ({"modal": called_modals[-1]} if called_modals else {})
+            logger.info(
+                "executor: metadata after execution role=%s chat_id=%s metadata=%s",
+                role.code,
+                chat_id,
+                metadata,
+            )
+            return result, metadata
 
         except Exception as e:
             logger.error(f"Agent execution failed: {e}")
-            return AgentResult(
-                content=f"[Error: {e}]",
-                model=model,
-                agent_type=role.agent_type,
-                finish_reason="error",
-                error=str(e),
+            return (
+                AgentResult(
+                    content=f"[Error: {e}]",
+                    model=model,
+                    agent_type=role.agent_type,
+                    finish_reason="error",
+                    error=str(e),
+                ),
+                {},
             )

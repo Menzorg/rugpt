@@ -160,7 +160,7 @@ class AgentRequestHandler:
                 logger.error(f"Failed to publish AI message to chat.events: {e}")
 
             logger.info(
-                f"agent_run {request_id} kind={kind} done: ai_message={ai_message.id}"
+                f"agent_run {request_id} kind={kind} done: ai_message={ai_message.id} metadata={ai_message.metadata or {}}"
             )
 
         except Exception as e:

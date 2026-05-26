@@ -34,11 +34,12 @@ async def list_projects(
     include_archived: bool = Query(False),
     current_user: dict = Depends(get_current_user),
 ):
-    """List all projects in the current user's organization."""
+    """List projects visible to the current user (per-viewer scope)."""
     engine = get_engine_service()
-    projects = await engine.project_service.list_by_org(
-        current_user["org_id"], include_archived,
-    )
+    user = await _load_user(engine, current_user["user_id"])
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    projects = await engine.project_service.list_visible(user, include_archived)
     return [p.to_dict() for p in projects]
 
 @router.post("")
@@ -46,7 +47,7 @@ async def create_project(
     request: CreateProjectRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """Create a project (head/admin only)."""
+    """Create a project (any authenticated user). Stores creator's department."""
     engine = get_engine_service()
     user = await _load_user(engine, current_user["user_id"])
     if not user:
@@ -91,7 +92,7 @@ async def update_project(
     request: UpdateProjectRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """Update a project (head/admin only)."""
+    """Update a project (creator, admin, or head of the project's department)."""
     engine = get_engine_service()
     try:
         pid = UUID(project_id)
@@ -123,7 +124,8 @@ async def delete_project(
     project_id: str,
     current_user: dict = Depends(get_current_user),
 ):
-    """Soft-delete a project (head/admin only). Archives its chat; tasks keep project_id."""
+    """Soft-delete a project (creator, admin, or head of the project's department).
+    Archives its chat; tasks keep project_id."""
     engine = get_engine_service()
     try:
         pid = UUID(project_id)

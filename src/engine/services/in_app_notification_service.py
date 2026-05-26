@@ -9,6 +9,7 @@ from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
+from ..config import Config
 from ..models.in_app_notification import InAppNotification
 from ..storage.in_app_notification_storage import InAppNotificationStorage
 
@@ -16,8 +17,9 @@ logger = get_logger("services")
 
 class InAppNotificationService:
 
-    def __init__(self, storage: InAppNotificationStorage):
+    def __init__(self, storage: InAppNotificationStorage, kafka_producer=None):
         self.storage = storage
+        self.kafka_producer = kafka_producer
 
     async def create(
         self,
@@ -48,6 +50,21 @@ class InAppNotificationService:
         )
         created = await self.storage.create(notification)
         logger.info(f"Created notification [{type}] for user {user_id}: {title}")
+        if self.kafka_producer is not None:
+            try:
+                await self.kafka_producer.send(
+                    Config.KAFKA_TOPIC_CHAT_EVENTS,
+                    {
+                        "kind": "notification",
+                        "user_id": str(user_id),
+                        "notification": created.to_dict(),
+                    },
+                    key=str(user_id),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to publish notification WS push for user=%s", user_id,
+                )
         return created
 
     async def get(self, notification_id: UUID) -> Optional[InAppNotification]:

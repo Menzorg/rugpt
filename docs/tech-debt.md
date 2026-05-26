@@ -28,6 +28,34 @@
 | 2 | `web_search` и `role_call` -- stubs | Средний | Возвращают placeholder строки. Агент может пытаться вызвать несуществующий функционал. |
 | 3 | Bare `except Exception` в scheduler | Низкий | ~13 блоков в `scheduler_service.py` которые только логируют ошибку. Нет alerting или circuit-breaking при массовых сбоях. |
 
+## Support: in-app уведомление оператору на сообщение в тикете
+
+| # | Проблема | Приоритет | Статус |
+|---|----------|-----------|--------|
+| 1 | Оператор не получает in-app уведомление на новое сообщение внутри уже взятого тикета | Средний | Открыто (запланировано) |
+
+**Контекст.** Оператор получает in-app уведомление (и рост красного бейджа в сайдбаре через WS `notification:new`) только на:
+- новый тикет в очереди / эскалацию how_to → `SupportNotificationService.notify_new_in_queue` (fan-out всем операторам);
+- переоткрытие → `notify_reopened` (assignee либо очередь);
+- взятие/закрытие → пинги соответствующей стороне.
+
+А **ответное сообщение requester'а внутри уже открытого тикета** in-app уведомления оператору НЕ создаёт. Такое сообщение идёт обычным чат-путём (`POST /chats/{id}/messages` → `chat_service` → Kafka `chat.events` `kind:message` → `broadcastToChat`) — долетает в комнату чата по WS, но support-бейдж/колокольчик у оператора от него не растёт. Пока оператор не открыл сам чат, он не видит, что клиент дописал.
+
+**Что сделать (engine).** В пути отправки сообщения для SUPPORT-чата создавать in-app уведомление назначенному оператору, когда пишет requester:
+- Точка: `routes/chats.py:send_message` (после сохранения user-сообщения) либо отдельный хук в `support_ticket_service` по аналогии с `handle_incoming_message`. Тикет резолвится по `chat.support_ticket_id`.
+- Условие: `chat.type == SUPPORT` И у тикета есть `assignee_user_id` И отправитель == `requester_user_id` (не оператор, не AI). Уведомление шлём на `assignee_user_id`.
+- Создание: `in_app_notification_service.create(user_id=assignee, org_id=RUGPT_SUPPORT_ORG_ID, type='system', title='Новое сообщение в тикете', content=<preview>, reference_type='support_ticket', reference_id=ticket.id)`. WS-пуш `notification:new` и рост бейджа у оператора получатся **автоматически** — `InAppNotificationService.create` уже публикует в `chat.events` (realtime-механизм уже на месте).
+
+**Анти-дубль / тонкости.**
+- Не уведомлять на собственные сообщения отправителя и на AI-сообщения (`sender_type == ai_role`).
+- Тикет без assignee (ещё в очереди / how_to в AI-first-line) — не трогаем: его покрывают `notify_new_in_queue` / реопен-fan-out. Очередь на сообщение в неназначенный тикет уведомлять не нужно.
+- Не путать с чат-unread: support in-app — это про бейдж/колокольчик (`useSupportUnread` считает `reference_type='support_ticket'`), он независим от чат-unread.
+- **Антиспам:** серия сообщений клиента подряд = N уведомлений → бейдж раздувается. Рассмотреть дедуп «не более одного непрочитанного support-уведомления на тикет» (перед созданием проверять, нет ли уже непрочитанного с тем же `reference_id`).
+
+**Парная фронт-доработка (mark-read).** По аналогии с очередью: открытие оператором чата тикета (`/chat/support/{id}`) должно помечать прочитанным in-app уведомление этого тикета (PATCH read по уведомлениям с `reference_id == ticketId`) и слать `window` event `support-notifications-read`, чтобы бейдж падал. Сейчас mark-read реализован только на заходе в очередь (`/support/queue`).
+
+**Затрагивает:** engine (`routes/chats.py` или `support_ticket_service` + `in_app_notification_service`) → нужен redeploy движка; фронт (`chat/support/[id]/page.tsx` — mark-read на открытии чата).
+
 ## Infrastructure & Security
 
 > Источник — security-аудит из `architecture-full-2026-04-22.md` (раздел «Security-аудит — точки внимания»), 25 пунктов. Сгруппировано по темам.
