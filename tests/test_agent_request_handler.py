@@ -77,6 +77,25 @@ def test_happy_path_marks_done_and_publishes():
     asyncio.run(go())
 
 
+def test_message_reply_forwards_invocation_kind_override():
+    async def go():
+        ai_msg = MagicMock()
+        ai_msg.id = uuid4()
+        ai_msg.to_dict = MagicMock(return_value={"id": str(ai_msg.id), "content": "reply"})
+
+        handler, ai_service, _, _, _ = make_handler(
+            mark_running_result=True, generate_result=ai_msg,
+        )
+
+        payload = _payload(invocation_kind_override="mention")
+        await handler(payload)
+
+        call = ai_service.generate_response.call_args
+        assert call.kwargs["invocation_kind_override"] == "mention"
+
+    asyncio.run(go())
+
+
 def test_already_handled_is_skipped_silently():
     async def go():
         handler, ai_service, _, agent_run_storage, kafka_producer = make_handler(

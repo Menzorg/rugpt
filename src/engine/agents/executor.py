@@ -423,6 +423,7 @@ class AgentExecutor:
         max_tokens: int = 2048, # For now it breaks tool calls if set too low, so keeping it high and relying on individual tool limits and HistoryCompactionMiddleware to control token usage.
         invocation_kind: str = "direct",
         chat_id: Optional[UUID] = None,
+        agent_name: Optional[str] = None,
     ) -> tuple[AgentResult, dict]:
         """
         Execute agent for a role.
@@ -435,6 +436,7 @@ class AgentExecutor:
             caller_user_id: User ID that triggered the agent run
             callee_user_id: Mentioned/responding user ID for mention calls; defaults to caller when absent
             invocation_kind: "direct", "mention", or "system"
+            agent_name: Username marker for this AI sender; defaults to role.code for internal calls
 
         Returns:
             Tuple of (AgentResult, metadata). Metadata is a dict suitable for
@@ -446,6 +448,7 @@ class AgentExecutor:
             raise ValueError("AgentExecutor.execute: caller_user_id is None — refusing to run without caller identity")
 
         model = role.model_name or self.default_model
+        prompt_agent_name = agent_name or role.code
         
         # Qwen's chat template requires the first non-system message to be a user
         # turn. Injected context blocks use "user" role for Qwen models so the
@@ -456,7 +459,7 @@ class AgentExecutor:
         litellm_session_id = resolve_litellm_session_id()
         litellm_extra_body = build_initial_extra_body(
             litellm_session_id=litellm_session_id,
-            agent_name=role.code,
+            agent_name=prompt_agent_name,
             chat_id=chat_id,
         )
 
@@ -580,13 +583,25 @@ class AgentExecutor:
             if any(tool.name == "rag_search" for tool in tools)
             else ""
         )
+        
+        who_is_agent_in_chat: str = "" 
+        match invocation_kind:
+            case "direct":
+                who_is_agent_in_chat = ("- ты являешься основным агентом в этом чате. Пользователь может подключить других только при помощи упоминания их ассистентов."
+                                        " Ты сам никого больше в чат вызывать не можешь." if role.agent_type != "supervisor" else "Те ассистенты, которых можешь вызвать ты - не могут общаться с пользователем. С ними работаешь только ты."
+                )
+            case "mention":
+                who_is_agent_in_chat = "- ты не являешься основным агентом в этом чате. Ваш диалог с пользователем будет автоматически переключен системой, когда она определит, что тема разговора вышла за пределы твоей роли"
+        
         system_prompt += (
             "\n\n##ВАЖНЫЕ ОГРАНИЧЕНИЯ НА УРОВНЕ СИСТЕМЫ\n"
             "- любое текстовое сообщение пользователю считается финальным ответом текущего обращения.\n"
             "- при любом упоминании времени, обязательно указывай пользователю, в каком часовом поясе ты пишешь время. На русском языке. Но не пиши время без повода.\n"
             "- у тебя есть конкретный точный набор инструментов. Не выдумывай себе функционал. Тебе запрещено говорить пользователю, что ты умеешь делать то, что явно не позволяют твои инструменты.\n"
             f"- лимит вызовов инструментов за один запрос: не более {_TOTAL_TOOL_CALL_LIMIT} суммарно.{rag_limit_line}\n"
-            f"- в чате сообщения разных ассистентов маркируются по системному имени отправителя. Твоё имя: {role.code}."
+            f"- в чате сообщения разных ассистентов маркируются по системному имени отправителя. Твоё имя: {prompt_agent_name}.\n"
+            + ("- mirror означает твои собственные ответы.\n" if prompt_agent_name == "mirror" else "\n")
+            + {who_is_agent_in_chat}
         )
 
         # Count tokens for the full prompt (flat text estimate + 150 per tool).

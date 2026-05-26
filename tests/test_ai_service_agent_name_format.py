@@ -10,7 +10,7 @@ from src.engine.services.ai_service import AIService
 
 
 @pytest.mark.asyncio
-async def test_build_conversation_wraps_ai_history_with_role_code():
+async def test_build_conversation_wraps_ai_history_with_sender_username():
     role_id = uuid4()
     ai_sender_id = uuid4()
     chat_id = uuid4()
@@ -50,7 +50,7 @@ async def test_build_conversation_wraps_ai_history_with_role_code():
 
     assert messages[0] == {
         "role": "assistant",
-        "content": "<name>support_agent</name><content>Привет</content>",
+        "content": "<name>display_user</name><content>Привет</content>",
     }
 
 

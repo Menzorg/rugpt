@@ -115,6 +115,7 @@ class AIService:
         responder_id: UUID,
         strip_username: Optional[str] = None,
         role_code: str = "",
+        invocation_kind_override: Optional[str] = None,
     ) -> Optional[UUID]:
         """Create AgentRun row + publish to agent.requests. Returns request_id or None on failure."""
         if not self._is_async_mode():
@@ -133,18 +134,21 @@ class AIService:
             status="pending",
         )
         try:
+            payload = {
+                "request_id": str(request_id),
+                "chat_id": str(message.chat_id),
+                "user_message_id": str(message.id),
+                "triggering_user_id": str(message.sender_id),
+                "responder_id": str(responder_id),
+                "strip_username": strip_username,
+                "role_code": role_code or "",
+            }
+            if invocation_kind_override is not None:
+                payload["invocation_kind_override"] = invocation_kind_override
             await self.agent_run_storage.create(run)
             await self.kafka_producer.send(
                 Config.KAFKA_TOPIC_AGENT_REQUESTS,
-                {
-                    "request_id": str(request_id),
-                    "chat_id": str(message.chat_id),
-                    "user_message_id": str(message.id),
-                    "triggering_user_id": str(message.sender_id),
-                    "responder_id": str(responder_id),
-                    "strip_username": strip_username,
-                    "role_code": role_code or "",
-                },
+                payload,
                 key=str(message.chat_id),
             )
             return request_id
@@ -228,6 +232,9 @@ class AIService:
         else:
             responder = primary_responder
         await self.chat_storage.set_active_agent(chat_id, responder.id)
+        invocation_kind_override = (
+            "mention" if responder.id not in chat.participants else None
+        )
 
         logger.info(
             f"try_auto_respond: chat={chat_id} responder={responder.id} "
@@ -237,6 +244,7 @@ class AIService:
             await self._enqueue_agent_run(
                 message=message,
                 responder_id=responder.id,
+                invocation_kind_override=invocation_kind_override,
             )
             # NOTE: async-path support stamping (ai_first_response_at +
             # AI_RESPONDED audit) is handled by AgentRequestHandler
@@ -245,6 +253,7 @@ class AIService:
         ai_response = await self.generate_response(
             message=message,
             responder_id=responder.id,
+            invocation_kind_override=invocation_kind_override,
         )
         # Post-hook: stamp first AI response + audit event for
         # SUPPORT chats. Only fires in sync path; async path stamps
@@ -350,6 +359,7 @@ class AIService:
         message: Message,
         responder_id: UUID,
         strip_username: Optional[str] = None,
+        invocation_kind_override: Optional[str] = None,
     ) -> Optional[Message]:
         """
         Generate AI response from a responder user.
@@ -363,6 +373,7 @@ class AIService:
             message: The user message to respond to
             responder_id: User ID of who should respond (system user or regular user)
             strip_username: If set, strip @@username from message content before sending to LLM
+            invocation_kind_override: If set, overrides mention/direct detection
         """
         logger.info(
             f"generate_response: message={message.id} responder={responder_id}"
@@ -401,6 +412,9 @@ class AIService:
             strip_username,
         )
         is_mention_call = self._is_mention_call(message, responder_id)
+        invocation_kind = invocation_kind_override or (
+            "mention" if is_mention_call else "direct"
+        )
 
         # Generate
         try:
@@ -408,9 +422,10 @@ class AIService:
                 role,
                 conv_messages,
                 caller_user_id=message.sender_id,
-                callee_user_id=responder_id if is_mention_call else None,
-                invocation_kind="mention" if is_mention_call else "direct",
+                callee_user_id=responder_id if invocation_kind == "mention" else None,
+                invocation_kind=invocation_kind,
                 chat_id=message.chat_id,
+                agent_name=responder.username,
             )
             if agent_call is None:
                 return None
@@ -486,6 +501,7 @@ class AIService:
         callee_user_id: Optional[UUID] = None,
         invocation_kind: str = "direct",
         chat_id: Optional[UUID] = None,
+        agent_name: Optional[str] = None,
     ) -> Optional[tuple[AgentResult, dict]]:
         """Call LLM via AgentExecutor.
 
@@ -504,6 +520,7 @@ class AIService:
             callee_user_id=callee_user_id,
             invocation_kind=invocation_kind,
             chat_id=chat_id,
+            agent_name=agent_name,
         )
         
         if result.finish_reason == "error":
@@ -512,12 +529,8 @@ class AIService:
         return result, metadata
 
     async def _resolve_agent_name(self, sender_id: UUID) -> str:
-        """Resolve technical agent name for an AI message sender."""
+        """Resolve username marker for an AI message sender."""
         user = await self.user_storage.get_by_id(sender_id)
-        if user and user.role_id:
-            role = await self.role_storage.get_by_id(user.role_id)
-            if role and role.code:
-                return role.code
         if user and user.username:
             return user.username
         return str(sender_id)
@@ -773,13 +786,15 @@ class AIService:
         )
         user_input = "\n".join(lines)
 
+        responder = await self.user_storage.get_by_id(responder_id)
         result, metadata  = await self.agent_executor.execute(
             role=role,
             messages=[{"role": "user", "content": user_input}],
             temperature=0.5,
             max_tokens=1024,
             caller_user_id=poll.assignee_user_id,
-            invocation_kind="system"
+            invocation_kind="system",
+            agent_name=responder.username if responder else role.code,
         )
 
         if not (result and result.content and result.content.strip()):
@@ -896,13 +911,15 @@ class AIService:
             f"Извлеки сводку по структуре, описанной в системном промпте."
         )
 
+        responder = await self.user_storage.get_by_id(responder_id)
         result, metadata  = await self.agent_executor.execute(
             role=role,
             messages=[{"role": "user", "content": user_input}],
             temperature=0.3,
             max_tokens=2048,
             caller_user_id=poll.assignee_user_id,
-            invocation_kind="system"
+            invocation_kind="system",
+            agent_name=responder.username if responder else role.code,
         )
 
         if not (result and result.content and result.content.strip()):
