@@ -43,10 +43,6 @@ if TYPE_CHECKING:
 
 logger = get_logger("services")
 
-_OTHER_ROLE_HISTORY_PLACEHOLDER = (
-    "[Исторический ответ другой роли скрыт. Текущая роль не наследует его "
-    "инструменты, обещания и полномочия.]"
-)
 
 
 # Poll-dialog role codes (lives in system org per migration 029).
@@ -403,7 +399,6 @@ class AIService:
         conv_messages = await self._build_conversation(
             message,
             strip_username,
-            responder_id=responder_id,
         )
         is_mention_call = self._is_mention_call(message, responder_id)
 
@@ -516,11 +511,25 @@ class AIService:
             return None
         return result, metadata
 
+    async def _resolve_agent_name(self, sender_id: UUID) -> str:
+        """Resolve display name for an AI message sender (role name or username fallback)."""
+        user = await self.user_storage.get_by_id(sender_id)
+        if user and user.role_id:
+            role = await self.role_storage.get_by_id(user.role_id)
+            if role and role.name:
+                return role.name
+        if user and user.username:
+            return user.username
+        return str(sender_id)
+
+    @staticmethod
+    def _wrap_agent_content(agent_name: str, content: str) -> str:
+        return f"<name>{agent_name}</name><content>{content}</content>"
+
     async def _build_conversation(
         self,
         message: Message,
         strip_username: Optional[str] = None,
-        responder_id: Optional[UUID] = None,
         limit: int = 10,
     ) -> List[dict]:
         """Build conversation as list of {"role": str, "content": str} dicts."""
@@ -528,17 +537,18 @@ class AIService:
 
         history = await self.message_storage.list_by_chat(message.chat_id, limit=limit)
 
+        # Cache agent names to avoid redundant DB hits per unique sender.
+        agent_name_cache: dict[UUID, str] = {}
+
         for msg in history:
             if msg.id == message.id:
                 continue
             role_name = "assistant" if msg.sender_type == SenderType.AI_ROLE else "user"
             content = self._with_attachment_ids(msg)
-            if (
-                role_name == "assistant"
-                and responder_id is not None
-                and msg.sender_id != responder_id
-            ):
-                content = _OTHER_ROLE_HISTORY_PLACEHOLDER
+            if role_name == "assistant":
+                if msg.sender_id not in agent_name_cache:
+                    agent_name_cache[msg.sender_id] = await self._resolve_agent_name(msg.sender_id)
+                content = self._wrap_agent_content(agent_name_cache[msg.sender_id], content)
             messages.append({"role": role_name, "content": content})
 
         # Current message
