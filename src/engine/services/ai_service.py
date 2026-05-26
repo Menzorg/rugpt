@@ -512,12 +512,12 @@ class AIService:
         return result, metadata
 
     async def _resolve_agent_name(self, sender_id: UUID) -> str:
-        """Resolve display name for an AI message sender (role name or username fallback)."""
+        """Resolve technical agent name for an AI message sender."""
         user = await self.user_storage.get_by_id(sender_id)
         if user and user.role_id:
             role = await self.role_storage.get_by_id(user.role_id)
-            if role and role.name:
-                return role.name
+            if role and role.code:
+                return role.code
         if user and user.username:
             return user.username
         return str(sender_id)
@@ -625,9 +625,24 @@ class AIService:
         r"$\times$": "×",
         r"$\sqrt": "√",
     }
+    _INLINE_AGENT_RESPONSE_RE = re.compile(
+        r"^\s*<name>.*?</name>\s*<content>(?P<content>.*)</content>\s*$",
+        re.DOTALL,
+    )
+    _INLINE_AGENT_NAME_PREFIX_RE = re.compile(r"^\s*<name>.*?</name>\s*", re.DOTALL)
+    _INLINE_CONTENT_PREFIX_RE = re.compile(r"^\s*<content>", re.DOTALL)
+    _INLINE_CONTENT_SUFFIX_RE = re.compile(r"</content>\s*$", re.DOTALL)
 
     @classmethod
     def _postprocess_content(cls, content: str) -> str:
+        match = cls._INLINE_AGENT_RESPONSE_RE.match(content)
+        if match:
+            content = match.group("content")
+        else:
+            content = cls._INLINE_AGENT_NAME_PREFIX_RE.sub("", content, count=1)
+            content = cls._INLINE_CONTENT_PREFIX_RE.sub("", content, count=1)
+            content = cls._INLINE_CONTENT_SUFFIX_RE.sub("", content, count=1)
+
         for latex, ascii_char in cls._LATEX_REPLACEMENTS.items():
             content = content.replace(latex, ascii_char)
         return content
@@ -774,7 +789,7 @@ class AIService:
             chat_id=chat_id,
             sender_id=responder_id,
             sender_type=SenderType.AI_ROLE,
-            content=result.content.strip(),
+            content=self._postprocess_content(result.content).strip(),
             ai_is_valid=True,
         )
         return await self.message_storage.create(ai_message)
@@ -893,7 +908,7 @@ class AIService:
         if not (result and result.content and result.content.strip()):
             raise RuntimeError("agent_executor returned empty content")
 
-        summary_text = result.content.strip()
+        summary_text = self._postprocess_content(result.content).strip()
 
         # Sequential UPDATE pair. If failure between — handler marks agent_run failed,
         # Kafka redelivery will retry idempotently (CAS pending->running guards re-runs).

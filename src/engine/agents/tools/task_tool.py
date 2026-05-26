@@ -71,6 +71,7 @@ class TaskUpdateInput(BaseModel):
     title: str = Field(default="", description="New title (empty = keep current)")
     description: str = Field(default="", description="New description (empty = keep current)")
     deadline: Optional[str] = Field(default=None, description="New deadline in ISO format (e.g. 2025-03-15T18:00:00). Only the task creator or admin can set this.")
+    priority: Optional[int] = Field(default=None, description="New task priority: 1 (Обычно), 2 (Важно), 3 (Срочно). Only the task creator can set this.")
     new_participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of task participants to add")
     delete_participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of task participants to remove")
 
@@ -462,7 +463,7 @@ def create_task_tools(
                 desc = f", description={t.description!r}" if (t.description and include_descriptions) else ""
                 lines.append(
                     f"- [{t.status}] {t.title}{dl}"
-                    f" (id={t.id}, assignee={assignee}{f', creator={creator}' if creator else ''}{participants}{desc})"
+                    f" (id={t.id}, priority={t.priority}, assignee={assignee}{f', creator={creator}' if creator else ''}{participants}{desc})"
                 )
 
             span = f"{start + 1}–{end} of {total}"
@@ -491,6 +492,7 @@ def create_task_tools(
         title: Optional[str] = "",
         description: Optional[str] = "",
         deadline: Optional[str] = None,
+        priority: Optional[int] = None,
         new_participant_user_ids: Optional[List[str]] = None,
         delete_participant_user_ids: Optional[List[str]] = None,
         config: RunnableConfig = None,
@@ -502,12 +504,14 @@ def create_task_tools(
             title: New title (empty = keep current)
             description: New description (empty = keep current)
             deadline: New deadline in ISO format (only creator or admin can set)
+            priority: New priority: 1 (Обычно), 2 (Важно), 3 (Срочно). Only the task creator can set this.
             new_participant_user_ids: Optional UUIDs of task participants to add.
             delete_participant_user_ids: Optional UUIDs of task participants to remove.
         """
         logger.info(
             f"tool task_update: task={task_id} status={status!r} title_set={bool(title)} "
-            f"deadline={deadline!r} add_participants={new_participant_user_ids} remove_participants={delete_participant_user_ids}"
+            f"deadline={deadline!r} priority={priority} "
+            f"add_participants={new_participant_user_ids} remove_participants={delete_participant_user_ids}"
         )
         try:
             configurable = (config or {}).get("configurable", {})
@@ -525,6 +529,9 @@ def create_task_tools(
             except ValueError:
                 logger.info("task_update invalid_deadline: task=%s deadline=%r", task_id, deadline)
                 return f"Invalid deadline format: {deadline!r}. Use ISO format, e.g. '2025-03-15T18:00:00'."
+            if priority is not None and priority not in (1, 2, 3):
+                logger.info("task_update invalid_priority: task=%s priority=%s", task_uuid, priority)
+                return "priority must be 1 (Обычно), 2 (Важно) or 3 (Срочно)"
             has_status_update = bool(status)
             has_field_update = bool(
                 title
@@ -540,7 +547,7 @@ def create_task_tools(
             is_creator = existing_task.created_by_user_id == caller_uuid
             is_assignee = existing_task.assignee_user_id == caller_uuid
             logger.info(
-                "task_update permission: task=%s current=%s requested=%s is_creator=%s is_assignee=%s is_admin=%s has_fields=%s deadline=%s add_participants=%d remove_participants=%d",
+                "task_update permission: task=%s current=%s requested=%s is_creator=%s is_assignee=%s is_admin=%s has_fields=%s deadline=%s priority=%s add_participants=%d remove_participants=%d",
                 task_uuid,
                 existing_task.status,
                 status,
@@ -549,6 +556,7 @@ def create_task_tools(
                 is_admin,
                 has_field_update,
                 bool(deadline_dt),
+                priority,
                 len(add_participant_uuids),
                 len(remove_participant_uuids),
             )
@@ -579,24 +587,31 @@ def create_task_tools(
                 logger.info("task_update denied: task=%s reason=deadline_permission", task_uuid)
                 return "Only the task creator, admin, or assignee can change the deadline."
 
+            if priority is not None and not is_creator:
+                logger.info("task_update denied: task=%s reason=priority_permission", task_uuid)
+                return "Only the task creator can change the priority."
+
             if has_field_update and not is_admin and not is_creator:
                 logger.info("task_update denied: task=%s reason=field_permission", task_uuid)
                 return "Only the task creator or an admin can update task fields (title, description, participants)."
 
             # Apply field updates before status so the final state reflects both changes.
-            if title or description:
+            if title or description or priority is not None:
                 updated = await task_service.update(
                     task_id=task_uuid,
                     title=title or None,
                     description=description or None,
+                    priority=priority or None,
+                    actor_user_id=caller_uuid,
                 )
                 if not updated:
                     return f"Task {task_id} not found"
                 logger.info(
-                    "task_update applied: task=%s operation=fields title_set=%s description_set=%s",
+                    "task_update applied: task=%s operation=fields title_set=%s description_set=%s priority=%s",
                     task_uuid,
                     bool(title),
                     bool(description),
+                    priority,
                 )
 
             if deadline_dt:
@@ -679,7 +694,7 @@ def create_task_tools(
                 logger.info("task_update done: task=%s result=noop", task_uuid)
                 return (
                     "Nothing to update: no status, title, description, "
-                    "participants to add, or participants to remove provided"
+                    "priority, participants to add, or participants to remove provided"
                 )
 
             participant_suffix = (
@@ -694,7 +709,7 @@ def create_task_tools(
             )
             return (
                 f"Task '{updated.title}' updated "
-                f"(status={updated.status}, description={updated.description}{participant_suffix})"
+                f"(status={updated.status}, priority={updated.priority}, description={updated.description}{participant_suffix})"
             )
         except Exception as e:
             logger.error(f"task_update failed: {e}", exc_info=True)
