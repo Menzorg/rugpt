@@ -177,3 +177,5 @@ async def test_execute_uses_explicit_agent_name_in_prompt(monkeypatch):
 
     assert "Твоё имя: mirror." in captured["system_prompt"]
     assert "Твоё имя: reasoner." not in captured["system_prompt"]
+    assert "##ВАЖНЫЕ ОГРАНИЧЕНИЯ НА УРОВНЕ СИСТЕМЫ" in captured["system_prompt"]
+    assert "ты являешься основным агентом в этом чате" in captured["system_prompt"]

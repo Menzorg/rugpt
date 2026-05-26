@@ -601,7 +601,7 @@ class AgentExecutor:
             f"- лимит вызовов инструментов за один запрос: не более {_TOTAL_TOOL_CALL_LIMIT} суммарно.{rag_limit_line}\n"
             f"- в чате сообщения разных ассистентов маркируются по системному имени отправителя. Твоё имя: {prompt_agent_name}.\n"
             + ("- mirror означает твои собственные ответы.\n" if prompt_agent_name == "mirror" else "\n")
-            + {who_is_agent_in_chat}
+            + f"{who_is_agent_in_chat}\n"
         )
 
         # Count tokens for the full prompt (flat text estimate + 150 per tool).
