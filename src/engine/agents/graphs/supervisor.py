@@ -166,6 +166,7 @@ async def _supervisor_agent_call(
             output_mode="last_message",
             supervisor_name=supervisor_name,
             parallel_tool_calls=False,
+            add_handoff_back_messages=False,
         )
         agent = workflow.compile(name=supervisor_name)
 
