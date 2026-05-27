@@ -486,7 +486,7 @@ class AgentExecutor:
             scope_org_id = caller.org_id
         org = await engine.org_storage.get_by_id(scope_org_id)
         
-        system_prompt = self.prompt_cache.get_prompt(role)
+        system_prompt = self.prompt_cache.get_prompt(role, timezone=org.timezone if org else "Europe/Moscow")
         
         # Tool resolving and tool docs injection
         tools, tools_doc = self.tool_registry.resolve(role.tools) if role.tools else ([], "")
@@ -522,7 +522,9 @@ class AgentExecutor:
         # --- Retrieval phase ---
  
         
+        org_timezone = org.timezone if org else "Europe/Moscow"
         org_context = org.org_context if org else ""
+        org_context += f"\nЧасовой пояс организации: {org_timezone}"
  
         summary, memory_block = await self._build_memory_context_block(
             chat_id,
