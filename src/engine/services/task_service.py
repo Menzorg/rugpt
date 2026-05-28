@@ -922,7 +922,8 @@ class TaskService:
         if not task:
             raise ValueError(f"Task {task_id} not found")
         self._check_creator(task, user)
-        if task.status in ("done", "overdue"):
+        is_self_assigned = task.created_by_user_id == task.assignee_user_id == user.id
+        if task.status == "done" or (task.status == "overdue" and not is_self_assigned):
             raise ValueError(f"Cannot set deadline on task in status '{task.status}'")
         old_deadline = task.deadline
         task.deadline = deadline
