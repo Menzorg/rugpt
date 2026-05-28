@@ -166,7 +166,7 @@ async def _supervisor_agent_call(
             output_mode="last_message",
             supervisor_name=supervisor_name,
             parallel_tool_calls=False,
-            add_handoff_back_messages=False,
+            #add_handoff_back_messages=False, Never ever disable this shit if u don't wanna get looping supervisors
         )
         agent = workflow.compile(name=supervisor_name)
 
