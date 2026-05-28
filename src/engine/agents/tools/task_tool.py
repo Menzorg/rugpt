@@ -494,6 +494,7 @@ def create_task_tools(
             is_admin = configurable.get("is_admin", False)
             org_tz = configurable.get("timezone", "Europe/Moscow")
 
+            # Parse and validate inputs before touching the DB.
             task_uuid = UUID(task_id)
             add_participant_uuids = _parse_uuid_list(new_participant_user_ids)
             remove_participant_uuids = _parse_uuid_list(delete_participant_user_ids)
@@ -515,6 +516,7 @@ def create_task_tools(
                 or remove_participant_uuids
             )
 
+            # Fetch the task and determine caller's role on it.
             existing_task = await task_service.get(task_uuid)
             if not existing_task:
                 logger.info("task_update not_found: task=%s", task_id)
@@ -527,6 +529,7 @@ def create_task_tools(
                 has_field_update, bool(deadline_dt), priority, len(add_participant_uuids), len(remove_participant_uuids),
             )
 
+            # Permission checks: validate status value, role-based transition rules, and field edit rights.
             _ALLOWED_STATUSES = ("created", "in_progress", "awaiting_review", "done")
             if has_status_update and status not in _ALLOWED_STATUSES:
                 logger.info("task_update invalid_status: task=%s requested=%s", task_uuid, status)
@@ -541,6 +544,7 @@ def create_task_tools(
                                 task_uuid, existing_task.status, status)
                     return err
 
+            # Self-assigned tasks (creator == assignee) may reschedule even when overdue.
             is_self_assigned = is_creator and is_assignee
             if deadline_dt and existing_task.status == "overdue" and not is_self_assigned:
                 logger.info("task_update denied: task=%s reason=overdue_deadline", task_uuid)
@@ -599,6 +603,7 @@ def create_task_tools(
                     return f"Task {task_id} not found"
                 logger.info("task_update applied: task=%s operation=status status=%s", task_uuid, status)
 
+            # Participant changes are applied last; they don't affect the task row itself.
             if add_participant_uuids or remove_participant_uuids:
                 from ...services.engine_service import get_engine_service
                 engine = get_engine_service()
@@ -626,6 +631,7 @@ def create_task_tools(
                     logger.info("task_update applied: task=%s operation=remove_participant participant=%s removed=%s",
                                 task_uuid, participant_uuid, removed)
 
+            # If only participant changes happened, re-fetch to get current task state for the response.
             if updated is None and participant_changes:
                 updated = await task_service.get(task_uuid)
                 if not updated:
