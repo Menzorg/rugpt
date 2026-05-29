@@ -3,7 +3,8 @@ Mention Service
 
 Parses @ and @@ mentions from message content.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 import re
 from typing import List, Optional, Tuple
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from ..models.message import Mention, MentionType
 from ..storage.user_storage import UserStorage
 
-logger = logging.getLogger("rugpt.services.mention")
-
+logger = get_logger("services")
 
 class MentionService:
     """Service for parsing and resolving mentions"""
@@ -49,7 +49,8 @@ class MentionService:
     async def resolve_mentions(
         self,
         content: str,
-        org_id: UUID
+        org_id: UUID,
+        sender_id: UUID = None
     ) -> List[Mention]:
         """
         Parse and resolve mentions to user IDs.
@@ -63,11 +64,31 @@ class MentionService:
             # First try to find user in the sender's organization
             user = await self.user_storage.get_by_username(username, org_id)
 
-            # Fallback: try system users (@@mirror, @@ai_gpt4, etc.)
+            # Fallback: try system users bound to a role (e.g. @@pm, @@reasoner,
+            # @@doc_search). Explicitly skip mirror — mirror (system user without
+            # role_id) channels the sender's own role, so allowing it as a
+            # mention means observers in a shared chat would see a response that
+            # reflects someone else's role and could wrongly validate it. Mirror
+            # is only reachable via a direct 1-on-1 chat.
             if not user:
-                user = await self.user_storage.get_system_user_by_username(username)
+                candidate = await self.user_storage.get_system_user_by_username(username)
+                if candidate is not None and candidate.role_id is None:
+                    logger.info(
+                        f"Mention @@{username} skipped: mirror is not mentionable"
+                    )
+                    candidate = None
+                user = candidate
 
             if user:
+                # Check visibility if sender_id provided
+                if sender_id:
+                    from .engine_service import get_engine_service
+                    engine = get_engine_service()
+                    visible = await engine.department_service.check_visible(sender_id, user.id, org_id)
+                    if not visible:
+                        logger.warning(f"Mention @{username} skipped: not visible to sender {sender_id}")
+                        continue
+
                 mentions.append(Mention(
                     type=mention_type,
                     user_id=user.id,

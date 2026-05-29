@@ -3,16 +3,16 @@ Organization Service
 
 Business logic for organization management.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 import re
-from typing import Optional, List
+from typing import Optional
 from uuid import UUID
 
 from ..models.organization import Organization
 from ..storage.org_storage import OrgStorage
 
-logger = logging.getLogger("rugpt.services.org")
-
+logger = get_logger("services")
 
 class OrgService:
     """Service for organization management"""
@@ -72,10 +72,6 @@ class OrgService:
         """Get organization by slug"""
         return await self.storage.get_by_slug(slug)
 
-    async def list_organizations(self, active_only: bool = True) -> List[Organization]:
-        """List all organizations"""
-        return await self.storage.list_all(active_only)
-
     async def update_organization(
         self,
         org_id: UUID,
@@ -83,6 +79,8 @@ class OrgService:
         slug: Optional[str] = None,
         description: Optional[str] = None,
         timezone: Optional[str] = None,
+        org_context: Optional[str] = None,
+        accountant_user_id: Optional[UUID] = None,
     ) -> Optional[Organization]:
         """
         Update organization.
@@ -92,6 +90,7 @@ class OrgService:
             name: New name (optional)
             slug: New slug (optional)
             description: New description (optional)
+            accountant_user_id: User designated to mark invoices as processed (optional)
 
         Returns:
             Updated organization or None if not found
@@ -115,6 +114,12 @@ class OrgService:
 
         if timezone is not None:
             org.timezone = timezone
+
+        if org_context is not None:
+            org.org_context = org_context
+
+        if accountant_user_id is not None:
+            org.accountant_user_id = accountant_user_id
 
         updated = await self.storage.update(org)
         logger.info(f"Updated organization: {updated.name}")

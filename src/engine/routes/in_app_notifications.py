@@ -7,7 +7,8 @@ Bell icon notification endpoints:
 - PATCH /in-app-notifications/{id}/read — mark one as read
 - POST /in-app-notifications/read-all — mark all as read
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
@@ -17,9 +18,8 @@ from pydantic import BaseModel
 from ..services.engine_service import get_engine_service
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.in_app_notifications")
+logger = get_logger("routes")
 router = APIRouter(prefix="/in-app-notifications", tags=["in-app-notifications"])
-
 
 class NotificationResponse(BaseModel):
     id: str
@@ -32,29 +32,31 @@ class NotificationResponse(BaseModel):
     reference_id: Optional[str]
     is_read: bool
     created_at: str
-
+    replied: bool = False
 
 class UnreadCountResponse(BaseModel):
     count: int
-
 
 @router.get("", response_model=List[NotificationResponse])
 async def list_notifications(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     unread_only: bool = Query(False),
+    type: Optional[str] = Query(None, description="Filter by notification type (e.g. 'mention')"),
+    replied: Optional[bool] = Query(None, description="Filter mentions: True=отвеченные, False=неотвеченные, не задан=все"),
     current_user: dict = Depends(get_current_user),
 ):
-    """List notifications for the current user"""
+    """List notifications for the current user. Optional filters: `type`, `replied`."""
     engine = get_engine_service()
     notifications = await engine.in_app_notification_service.list_for_user(
         user_id=current_user["user_id"],
+        type=type,
         limit=limit,
         offset=offset,
         unread_only=unread_only,
+        replied=replied,
     )
     return [NotificationResponse(**n.to_dict()) for n in notifications]
-
 
 @router.get("/unread-count", response_model=UnreadCountResponse)
 async def get_unread_count(current_user: dict = Depends(get_current_user)):
@@ -62,7 +64,6 @@ async def get_unread_count(current_user: dict = Depends(get_current_user)):
     engine = get_engine_service()
     count = await engine.in_app_notification_service.count_unread(current_user["user_id"])
     return UnreadCountResponse(count=count)
-
 
 @router.patch("/{notification_id}/read")
 async def mark_notification_read(
@@ -84,7 +85,6 @@ async def mark_notification_read(
 
     await engine.in_app_notification_service.mark_read(notif_uuid)
     return {"success": True, "message": "Notification marked as read"}
-
 
 @router.post("/read-all")
 async def mark_all_read(current_user: dict = Depends(get_current_user)):

@@ -4,7 +4,8 @@ Task Report Storage
 PostgreSQL CRUD for task_reports table.
 """
 import json
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import date
 from typing import Optional, List
 from uuid import UUID
@@ -12,8 +13,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.task_report import TaskReport
 
-logger = logging.getLogger("rugpt.storage.task_report")
-
+logger = get_logger("storage")
 
 class TaskReportStorage(BaseStorage):
 
@@ -43,6 +43,24 @@ class TaskReportStorage(BaseStorage):
             report_id,
         )
         return self._row_to_report(row) if row else None
+
+    async def exists_for_user_on_date(
+        self,
+        org_id: UUID,
+        generated_for_user_id: UUID,
+        report_date: date,
+    ) -> bool:
+        """Check if a report already exists for an org/user/date."""
+        query = """
+            SELECT EXISTS(
+                SELECT 1
+                FROM task_reports
+                WHERE org_id = $1
+                  AND generated_for_user_id = $2
+                  AND report_date = $3
+            )
+        """
+        return await self.fetchval(query, org_id, generated_for_user_id, report_date)
 
     async def list_by_user(
         self,

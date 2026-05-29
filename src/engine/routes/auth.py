@@ -4,21 +4,25 @@ Authentication Routes
 Endpoints for user authentication.
 """
 import jwt
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 
 from ..config import Config
 from ..services.engine_service import get_engine_service
 from ..services.users_service import UsersService
+from src.engine.unified_logger import set_user_id
 
-logger = logging.getLogger("rugpt.routes.auth")
+logger = get_logger("routes")
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+http_bearer = HTTPBearer(auto_error=False)
 
 # ============================================
 # Request/Response Models
@@ -31,7 +35,6 @@ class LoginRequest(BaseModel):
     device_public_key: Optional[str] = None
     device_name: Optional[str] = None
 
-
 class LoginResponse(BaseModel):
     """Login response"""
     success: bool
@@ -41,9 +44,11 @@ class LoginResponse(BaseModel):
     name: Optional[str] = None
     username: Optional[str] = None
     is_admin: bool = False
+    role_id: Optional[str] = None
+    department_id: Optional[str] = None
+    is_head: bool = False
     device_id: Optional[str] = None
     message: Optional[str] = None
-
 
 class RegisterRequest(BaseModel):
     """Registration request body"""
@@ -53,13 +58,11 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
 
-
 class TokenPayload(BaseModel):
     """JWT token payload"""
     user_id: str
     org_id: str
     exp: datetime
-
 
 # ============================================
 # Helpers
@@ -77,7 +80,6 @@ def create_token(user_id: UUID, org_id: UUID, email: str = None, is_admin: bool 
     }
     return jwt.encode(payload, Config.JWT_SECRET, algorithm=Config.JWT_ALGORITHM)
 
-
 def verify_token(token: str) -> Optional[dict]:
     """Verify and decode JWT token"""
     try:
@@ -88,27 +90,43 @@ def verify_token(token: str) -> Optional[dict]:
     except jwt.InvalidTokenError:
         return None
 
+async def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
+) -> dict:
+    """JWT = session-gate; личность = device-подписанный user_id (Plan A). FAIL-CLOSED.
 
-async def get_current_user(authorization: str = Header(None)) -> dict:
-    """Dependency to get current authenticated user"""
-    if not authorization:
+    JWT обязан быть валиден и не протух. Запрос ОБЯЗАН пройти WebSignatureMiddleware —
+    он выставляет request.state.zt_user_id. Нет его → 401 (unsigned). Его user_id
+    ОБЯЗАН совпасть с JWT, иначе 401 (склейка чужой подписи с чужим JWT). Никакого
+    fallback на голый JWT. Личность и org_id — из живой user-записи.
+    """
+    if not credentials:
         raise HTTPException(status_code=401, detail="Authorization header required")
-
-    # Expect "Bearer <token>"
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Invalid authorization header format")
-
-    token = parts[1]
-    payload = verify_token(token)
+    payload = verify_token(credentials.credentials)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    return {
-        "user_id": UUID(payload["user_id"]),
-        "org_id": UUID(payload["org_id"])
-    }
+    jwt_user_id = UUID(payload["user_id"])
+    zt_user_id = getattr(request.state, "zt_user_id", None)
+    if zt_user_id is None:
+        raise HTTPException(status_code=401, detail="Unsigned request")
+    if str(jwt_user_id) != str(zt_user_id):
+        raise HTTPException(status_code=401, detail="Identity mismatch")
+    actor_user_id = UUID(str(zt_user_id))
 
+    engine = get_engine_service()
+    user = await engine.user_storage.get_by_id(actor_user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
+    set_user_id(str(actor_user_id))
+    return {
+        "user_id": actor_user_id,
+        "org_id": user.org_id,
+        "is_admin": user.is_admin,
+        "department_id": user.department_id,
+        "is_head": user.is_head,
+    }
 
 # ============================================
 # Routes
@@ -166,9 +184,11 @@ async def login(request: LoginRequest):
         name=user.name,
         username=user.username,
         is_admin=user.is_admin,
+        role_id=str(user.role_id) if user.role_id else None,
+        department_id=str(user.department_id) if user.department_id else None,
+        is_head=user.is_head,
         device_id=device_id,
     )
-
 
 @router.post("/register", response_model=LoginResponse)
 async def register(request: RegisterRequest):
@@ -218,9 +238,9 @@ async def register(request: RegisterRequest):
         org_id=str(user.org_id),
         name=user.name,
         username=user.username,
-        is_admin=user.is_admin
+        is_admin=user.is_admin,
+        role_id=str(user.role_id) if user.role_id else None,
     )
-
 
 @router.get("/me")
 async def get_current_user_info(current_user: dict = Depends(get_current_user)):
@@ -233,47 +253,11 @@ async def get_current_user_info(current_user: dict = Depends(get_current_user)):
 
     return user.to_dict()
 
-
 @router.post("/refresh")
 async def refresh_token(current_user: dict = Depends(get_current_user)):
     """Refresh JWT token"""
     token = create_token(current_user["user_id"], current_user["org_id"])
     return {"token": token}
-
-
-class VerifySignatureRequest(BaseModel):
-    """Request to verify a device signature"""
-    user_id: str
-    payload: str
-    signature: str
-
-
-@router.post("/verify-signature")
-async def verify_signature(request: VerifySignatureRequest):
-    """
-    Verify device signature for a user.
-    Used by WebClient backend to verify request signatures.
-    """
-    from ..services.crypto_service import verify_device_signature
-
-    engine = get_engine_service()
-    user_id = UUID(request.user_id)
-
-    # Get all active device public keys for user
-    public_keys = await engine.device_storage.get_all_public_keys(user_id)
-
-    if not public_keys:
-        return {"valid": False, "error": "No device keys registered"}
-
-    # Try each key until one works
-    for pk in public_keys:
-        if verify_device_signature(pk, request.payload, request.signature):
-            # Update last_used
-            await engine.device_storage.update_last_used(user_id, pk)
-            return {"valid": True}
-
-    return {"valid": False, "error": "Invalid signature"}
-
 
 @router.get("/devices")
 async def get_user_devices(current_user: dict = Depends(get_current_user)):

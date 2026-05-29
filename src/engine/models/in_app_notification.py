@@ -15,19 +15,23 @@ class InAppNotification:
     """
     In-app bell notification.
 
-    Types: new_task, poll, report, mention, task_status_change, system.
+    Types: new_task, poll, report, mention, task_status_change, system,
+    daily_admin_briefing.
     Reference links to the related entity (task, poll, report, message).
     """
     id: UUID = field(default_factory=uuid4)
     user_id: UUID = field(default_factory=uuid4)
     org_id: UUID = field(default_factory=uuid4)
-    type: str = ""                                  # new_task | poll | report | mention | task_status_change | system
+    type: str = ""                                  # new_task | poll | report | mention | task_status_change | system | daily_admin_briefing | invoice_due
     title: str = ""
     content: Optional[str] = None
     reference_type: Optional[str] = None            # task | task_poll | task_report | message
     reference_id: Optional[UUID] = None
     is_read: bool = False
     created_at: datetime = field(default_factory=datetime.utcnow)
+    # Computed at read time (см. InAppNotificationStorage.list_by_user).
+    # True если на mention уже отвечали через reply-to-mention.
+    replied: bool = False
 
     def to_dict(self) -> dict:
         """Convert to dictionary for API response"""
@@ -42,4 +46,5 @@ class InAppNotification:
             "reference_id": str(self.reference_id) if self.reference_id else None,
             "is_read": self.is_read,
             "created_at": self.created_at.isoformat(),
+            "replied": self.replied,
         }

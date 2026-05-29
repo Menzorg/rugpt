@@ -3,7 +3,8 @@ Notification Log Storage
 
 PostgreSQL storage for notification delivery log.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.notification import NotificationLog
 
-logger = logging.getLogger("rugpt.storage.notification_log")
-
+logger = get_logger("storage")
 
 class NotificationLogStorage(BaseStorage):
     """Storage for NotificationLog entities"""

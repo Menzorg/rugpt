@@ -4,20 +4,22 @@ In-App Notification Service
 Business logic for bell icon notifications.
 Used by task_service, task_poll_service, task_report_service, mention_service.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from typing import Optional, List
 from uuid import UUID
 
+from ..config import Config
 from ..models.in_app_notification import InAppNotification
 from ..storage.in_app_notification_storage import InAppNotificationStorage
 
-logger = logging.getLogger("rugpt.services.in_app_notification")
-
+logger = get_logger("services")
 
 class InAppNotificationService:
 
-    def __init__(self, storage: InAppNotificationStorage):
+    def __init__(self, storage: InAppNotificationStorage, kafka_producer=None):
         self.storage = storage
+        self.kafka_producer = kafka_producer
 
     async def create(
         self,
@@ -30,7 +32,7 @@ class InAppNotificationService:
         reference_id: Optional[UUID] = None,
     ) -> InAppNotification:
         """Create a new in-app notification"""
-        valid_types = {"new_task", "poll", "report", "mention", "task_status_change", "system"}
+        valid_types = {"new_task", "poll", "report", "mention", "task_status_change", "system", "daily_admin_briefing", "invoice_due"}
         if type not in valid_types:
             raise ValueError(f"Invalid notification type: {type}. Must be one of {valid_types}")
 
@@ -48,6 +50,21 @@ class InAppNotificationService:
         )
         created = await self.storage.create(notification)
         logger.info(f"Created notification [{type}] for user {user_id}: {title}")
+        if self.kafka_producer is not None:
+            try:
+                await self.kafka_producer.send(
+                    Config.KAFKA_TOPIC_CHAT_EVENTS,
+                    {
+                        "kind": "notification",
+                        "user_id": str(user_id),
+                        "notification": created.to_dict(),
+                    },
+                    key=str(user_id),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to publish notification WS push for user=%s", user_id,
+                )
         return created
 
     async def get(self, notification_id: UUID) -> Optional[InAppNotification]:
@@ -57,12 +74,21 @@ class InAppNotificationService:
     async def list_for_user(
         self,
         user_id: UUID,
+        type: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
         unread_only: bool = False,
+        replied: Optional[bool] = None,
     ) -> List[InAppNotification]:
-        """List notifications for a user"""
-        return await self.storage.list_by_user(user_id, limit, offset, unread_only)
+        """List notifications for a user. `type` и `replied` опциональные фильтры."""
+        return await self.storage.list_by_user(
+            user_id=user_id,
+            type=type,
+            limit=limit,
+            offset=offset,
+            unread_only=unread_only,
+            replied=replied,
+        )
 
     async def count_unread(self, user_id: UUID) -> int:
         """Get unread notification count for bell badge"""

@@ -3,20 +3,20 @@ Organizations Routes
 
 Endpoints for organization management (admin only).
 """
-import logging
-from typing import Optional, List
+
+from src.engine.unified_logger import get_logger
+from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from pydantic import BaseModel
 
 from ..services.engine_service import get_engine_service
 from ..services.org_service import OrgService
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.organizations")
+logger = get_logger("routes")
 router = APIRouter(prefix="/organizations", tags=["organizations"])
-
 
 # ============================================
 # Request/Response Models
@@ -29,14 +29,14 @@ class CreateOrgRequest(BaseModel):
     description: Optional[str] = None
     timezone: Optional[str] = "Europe/Moscow"
 
-
 class UpdateOrgRequest(BaseModel):
     """Update organization request"""
     name: Optional[str] = None
     slug: Optional[str] = None
     description: Optional[str] = None
     timezone: Optional[str] = None
-
+    org_context: Optional[str] = None
+    accountant_user_id: Optional[str] = None
 
 class OrgResponse(BaseModel):
     """Organization response"""
@@ -45,10 +45,11 @@ class OrgResponse(BaseModel):
     slug: str
     description: Optional[str]
     timezone: str
+    org_context: Optional[str] = None
     is_active: bool
+    accountant_user_id: Optional[str] = None
     created_at: str
     updated_at: str
-
 
 # ============================================
 # Routes
@@ -85,36 +86,23 @@ async def create_organization(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
-@router.get("", response_model=List[OrgResponse])
-@router.get("/", response_model=List[OrgResponse])
-async def list_organizations(current_user: dict = Depends(get_current_user)):
-    """List all organizations (admin only)"""
-    engine = get_engine_service()
-
-    # Check if current user is admin
-    user = await engine.user_storage.get_by_id(current_user["user_id"])
-    if not user or not user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-
-    org_service = OrgService(engine.org_storage)
-    orgs = await org_service.list_organizations()
-    return [OrgResponse(**org.to_dict()) for org in orgs]
-
-
-@router.get("/{org_id}", response_model=OrgResponse)
+@router.get("/{target_org_id}", response_model=OrgResponse)
 async def get_organization(
-    org_id: str,
+    target_org_id: str,
     current_user: dict = Depends(get_current_user)
 ):
-    """Get organization by ID"""
+    """Get organization by ID. Юзер видит только свою org — иначе 404, чтобы
+    не палить факт существования чужих tenant'ов."""
     engine = get_engine_service()
     org_service = OrgService(engine.org_storage)
 
     try:
-        org_uuid = UUID(org_id)
+        org_uuid = UUID(target_org_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    if org_uuid != current_user["org_id"]:
+        raise HTTPException(status_code=404, detail="Organization not found")
 
     org = await org_service.get_organization(org_uuid)
     if not org:
@@ -122,10 +110,9 @@ async def get_organization(
 
     return OrgResponse(**org.to_dict())
 
-
-@router.patch("/{org_id}", response_model=OrgResponse)
+@router.patch("/{target_org_id}", response_model=OrgResponse)
 async def update_organization(
-    org_id: str,
+    target_org_id: str,
     request: UpdateOrgRequest,
     current_user: dict = Depends(get_current_user)
 ):
@@ -138,11 +125,20 @@ async def update_organization(
         raise HTTPException(status_code=403, detail="Admin access required")
 
     try:
-        org_uuid = UUID(org_id)
+        org_uuid = UUID(target_org_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
     org_service = OrgService(engine.org_storage)
+
+    # v1: only set accountant when caller provides a non-empty value.
+    # Unsetting via PATCH is unsupported — admin re-PATCHes with another id.
+    accountant_uuid: Optional[UUID] = None
+    if request.accountant_user_id:
+        try:
+            accountant_uuid = UUID(request.accountant_user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid accountant_user_id")
 
     try:
         org = await org_service.update_organization(
@@ -151,6 +147,8 @@ async def update_organization(
             slug=request.slug,
             description=request.description,
             timezone=request.timezone,
+            org_context=request.org_context,
+            accountant_user_id=accountant_uuid,
         )
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
@@ -158,10 +156,9 @@ async def update_organization(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
-@router.delete("/{org_id}")
+@router.delete("/{target_org_id}")
 async def deactivate_organization(
-    org_id: str,
+    target_org_id: str,
     current_user: dict = Depends(get_current_user)
 ):
     """Deactivate organization (admin only)"""
@@ -173,7 +170,7 @@ async def deactivate_organization(
         raise HTTPException(status_code=403, detail="Admin access required")
 
     try:
-        org_uuid = UUID(org_id)
+        org_uuid = UUID(target_org_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
@@ -184,3 +181,42 @@ async def deactivate_organization(
         raise HTTPException(status_code=404, detail="Organization not found")
 
     return {"success": True, "message": "Organization deactivated"}
+
+@router.post("/{target_org_id}/context/upload")
+async def upload_org_context(
+    target_org_id: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Upload a file, extract text with Tika, save as org_context."""
+    if not current_user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    engine = get_engine_service()
+    org = await engine.org_storage.get_by_id(UUID(target_org_id))
+    if not org or org.id != current_user["org_id"]:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    from tika import parser as tika_parser
+    from ..config import Config
+    parsed = tika_parser.from_buffer(data, serverEndpoint=Config.RAG_TIKA_SERVER_ENDPOINT)
+    content = ""
+    if isinstance(parsed, dict):
+        content = parsed.get("content", "") or ""
+    elif isinstance(parsed, tuple) and len(parsed) >= 2:
+        payload = parsed[1]
+        if isinstance(payload, dict):
+            content = payload.get("content", "") or ""
+    content = content.strip()
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Could not extract text from file")
+
+    org.org_context = content
+    await engine.org_storage.update(org)
+
+    return {"status": "ok", "org_context_length": len(content)}

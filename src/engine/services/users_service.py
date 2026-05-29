@@ -3,7 +3,8 @@ Users Service
 
 Business logic for user management.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 import re
 import bcrypt
 from typing import Optional, List
@@ -12,8 +13,7 @@ from uuid import UUID
 from ..models.user import User
 from ..storage.user_storage import UserStorage
 
-logger = logging.getLogger("rugpt.services.users")
-
+logger = get_logger("services")
 
 class UsersService:
     """Service for user management"""

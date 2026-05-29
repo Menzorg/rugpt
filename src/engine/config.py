@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote_plus
+from uuid import UUID
 from dotenv import load_dotenv
 
 # Load .env file from project root
@@ -16,6 +17,8 @@ load_dotenv(_env_path)
 
 class Config:
     """Configuration class for RuGPT Engine API"""
+
+    DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
     # Base paths
     BASE_DIR = Path(__file__).parent.parent.parent
@@ -42,20 +45,80 @@ class Config:
     REDIS_DB = os.getenv("REDIS_DB", "0")
     REDIS_URL = os.getenv("REDIS_URL", f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}")
 
+    # ---- Zero Trust: web signature enforcement ----
+    # Окно валидности подписи и TTL nonce (защита от replay). Оба = 5 минут.
+    SIG_TIMESTAMP_TOLERANCE_SECONDS = int(os.getenv("SIG_TIMESTAMP_TOLERANCE_SECONDS", "300"))
+    NONCE_TTL_SECONDS = int(os.getenv("NONCE_TTL_SECONDS", "300"))
+
+    # Префикс web-роутов, на которые навешивается проверка подписи.
+    WEB_PREFIX = "/api/v1/web"
+
+    # Роуты (суффикс после /api/v1/web), доступные через web. Остальное → 404.
+    WEB_ALLOWED_ROUTES = [
+        "/auth", "/users", "/roles", "/chats", "/organizations",
+        "/calendar", "/notifications", "/in-app-notifications",
+        "/tasks", "/task-polls", "/task-reports", "/projects",
+        "/files", "/folders", "/rag", "/departments", "/support",
+        "/corrections", "/actions", "/invoices", "/config", "/health",
+    ]
+
+    # Роуты без проверки подписи (pre-auth / server-to-server).
+    WEB_NO_SIGNATURE_ROUTES = [
+        "/auth/login",
+        "/auth/engine-public-key",
+        "/config",
+        "/health",
+        "/notifications/telegram/webhook",
+    ]
+
+    # Kafka settings (item 10: PM-agent + async inference via agent.requests / chat.events)
+    KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    KAFKA_ENABLED = os.getenv("KAFKA_ENABLED", "true").lower() == "true"
+    KAFKA_TOPIC_AGENT_REQUESTS = os.getenv("KAFKA_TOPIC_AGENT_REQUESTS", "agent.requests")
+    KAFKA_TOPIC_CHAT_EVENTS = os.getenv("KAFKA_TOPIC_CHAT_EVENTS", "chat.events")
+    KAFKA_CONSUMER_GROUP_AGENT_RUNNERS = os.getenv(
+        "KAFKA_CONSUMER_GROUP_AGENT_RUNNERS", "engine-agent-runners"
+    )
+
     # Session TTL (seconds)
     SESSION_TTL = int(os.getenv("SESSION_TTL", "3600"))
+
+    # ---- Support chat (Tech Support feature) ----
+    # RuGPT Support organization UUID — hard-coded in migration 023.
+    RUGPT_SUPPORT_ORG_ID = UUID("00000001-0000-0000-0000-000000000000")
+    # System organization (RuGPT) — holds AI system users (support_ai, pm, etc.)
+    # Hard-coded in migrations 003 and 023.
+    SYSTEM_ORG_ID = UUID("00000000-0000-0000-0000-000000000000")
+    # Reopen window for closed support tickets via message in chat.
+    SUPPORT_REOPEN_WINDOW_DAYS = int(os.getenv("SUPPORT_REOPEN_WINDOW_DAYS", "7"))
+    # Username of the AI first-line support system user (created by migration 023).
+    SUPPORT_AI_USERNAME = "support_ai"
+
+    # Task query tool limits. Raise TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET when the
+    # model supports a larger context window; replace with a token budget once a
+    # token-counting service is available (see TODO in task_tool.py).
+    TASKS_QUERY_LIMIT = int(os.getenv("TASKS_QUERY_LIMIT", "200"))
+    TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET = int(os.getenv("TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET", "20000"))
 
     # API settings
     API_HOST = os.getenv("API_HOST", "127.0.0.1")
     API_PORT = int(os.getenv("API_PORT", "8100"))
 
-    # LLM settings
-    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")  # Ollama default
-    DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen2:0.5b")
+    # LLM settings — all inference (generation + embeddings) goes through a
+    # single OpenAI-compatible gateway (LiteLLM proxy on Zver). LiteLLM itself
+    # fans out to Ollama / vLLM behind the scenes based on model name.
+    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://192.168.1.80:4000/v1")
+    LLM_API_KEY = os.getenv("LLM_API_KEY", "sk-dummy")
+    DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "google/gemma-4-31B-it")
+    IMAGE_ANALYSIS_MODEL = os.getenv("IMAGE_ANALYSIS_MODEL", DEFAULT_MODEL)
 
-    # OpenAI fallback (optional)
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    # Legacy OpenAI fields kept as aliases — some older code paths may still
+    # read them, but new code should use LLM_* above.
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", LLM_API_KEY)
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    # Perplexity API (web_search tool)
+    PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
 
     # JWT settings
     JWT_SECRET = os.getenv("JWT_SECRET", "rugpt-secret-key-change-in-production")
@@ -80,9 +143,19 @@ class Config:
 
     # File storage
     STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "local")  # local | s3
-    STORAGE_LOCAL_DIR = os.getenv("STORAGE_LOCAL_DIR", "/var/lib/rugpt/uploads")
+    STORAGE_LOCAL_DIR = os.getenv("STORAGE_LOCAL_DIR", str(Path(__file__).parent.parent.parent / "uploads"))
     FILE_MAX_SIZE_MB = int(os.getenv("FILE_MAX_SIZE_MB", "50"))
     FILE_ALLOWED_TYPES = os.getenv("FILE_ALLOWED_TYPES", "pdf,docx")
+
+    # RAG / Embeddings
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+    RAG_SUMMARY_MODEL = os.getenv("RAG_SUMMARY_MODEL", DEFAULT_MODEL)
+    RAG_TIKA_SERVER_ENDPOINT = os.getenv("RAG_TIKA_SERVER_ENDPOINT", "http://localhost:9998")
+    RAG_STORE_DSN = os.getenv("RAG_STORE_DSN", POSTGRES_DSN)
+    RAG_VECTOR_DIM = int(os.getenv("RAG_VECTOR_DIM", "1024"))
+    RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1000"))
+    RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "200"))
+    RAG_SUMMARY_INPUT_MAX_TOKENS = int(os.getenv("RAG_SUMMARY_INPUT_MAX_TOKENS", "6000"))
 
     @staticmethod
     def get_postgres_dsn() -> str:
@@ -91,3 +164,11 @@ class Config:
             password = quote_plus(Config.DB_PASSWORD)
             return f"postgresql://{Config.DB_USER}:{password}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"
         return f"postgresql://{Config.DB_USER}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"
+
+    @staticmethod
+    def get_vector_dsn() -> str:
+        """Get PostgreSQL DSN for pgvector (psycopg2/psycopg3 format)"""
+        if Config.DB_PASSWORD:
+            password = quote_plus(Config.DB_PASSWORD)
+            return f"postgresql+psycopg://{Config.DB_USER}:{password}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"
+        return f"postgresql+psycopg://{Config.DB_USER}@{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"

@@ -4,7 +4,8 @@ Notification Channel Storage
 PostgreSQL storage for user notification channels.
 """
 import json
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
@@ -12,8 +13,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.notification import NotificationChannel
 
-logger = logging.getLogger("rugpt.storage.notification_channel")
-
+logger = get_logger("storage")
 
 class NotificationChannelStorage(BaseStorage):
     """Storage for NotificationChannel entities"""

@@ -4,7 +4,8 @@ Calendar Storage
 PostgreSQL storage for calendar events.
 """
 import json
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
@@ -12,8 +13,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.calendar_event import CalendarEvent
 
-logger = logging.getLogger("rugpt.storage.calendar")
-
+logger = get_logger("storage")
 
 class CalendarStorage(BaseStorage):
     """Storage for CalendarEvent entities"""

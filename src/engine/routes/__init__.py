@@ -16,6 +16,14 @@ from .tasks import router as tasks_router
 from .task_polls import router as task_polls_router
 from .task_reports import router as task_reports_router
 from .files import router as files_router
+from .rag import router as rag_router
+from .departments import router as departments_router
+from .projects import router as projects_router
+from .support import router as support_router
+from .corrections import router as corrections_router
+from .folders import router as folders_router
+from .actions import router as actions_router
+from .invoices import router as invoices_router
 
 __all__ = [
     'health_router',
@@ -31,4 +39,12 @@ __all__ = [
     'task_polls_router',
     'task_reports_router',
     'files_router',
+    'rag_router',
+    'departments_router',
+    'projects_router',
+    'support_router',
+    'corrections_router',
+    'folders_router',
+    'actions_router',
+    'invoices_router',
 ]

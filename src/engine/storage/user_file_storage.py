@@ -3,16 +3,16 @@ User File Storage
 
 PostgreSQL CRUD for user_files table (metadata only).
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
-from typing import Optional, List
+from typing import Dict, Optional, List
 from uuid import UUID
 
 from .base import BaseStorage
 from ..models.user_file import UserFile
 
-logger = logging.getLogger("rugpt.storage.user_file")
-
+logger = get_logger("storage")
 
 class UserFileStorage(BaseStorage):
 
@@ -22,19 +22,88 @@ class UserFileStorage(BaseStorage):
             INSERT INTO user_files
                 (id, user_id, org_id, uploaded_by_user_id,
                  storage_key, original_filename, file_type,
-                 file_size, rag_status,
-                 is_active, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                 file_size, content_hash, summary, is_table, is_public, rag_status,
+                 is_active, cloned_from_file_id, folder_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             RETURNING *
         """
         row = await self.fetchrow(
             query,
             file.id, file.user_id, file.org_id, file.uploaded_by_user_id,
             file.storage_key, file.original_filename, file.file_type,
-            file.file_size, file.rag_status,
-            file.is_active, file.created_at, file.updated_at,
+            file.file_size, file.content_hash, file.summary, file.is_table, file.is_public, file.rag_status,
+            file.is_active, file.cloned_from_file_id, file.folder_id, file.created_at, file.updated_at,
         )
         return self._row_to_file(row)
+
+    async def find_active_clone(self, user_id: UUID, source_file_id: UUID) -> Optional[UserFile]:
+        """Return existing active clone (same source) for this user, or None.
+
+        Used by FileService.clone for idempotency: don't create duplicate clones
+        when user clicks "Add to my files" twice.
+        """
+        row = await self.fetchrow(
+            """
+            SELECT * FROM user_files
+            WHERE user_id = $1
+              AND cloned_from_file_id = $2
+              AND is_active = true
+            LIMIT 1
+            """,
+            user_id, source_file_id,
+        )
+        return self._row_to_file(row) if row else None
+
+    async def find_active_clones_by_source(
+        self, user_id: UUID, source_file_ids: List[UUID],
+    ) -> Dict[UUID, Dict]:
+        """Батч: для каких source_file_ids у этого user'а уже есть active clone.
+
+        Возвращает Dict[source_id → {"id": clone_id, "rag_status": str}].
+        Используется в chat-routes чтобы пробросить на фронт id клона
+        (для кнопки «В память») и его rag_status (показывать/скрывать
+        «В память» в зависимости от того, проиндексирован ли уже).
+        """
+        if not source_file_ids:
+            return {}
+        rows = await self.fetch(
+            """
+            SELECT cloned_from_file_id AS src, id AS clone_id, rag_status
+            FROM user_files
+            WHERE user_id = $1
+              AND cloned_from_file_id = ANY($2::uuid[])
+              AND is_active = true
+            """,
+            user_id, source_file_ids,
+        )
+        return {r["src"]: {"id": r["clone_id"], "rag_status": r["rag_status"]} for r in rows}
+
+    async def find_duplicate(self, user_id: UUID, content_hash: str) -> Optional[UserFile]:
+        """
+        Найти активный файл пользователя с совпадающим SHA-256 хешем.
+
+        Используется для детекции дубликатов перед загрузкой:
+        если метод вернул запись — файл с идентичным содержимым уже существует.
+
+        Args:
+            user_id: владелец файла
+            content_hash: SHA-256 hex-дайджест загружаемого файла
+
+        Returns:
+            UserFile если дубликат найден, иначе None
+        """
+        row = await self.fetchrow(
+            """
+            SELECT * FROM user_files
+            WHERE user_id = $1
+              AND content_hash = $2
+              AND is_active = true
+            LIMIT 1
+            """,
+            user_id,
+            content_hash,
+        )
+        return self._row_to_file(row) if row else None
 
     async def get_by_id(self, file_id: UUID) -> Optional[UserFile]:
         """Get file by ID"""
@@ -43,6 +112,27 @@ class UserFileStorage(BaseStorage):
             file_id,
         )
         return self._row_to_file(row) if row else None
+
+    async def get_status(self, file_id: UUID) -> Optional[str]:
+        """Get RAG status for an active file."""
+        return await self.fetchval(
+            "SELECT rag_status FROM user_files WHERE id = $1 AND is_active = true",
+            file_id,
+        )
+
+    async def get_many_by_ids(self, ids: List[UUID]) -> Dict[UUID, UserFile]:
+        """Get active files by IDs."""
+        if not ids:
+            return {}
+        rows = await self.fetch(
+            """
+            SELECT * FROM user_files
+            WHERE id = ANY($1::uuid[]) AND is_active = true
+            """,
+            list(ids),
+        )
+        files = [self._row_to_file(r) for r in rows]
+        return {f.id: f for f in files}
 
     async def list_by_user(self, user_id: UUID) -> List[UserFile]:
         """List files belonging to an employee"""
@@ -96,6 +186,38 @@ class UserFileStorage(BaseStorage):
         row = await self.fetchrow(query, file_id, rag_status, rag_error, indexed_at, now)
         return self._row_to_file(row) if row else None
 
+    async def change_rag_status(self, file_id: UUID, status: str) -> Optional[UserFile]:
+        """
+        Обновить rag_status документа по его UUID.
+
+        Используется RAGService в процессе индексации:
+          - 'indexing' — индексация начата
+          - 'indexed'  — индексация завершена успешно
+          - 'failed'   — индексация завершилась ошибкой
+
+        При переходе в 'indexed' автоматически проставляет indexed_at = NOW().
+
+        Args:
+            file_id: UUID записи в user_files
+            status:  новый rag_status ('indexing' | 'indexed' | 'failed')
+
+        Returns:
+            Обновлённый UserFile или None, если запись не найдена
+        """
+        now = datetime.utcnow()
+        # indexed_at заполняем только при успешном завершении индексации
+        indexed_at = now if status == "indexed" else None
+        query = """
+            UPDATE user_files SET
+                rag_status = $2,
+                indexed_at = COALESCE($3, indexed_at),
+                updated_at = $4
+            WHERE id = $1 AND is_active = true
+            RETURNING *
+        """
+        row = await self.fetchrow(query, file_id, status, indexed_at, now)
+        return self._row_to_file(row) if row else None
+
     async def deactivate(self, file_id: UUID) -> bool:
         """Soft-delete a file"""
         result = await self.execute(
@@ -104,8 +226,83 @@ class UserFileStorage(BaseStorage):
         )
         return "UPDATE 1" in result
 
+    async def change_public(self, file_id: UUID, is_public: bool) -> Optional[UserFile]:
+        """Set the is_public flag on a file."""
+        row = await self.fetchrow(
+            """
+            UPDATE user_files
+            SET is_public = $2, updated_at = $3
+            WHERE id = $1
+            RETURNING *
+            """,
+            file_id, is_public, datetime.utcnow(),
+        )
+        return self._row_to_file(row) if row else None
+
+    async def list_by_user_in_folder(
+        self, user_id: UUID, folder_id: Optional[UUID],
+    ) -> List[UserFile]:
+        """List active files of a user inside a specific folder. folder_id=None → root."""
+        rows = await self.fetch(
+            """
+            SELECT * FROM user_files
+            WHERE user_id = $1
+              AND folder_id IS NOT DISTINCT FROM $2
+              AND is_active = true
+            ORDER BY created_at DESC
+            """,
+            user_id, folder_id,
+        )
+        return [self._row_to_file(r) for r in rows]
+
+    async def list_by_folder_ids(
+        self, folder_ids: List[UUID],
+    ) -> List[UserFile]:
+        """List active files in any of the given folders. Used by cascade-delete."""
+        if not folder_ids:
+            return []
+        rows = await self.fetch(
+            """
+            SELECT * FROM user_files
+            WHERE folder_id = ANY($1::uuid[]) AND is_active = true
+            """,
+            list(folder_ids),
+        )
+        return [self._row_to_file(r) for r in rows]
+
+    async def move_to_folder(
+        self, file_id: UUID, folder_id: Optional[UUID],
+    ) -> Optional[UserFile]:
+        """Set folder_id on a file. folder_id=None → move to root."""
+        row = await self.fetchrow(
+            """
+            UPDATE user_files
+            SET folder_id = $2, updated_at = $3
+            WHERE id = $1 AND is_active = true
+            RETURNING *
+            """,
+            file_id, folder_id, datetime.utcnow(),
+        )
+        return self._row_to_file(row) if row else None
+
+    async def deactivate_by_folder_ids(self, folder_ids: List[UUID]) -> List[UUID]:
+        """Soft-delete all active files whose folder_id is in the set. Returns affected file_ids."""
+        if not folder_ids:
+            return []
+        rows = await self.fetch(
+            """
+            UPDATE user_files
+            SET is_active = false, updated_at = $2
+            WHERE folder_id = ANY($1::uuid[]) AND is_active = true
+            RETURNING id
+            """,
+            list(folder_ids), datetime.utcnow(),
+        )
+        return [r["id"] for r in rows]
+
     def _row_to_file(self, row) -> UserFile:
         """Map asyncpg Record to UserFile"""
+        keys = set(row.keys())
         return UserFile(
             id=row["id"],
             user_id=row["user_id"],
@@ -115,10 +312,16 @@ class UserFileStorage(BaseStorage):
             original_filename=row["original_filename"],
             file_type=row["file_type"],
             file_size=row["file_size"],
+            content_hash=row["content_hash"],
+            summary=row["summary"],
+            is_table=row["is_table"],
+            is_public=row["is_public"],
             rag_status=row["rag_status"],
             rag_error=row["rag_error"],
             indexed_at=row["indexed_at"],
             is_active=row["is_active"],
+            cloned_from_file_id=row["cloned_from_file_id"] if "cloned_from_file_id" in keys else None,
+            folder_id=row["folder_id"] if "folder_id" in keys else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

@@ -19,15 +19,10 @@ NC='\033[0m' # No Color
 
 # Загружаем переменные окружения
 if [ -f .env ]; then
-    while IFS='=' read -r key value; do
-        # Пропускаем комментарии и пустые строки
-        [[ $key =~ ^#.*$ ]] && continue
-        [[ -z $key ]] && continue
-        # Убираем кавычки если есть
-        value="${value%\"}"
-        value="${value#\"}"
-        export "$key=$value"
-    done < .env
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
 fi
 
 # Параметры БД
@@ -40,6 +35,10 @@ DB_PASSWORD=${DB_PASSWORD:-}
 # Тестовые данные (для фильтрации)
 TEST_ORG_SLUG="test-company"
 TEST_ADMIN_EMAIL="admin@testcompany.ru"
+
+# Тестовые саппорт-операторы (живут в орг RuGPT Support, которую НЕ удаляем).
+# Сама орг — инфраструктурная (миграция 023), system user support_ai тоже не трогаем.
+SUPPORT_OP_EMAILS=("maria@rugpt.support" "alexey@rugpt.support")
 
 # Режим удаления
 DELETE_ALL=false
@@ -137,6 +136,45 @@ echo -e "${YELLOW}Удаление данных...${NC}"
 
 if [ "$DELETE_ALL" == "true" ]; then
     # Удаляем ВСЕ в правильном порядке (FK constraints)
+    echo "  Разрыв ссылок chats -> tasks/projects..."
+    run_sql "UPDATE chats SET task_id = NULL, project_id = NULL;" > /dev/null
+
+    echo "  Удаление agent_runs..."
+    run_sql "DELETE FROM agent_runs;" > /dev/null
+
+    echo "  Удаление task_events..."
+    run_sql "DELETE FROM task_events;" > /dev/null
+
+    echo "  Удаление task_reports..."
+    run_sql "DELETE FROM task_reports;" > /dev/null
+
+    echo "  Удаление task_polls..."
+    run_sql "DELETE FROM task_polls;" > /dev/null
+
+    echo "  Удаление tasks..."
+    run_sql "DELETE FROM tasks;" > /dev/null
+
+    echo "  Удаление projects..."
+    run_sql "DELETE FROM projects;" > /dev/null
+
+    echo "  Удаление correction_rules..."
+    run_sql "DELETE FROM correction_rules;" > /dev/null
+
+    echo "  Удаление in_app_notifications..."
+    run_sql "DELETE FROM in_app_notifications;" > /dev/null
+
+    echo "  Удаление user_files (+ chunks cascade)..."
+    run_sql "DELETE FROM user_files;" > /dev/null
+
+    echo "  Удаление user_devices..."
+    run_sql "DELETE FROM user_devices;" > /dev/null
+
+    echo "  Удаление department_visibility..."
+    run_sql "DELETE FROM department_visibility;" > /dev/null
+
+    echo "  Удаление departments..."
+    run_sql "DELETE FROM departments;" > /dev/null
+
     echo "  Удаление логов уведомлений..."
     run_sql "DELETE FROM notification_log;" > /dev/null
 
@@ -145,6 +183,9 @@ if [ "$DELETE_ALL" == "true" ]; then
 
     echo "  Удаление календарных событий..."
     run_sql "DELETE FROM calendar_events;" > /dev/null
+
+    echo "  Удаление support_ticket_events (CASCADE с support_tickets)..."
+    run_sql "DELETE FROM support_tickets;" > /dev/null
 
     echo "  Удаление сообщений..."
     run_sql "DELETE FROM messages;" > /dev/null
@@ -162,6 +203,45 @@ if [ "$DELETE_ALL" == "true" ]; then
     run_sql "DELETE FROM organizations;" > /dev/null
 else
     # Удаляем только тестовые данные
+    echo "  Разрыв ссылок chats -> tasks/projects..."
+    run_sql "UPDATE chats SET task_id = NULL, project_id = NULL WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
+    echo "  Удаление agent_runs..."
+    run_sql "DELETE FROM agent_runs WHERE chat_id IN (SELECT id FROM chats WHERE org_id = '$TEST_ORG_ID');" > /dev/null
+
+    echo "  Удаление task_events..."
+    run_sql "DELETE FROM task_events WHERE task_id IN (SELECT id FROM tasks WHERE org_id = '$TEST_ORG_ID');" > /dev/null
+
+    echo "  Удаление task_reports..."
+    run_sql "DELETE FROM task_reports WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
+    echo "  Удаление task_polls..."
+    run_sql "DELETE FROM task_polls WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
+    echo "  Удаление tasks..."
+    run_sql "DELETE FROM tasks WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
+    echo "  Удаление projects..."
+    run_sql "DELETE FROM projects WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
+    echo "  Удаление correction_rules..."
+    run_sql "DELETE FROM correction_rules WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
+    echo "  Удаление in_app_notifications..."
+    run_sql "DELETE FROM in_app_notifications WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
+    echo "  Удаление user_files (+ chunks cascade)..."
+    run_sql "DELETE FROM user_files WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
+    echo "  Удаление user_devices..."
+    run_sql "DELETE FROM user_devices WHERE user_id IN (SELECT id FROM users WHERE org_id = '$TEST_ORG_ID');" > /dev/null
+
+    echo "  Удаление department_visibility..."
+    run_sql "DELETE FROM department_visibility WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
+    echo "  Удаление departments..."
+    run_sql "DELETE FROM departments WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
     echo "  Удаление логов уведомлений..."
     run_sql "DELETE FROM notification_log WHERE user_id IN (SELECT id FROM users WHERE org_id = '$TEST_ORG_ID');" > /dev/null
 
@@ -171,6 +251,19 @@ else
     echo "  Удаление календарных событий..."
     run_sql "DELETE FROM calendar_events WHERE org_id = '$TEST_ORG_ID';" > /dev/null
 
+    echo "  Удаление support_ticket_events + support_tickets (тестовый клиент + операторы)..."
+    # Тикеты привязаны к requester_org_id (клиентская орг) и assignee_user_id (оператор RuGPT Support).
+    # Удаляем все тикеты, где либо requester из тестовой орг, либо assignee — наш тестовый оператор.
+    # support_ticket_events каскадно удалятся через FK ON DELETE CASCADE.
+    run_sql "
+    DELETE FROM support_tickets
+    WHERE requester_org_id = '$TEST_ORG_ID'
+       OR assignee_user_id IN (
+           SELECT id FROM users
+           WHERE email IN ('maria@rugpt.support', 'alexey@rugpt.support')
+       );
+    " > /dev/null
+
     echo "  Удаление сообщений..."
     run_sql "DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE org_id = '$TEST_ORG_ID');" > /dev/null
 
@@ -179,6 +272,12 @@ else
 
     echo "  Удаление пользователей..."
     run_sql "DELETE FROM users WHERE org_id = '$TEST_ORG_ID';" > /dev/null
+
+    echo "  Удаление тестовых саппорт-операторов из орг RuGPT Support..."
+    run_sql "
+    DELETE FROM users
+    WHERE email IN ('maria@rugpt.support', 'alexey@rugpt.support');
+    " > /dev/null
 
     echo "  Удаление ролей..."
     run_sql "DELETE FROM roles WHERE org_id = '$TEST_ORG_ID';" > /dev/null

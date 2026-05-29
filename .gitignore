@@ -74,6 +74,11 @@ data/*.parquet
 chroma_data/
 *.chromadb/
 
+# Uploaded files
+uploads/
+test-docs/*
+!test-docs/.gitkeep
+
 # Temporary files
 tmp/
 temp/

@@ -3,7 +3,8 @@ In-App Notification Storage
 
 PostgreSQL CRUD for in_app_notifications table.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.in_app_notification import InAppNotification
 
-logger = logging.getLogger("rugpt.storage.in_app_notification")
-
+logger = get_logger("storage")
 
 class InAppNotificationStorage(BaseStorage):
 
@@ -51,26 +51,49 @@ class InAppNotificationStorage(BaseStorage):
     async def list_by_user(
         self,
         user_id: UUID,
+        type: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
         unread_only: bool = False,
+        replied: Optional[bool] = None,
     ) -> List[InAppNotification]:
-        """List notifications for a user, newest first"""
+        """List notifications for a user.
+
+        `type` опциональный фильтр по типу нотификации (None = все).
+        `replied` опциональный фильтр по факту ответа на mentioning-сообщение:
+            None → не фильтруем (все),
+            True → только те, на которые юзер уже отвечал,
+            False → только неотвеченные.
+
+        Также возвращается computed-флаг `replied` per row (для UI-отображения).
+        """
+        replied_subquery = (
+            "EXISTS(SELECT 1 FROM messages m "
+            "       WHERE m.reply_to_id = n.reference_id "
+            "         AND m.sender_id = n.user_id)"
+        )
+
+        clauses = ["n.user_id = $1"]
+        params: list = [user_id]
         if unread_only:
-            query = """
-                SELECT * FROM in_app_notifications
-                WHERE user_id = $1 AND is_read = false
-                ORDER BY created_at DESC
-                LIMIT $2 OFFSET $3
-            """
-        else:
-            query = """
-                SELECT * FROM in_app_notifications
-                WHERE user_id = $1
-                ORDER BY is_read ASC, created_at DESC
-                LIMIT $2 OFFSET $3
-            """
-        rows = await self.fetch(query, user_id, limit, offset)
+            clauses.append("n.is_read = FALSE")
+        if type:  # truthy: пустая строка от фронта (?type=) = «фильтр не задан»
+            params.append(type)
+            clauses.append(f"n.type = ${len(params)}")
+        if replied is True:
+            clauses.append(replied_subquery)
+        elif replied is False:
+            clauses.append(f"NOT {replied_subquery}")
+        params.append(limit)
+        params.append(offset)
+        query = (
+            f"SELECT n.*, {replied_subquery} AS replied "
+            f"FROM in_app_notifications n "
+            f"WHERE {' AND '.join(clauses)} "
+            f"ORDER BY n.is_read ASC, n.created_at DESC "
+            f"LIMIT ${len(params) - 1} OFFSET ${len(params)}"
+        )
+        rows = await self.fetch(query, *params)
         return [self._row_to_notification(r) for r in rows]
 
     async def count_unread(self, user_id: UUID) -> int:
@@ -88,6 +111,31 @@ class InAppNotificationStorage(BaseStorage):
             notification_id,
         )
         return "UPDATE 1" in result
+
+    async def exists_for_user_on_date_in_tz(
+        self,
+        user_id: UUID,
+        type: str,
+        tz_name: str,
+    ) -> bool:
+        """Есть ли нотификация данного типа у юзера, чьё created_at в org-local
+        timezone приходится на сегодня. Используется для дневной идемпотентности
+        (напр. ежедневная сводка админу — не слать второй раз в один и тот же
+        локальный день, даже если scheduler-тик попал на следующий час).
+        """
+        exists = await self.fetchval(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM in_app_notifications
+                WHERE user_id = $1
+                  AND type = $2
+                  AND (created_at AT TIME ZONE 'UTC' AT TIME ZONE $3)::date
+                      = (now() AT TIME ZONE $3)::date
+            )
+            """,
+            user_id, type, tz_name,
+        )
+        return bool(exists)
 
     async def mark_all_read(self, user_id: UUID) -> int:
         """Mark all notifications as read for a user. Returns count of updated."""
@@ -114,4 +162,7 @@ class InAppNotificationStorage(BaseStorage):
             reference_id=row["reference_id"],
             is_read=row["is_read"],
             created_at=row["created_at"],
+            # `replied` присутствует только в SELECT'е list_by_user (computed
+            # column); в create/get_by_id row такой колонки нет — fallback False.
+            replied=bool(row["replied"]) if "replied" in row.keys() else False,
         )

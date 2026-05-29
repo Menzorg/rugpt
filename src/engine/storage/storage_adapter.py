@@ -4,15 +4,15 @@ Storage Adapter
 Abstract interface for file binary storage.
 Implementations: LocalStorageAdapter (filesystem), S3StorageAdapter (S3-compatible).
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 import aiofiles
 
-logger = logging.getLogger("rugpt.storage.adapter")
-
+logger = get_logger("storage")
 
 class StorageAdapter(ABC):
     """Abstract file storage backend"""
@@ -32,7 +32,6 @@ class StorageAdapter(ABC):
     @abstractmethod
     async def exists(self, key: str) -> bool:
         """Check if file exists"""
-
 
 class LocalStorageAdapter(StorageAdapter):
     """Store files on local filesystem"""

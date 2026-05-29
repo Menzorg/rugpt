@@ -3,10 +3,28 @@ Health Check Routes
 
 Endpoints for service health monitoring.
 """
+import httpx
 from fastapi import APIRouter
 from datetime import datetime
 
+from ..config import Config
+from src.engine.unified_logger import get_logger    
+
+logger = get_logger("routes")  
+
 router = APIRouter(prefix="/health", tags=["health"])
+
+
+async def _litellm_alive() -> bool:
+    """Ping LiteLLM /health/liveness. Returns True on HTTP 200."""
+    root_url = Config.LLM_BASE_URL.removesuffix("/v1").removesuffix("/")
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{root_url}/health/liveness")
+            return resp.status_code == 200
+    except Exception as e:
+        logger.warning(f"LiteLLM health check failed: {e}")
+        return False
 
 
 @router.get("")
@@ -23,13 +41,14 @@ async def health_check():
 @router.get("/ready")
 async def readiness_check():
     """
-    Readiness check - indicates if service is ready to handle requests.
+    Readiness check — verifies downstream dependencies (LiteLLM).
     Used by Kubernetes/orchestrators for readiness probes.
     """
-    # TODO: Check database connectivity
+    litellm_ok = await _litellm_alive()
     return {
-        "ready": True,
-        "timestamp": datetime.utcnow().isoformat()
+        "ready": bool(litellm_ok),
+        "litellm": "ok" if litellm_ok else "fail",
+        "timestamp": datetime.utcnow().isoformat(),
     }
 
 

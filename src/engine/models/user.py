@@ -34,6 +34,9 @@ class User:
     role_id: Optional[UUID] = None                   # AI role assigned to this user
     is_admin: bool = False                           # Is organization admin
     is_system: bool = False                          # Is system user (AI assistant for admins)
+    department_id: Optional[UUID] = None             # Department this user belongs to
+    department_name: Optional[str] = None            # Department name (joined from departments table on read)
+    is_head: bool = False                            # Is department head
     is_active: bool = True                           # Active/inactive status
     avatar_url: Optional[str] = None                 # Profile picture URL
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -51,6 +54,9 @@ class User:
             "role_id": str(self.role_id) if self.role_id else None,
             "is_admin": self.is_admin,
             "is_system": self.is_system,
+            "department_id": str(self.department_id) if self.department_id else None,
+            "department_name": self.department_name,
+            "is_head": self.is_head,
             "is_active": self.is_active,
             "avatar_url": self.avatar_url,
             "created_at": self.created_at.isoformat(),
@@ -74,6 +80,8 @@ class User:
             role_id=UUID(data["role_id"]) if data.get("role_id") and isinstance(data["role_id"], str) else data.get("role_id"),
             is_admin=data.get("is_admin", False),
             is_system=data.get("is_system", False),
+            department_id=UUID(data["department_id"]) if data.get("department_id") and isinstance(data["department_id"], str) else data.get("department_id"),
+            is_head=data.get("is_head", False),
             is_active=data.get("is_active", True),
             avatar_url=data.get("avatar_url"),
             created_at=datetime.fromisoformat(data["created_at"]) if isinstance(data.get("created_at"), str) else data.get("created_at", datetime.utcnow()),

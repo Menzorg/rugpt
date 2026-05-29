@@ -3,7 +3,8 @@ Calendar Routes
 
 Endpoints for calendar event management.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
@@ -14,9 +15,8 @@ from pydantic import BaseModel
 from ..services.engine_service import get_engine_service
 from .auth import get_current_user
 
-logger = logging.getLogger("rugpt.routes.calendar")
+logger = get_logger("routes")
 router = APIRouter(prefix="/calendar", tags=["calendar"])
-
 
 # ============================================
 # Request/Response Models
@@ -31,7 +31,6 @@ class CreateEventRequest(BaseModel):
     scheduled_at: Optional[str] = None         # ISO datetime for one_time
     cron_expression: Optional[str] = None      # cron for recurring
 
-
 class UpdateEventRequest(BaseModel):
     """Update calendar event request"""
     title: Optional[str] = None
@@ -39,7 +38,6 @@ class UpdateEventRequest(BaseModel):
     scheduled_at: Optional[str] = None
     cron_expression: Optional[str] = None
     metadata: Optional[dict] = None
-
 
 class EventResponse(BaseModel):
     """Calendar event response"""
@@ -62,7 +60,6 @@ class EventResponse(BaseModel):
     created_at: str
     updated_at: str
 
-
 # ============================================
 # Routes
 # ============================================
@@ -73,7 +70,6 @@ async def list_events(current_user: dict = Depends(get_current_user)):
     engine = get_engine_service()
     events = await engine.calendar_service.list_events(current_user["org_id"])
     return [EventResponse(**e.to_dict()) for e in events]
-
 
 @router.post("/events", response_model=EventResponse)
 async def create_event(
@@ -118,7 +114,6 @@ async def create_event(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.get("/events/{event_id}", response_model=EventResponse)
 async def get_event(
     event_id: str,
@@ -139,7 +134,6 @@ async def get_event(
         raise HTTPException(status_code=403, detail="Access denied")
 
     return EventResponse(**event.to_dict())
-
 
 @router.patch("/events/{event_id}", response_model=EventResponse)
 async def update_event(
@@ -183,7 +177,6 @@ async def update_event(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.delete("/events/{event_id}")
 async def deactivate_event(
     event_id: str,
@@ -206,7 +199,6 @@ async def deactivate_event(
 
     await engine.calendar_service.deactivate_event(event_uuid)
     return {"success": True, "message": "Event deactivated"}
-
 
 @router.get("/roles/{role_id}/events", response_model=List[EventResponse])
 async def list_role_events(

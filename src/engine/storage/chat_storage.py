@@ -3,16 +3,16 @@ Chat Storage
 
 PostgreSQL storage for chats.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
 
 from .base import BaseStorage
-from ..models.chat import Chat, ChatType
+from ..models.chat import Chat, ChatType, _coerce_chat_type
 
-logger = logging.getLogger("rugpt.storage.chat")
-
+logger = get_logger("storage")
 
 class ChatStorage(BaseStorage):
     """Storage for Chat entities"""
@@ -22,15 +22,17 @@ class ChatStorage(BaseStorage):
         query = """
             INSERT INTO chats (
                 id, org_id, type, name, participants, created_by,
+                task_id, project_id, support_ticket_id, poll_id,
                 is_active, created_at, updated_at, last_message_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             RETURNING *
         """
         row = await self.fetchrow(
             query,
             chat.id, chat.org_id, chat.type.value, chat.name,
             [str(p) for p in chat.participants], chat.created_by,
+            chat.task_id, chat.project_id, chat.support_ticket_id, chat.poll_id,
             chat.is_active, chat.created_at, chat.updated_at, chat.last_message_at
         )
         return self._row_to_chat(row)
@@ -54,22 +56,105 @@ class ChatStorage(BaseStorage):
         row = await self.fetchrow(query, str(user1_id), str(user2_id))
         return self._row_to_chat(row) if row else None
 
-    async def list_by_user(self, user_id: UUID, active_only: bool = True) -> List[Chat]:
-        """List chats for a user"""
+    async def is_ai_direct_chat(self, chat_id: UUID) -> bool:
+        """Check whether chat is a 2-person direct chat with a system user."""
+        query = """
+            SELECT EXISTS (
+                SELECT c.id
+                FROM chats c
+                JOIN users u ON u.id = ANY(c.participants::uuid[])
+                WHERE c.id = $1
+                GROUP BY c.id
+                HAVING COUNT(u.id) = 2
+                   AND SUM(u.is_system::int) > 0
+            )
+        """
+        return await self.fetchval(query, chat_id)
+
+    async def get_attachments(self, chat_id: UUID, limit: Optional[int] = None) -> List[UUID]:
+        """List distinct file IDs attached to messages in a chat."""
+        query = """
+            SELECT file_id
+            FROM (
+                SELECT DISTINCT ON (ma.file_id)
+                    ma.file_id,
+                    m.created_at,
+                    ma.position
+                FROM message_attachments ma
+                JOIN messages m ON m.id = ma.message_id
+                WHERE m.chat_id = $1
+                ORDER BY ma.file_id, m.created_at DESC, ma.position DESC
+            ) latest
+            ORDER BY created_at DESC, position DESC
+            LIMIT $2
+        """
+        rows = await self.fetch(query, chat_id, limit)
+        return [row["file_id"] for row in rows]
+
+    async def list_by_user(
+        self,
+        user_id: UUID,
+        active_only: bool = True,
+        chat_type: Optional[str] = None,
+    ) -> List[Chat]:
+        """List chats for a user, optionally filtered by type."""
+        conditions = ["$1 = ANY(participants)"]
+        params: List = [str(user_id)]
         if active_only:
-            query = """
-                SELECT * FROM chats
-                WHERE $1 = ANY(participants) AND is_active = true
-                ORDER BY last_message_at DESC NULLS LAST, created_at DESC
-            """
-        else:
-            query = """
-                SELECT * FROM chats
-                WHERE $1 = ANY(participants)
-                ORDER BY last_message_at DESC NULLS LAST, created_at DESC
-            """
-        rows = await self.fetch(query, str(user_id))
+            conditions.append("is_active = true")
+        if chat_type is not None:
+            params.append(chat_type)
+            conditions.append(f"type = ${len(params)}")
+        query = f"""
+            SELECT * FROM chats
+            WHERE {' AND '.join(conditions)}
+            ORDER BY last_message_at DESC NULLS LAST, created_at DESC
+        """
+        rows = await self.fetch(query, *params)
         return [self._row_to_chat(row) for row in rows]
+
+    async def get_by_task_id(self, task_id: UUID) -> Optional[Chat]:
+        """Get chat associated with a task (if any)."""
+        row = await self.fetchrow(
+            "SELECT * FROM chats WHERE task_id = $1 LIMIT 1", task_id,
+        )
+        return self._row_to_chat(row) if row else None
+
+    async def get_by_project_id(self, project_id: UUID) -> Optional[Chat]:
+        """Get chat associated with a project (if any)."""
+        row = await self.fetchrow(
+            "SELECT * FROM chats WHERE project_id = $1 LIMIT 1", project_id,
+        )
+        return self._row_to_chat(row) if row else None
+
+    async def get_by_support_ticket(self, support_ticket_id: UUID) -> Optional[Chat]:
+        """Get chat associated with a support ticket (if any)."""
+        row = await self.fetchrow(
+            "SELECT * FROM chats WHERE support_ticket_id = $1 LIMIT 1",
+            support_ticket_id,
+        )
+        return self._row_to_chat(row) if row else None
+
+    async def get_by_poll_id(
+        self, poll_id: UUID, *, active_only: bool = True,
+    ) -> Optional[Chat]:
+        """Find poll-scoped chat by poll_id.
+
+        active_only=True (default): used as idempotent helper for create_poll_chat
+            — skip archived chats from prior poll lifecycles.
+        active_only=False: used by read-only history endpoints — include archived.
+        """
+        if active_only:
+            row = await self.fetchrow(
+                "SELECT * FROM chats WHERE poll_id = $1 AND is_active = true LIMIT 1",
+                poll_id,
+            )
+        else:
+            row = await self.fetchrow(
+                "SELECT * FROM chats WHERE poll_id = $1 LIMIT 1",
+                poll_id,
+            )
+        return self._row_to_chat(row) if row else None
 
     async def list_by_org(self, org_id: UUID, active_only: bool = True) -> List[Chat]:
         """List all chats in organization"""
@@ -106,6 +191,20 @@ class ChatStorage(BaseStorage):
         query = "UPDATE chats SET last_message_at = $2, updated_at = $2 WHERE id = $1"
         await self.execute(query, chat_id, datetime.utcnow())
 
+    async def update_mem_id(self, chat_id: UUID, mem_id: UUID) -> None:
+        """Set the active memory snapshot for a chat"""
+        await self.execute(
+            "UPDATE chats SET mem_id = $2, updated_at = $3 WHERE id = $1",
+            chat_id, mem_id, datetime.utcnow(),
+        )
+
+    async def set_active_agent(self, chat_id: UUID, user_id: UUID) -> None:
+        """Set the active agent for a chat (last mentioned or last auto-responded system user)"""
+        await self.execute(
+            "UPDATE chats SET active_agent = $2, updated_at = $3 WHERE id = $1",
+            chat_id, user_id, datetime.utcnow(),
+        )
+
     async def add_participant(self, chat_id: UUID, user_id: UUID) -> bool:
         """Add participant to chat"""
         query = """
@@ -138,13 +237,27 @@ class ChatStorage(BaseStorage):
         if participants and isinstance(participants[0], str):
             participants = [UUID(p) for p in participants]
 
+        keys = set(row.keys())
+        task_id = row["task_id"] if "task_id" in keys else None
+        project_id = row["project_id"] if "project_id" in keys else None
+        support_ticket_id = row["support_ticket_id"] if "support_ticket_id" in keys else None
+        poll_id = row["poll_id"] if "poll_id" in keys else None
+        mem_id = row["mem_id"] if "mem_id" in keys else None
+        active_agent = row["active_agent"] if "active_agent" in keys else None
+
         return Chat(
             id=row["id"],
             org_id=row["org_id"],
-            type=ChatType(row["type"]),
+            type=_coerce_chat_type(row["type"]),
             name=row["name"],
             participants=participants,
             created_by=row["created_by"],
+            task_id=task_id,
+            project_id=project_id,
+            support_ticket_id=support_ticket_id,
+            poll_id=poll_id,
+            mem_id=mem_id,
+            active_agent=active_agent,
             is_active=row["is_active"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],

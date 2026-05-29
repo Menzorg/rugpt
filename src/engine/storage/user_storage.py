@@ -3,7 +3,8 @@ User Storage
 
 PostgreSQL storage for users.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
@@ -11,8 +12,7 @@ from uuid import UUID
 from .base import BaseStorage
 from ..models.user import User
 
-logger = logging.getLogger("rugpt.storage.user")
-
+logger = get_logger("storage")
 
 class UserStorage(BaseStorage):
     """Storage for User entities"""
@@ -22,16 +22,18 @@ class UserStorage(BaseStorage):
         query = """
             INSERT INTO users (
                 id, org_id, name, username, email, password_hash, role_id,
-                is_admin, is_system, is_active, avatar_url, created_at, updated_at, last_seen_at
+                is_admin, is_system, is_active, avatar_url, created_at, updated_at, last_seen_at,
+                department_id, is_head
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             RETURNING *
         """
         row = await self.fetchrow(
             query,
             user.id, user.org_id, user.name, user.username, user.email,
             user.password_hash, user.role_id, user.is_admin, user.is_system, user.is_active,
-            user.avatar_url, user.created_at, user.updated_at, user.last_seen_at
+            user.avatar_url, user.created_at, user.updated_at, user.last_seen_at,
+            user.department_id, user.is_head,
         )
         return self._row_to_user(row)
 
@@ -49,7 +51,12 @@ class UserStorage(BaseStorage):
 
     async def get_by_username(self, username: str, org_id: UUID) -> Optional[User]:
         """Get user by username within organization"""
-        query = "SELECT * FROM users WHERE username = $1 AND org_id = $2"
+        query = """
+            SELECT u.*, d.name AS department_name
+            FROM users u
+            LEFT JOIN departments d ON d.id = u.department_id
+            WHERE u.username = $1 AND u.org_id = $2
+        """
         row = await self.fetchrow(query, username.lower(), org_id)
         return self._row_to_user(row) if row else None
 
@@ -119,6 +126,16 @@ class UserStorage(BaseStorage):
         row = await self.fetchrow(query, f'admin_{model_code}')
         return self._row_to_user(row) if row else None
 
+    async def list_admins_by_org(self, org_id: UUID) -> List[User]:
+        """List admin users in an organization (for evening reports)"""
+        query = """
+            SELECT * FROM users
+            WHERE org_id = $1 AND is_admin = true AND is_active = true AND is_system = false
+            ORDER BY name
+        """
+        rows = await self.fetch(query, org_id)
+        return [self._row_to_user(row) for row in rows]
+
     async def update(self, user: User) -> User:
         """Update user"""
         user.updated_at = datetime.utcnow()
@@ -126,7 +143,7 @@ class UserStorage(BaseStorage):
             UPDATE users
             SET name = $2, username = $3, email = $4, password_hash = $5,
                 role_id = $6, is_admin = $7, is_system = $8, is_active = $9, avatar_url = $10,
-                updated_at = $11, last_seen_at = $12
+                updated_at = $11, last_seen_at = $12, department_id = $13, is_head = $14
             WHERE id = $1
             RETURNING *
         """
@@ -134,7 +151,7 @@ class UserStorage(BaseStorage):
             query,
             user.id, user.name, user.username, user.email, user.password_hash,
             user.role_id, user.is_admin, user.is_system, user.is_active, user.avatar_url,
-            user.updated_at, user.last_seen_at
+            user.updated_at, user.last_seen_at, user.department_id, user.is_head,
         )
         return self._row_to_user(row)
 
@@ -158,6 +175,14 @@ class UserStorage(BaseStorage):
         """
         result = await self.execute(query, user_id, datetime.utcnow())
         return "UPDATE 1" in result
+
+    async def get_certain_users(self, user_ids: List[UUID]) -> List[User]:
+        """Fetch users by a list of IDs in a single query."""
+        if not user_ids:
+            return []
+        query = "SELECT * FROM users WHERE id = ANY($1::uuid[])"
+        rows = await self.fetch(query, user_ids)
+        return [self._row_to_user(row) for row in rows]
 
     async def exists_by_email(self, email: str, exclude_id: Optional[UUID] = None) -> bool:
         """Check if user with email exists"""
@@ -191,9 +216,12 @@ class UserStorage(BaseStorage):
             role_id=row["role_id"],
             is_admin=row["is_admin"],
             is_system=row.get("is_system", False),  # Default False for backward compatibility
+            department_id=row.get("department_id"),
+            department_name=row.get("department_name"),
+            is_head=row.get("is_head", False),
             is_active=row["is_active"],
             avatar_url=row["avatar_url"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            last_seen_at=row["last_seen_at"]
+            last_seen_at=row["last_seen_at"],
         )

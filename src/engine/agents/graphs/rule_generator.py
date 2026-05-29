@@ -8,12 +8,16 @@ LangGraph graph that generates a concise rule_text from:
 
 Output: a clear, concise instruction for the AI role to follow in the future.
 """
-import logging
+
+from src.engine.unified_logger import get_logger
 
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 
-logger = logging.getLogger("rugpt.agents.graphs.rule_generator")
+from ...config import Config
+from ...utils.token_logger import log_llm_tokens, log_token_summary
+
+logger = get_logger("agents")
 
 RULE_GENERATOR_PROMPT = """You are a rule formulator for an AI assistant system.
 
@@ -33,7 +37,6 @@ AI answer: "The statute of limitations for labor disputes is 3 years."
 Correction: "Wrong! For labor disputes it's 3 months under Article 392 of the Labor Code."
 Rule: "When asked about the statute of limitations for labor disputes: the deadline is 3 months (Article 392 of the Labor Code of the Russian Federation), not 3 years as in general civil cases."
 """
-
 
 async def generate_rule_text(
     base_url: str,
@@ -56,8 +59,9 @@ async def generate_rule_text(
     Returns:
         Generated rule text string
     """
-    llm = ChatOllama(
+    llm = ChatOpenAI(
         base_url=base_url,
+        api_key=Config.LLM_API_KEY,
         model=model,
         temperature=temperature,
     )
@@ -77,6 +81,8 @@ async def generate_rule_text(
     try:
         response = await llm.ainvoke(messages)
         rule_text = response.content if hasattr(response, 'content') else str(response)
+        total = log_llm_tokens(response, label="rule_generator.generate_rule_text", logger=logger, messages=messages)
+        log_token_summary("rule_generator.generate_rule_text", total, logger=logger)
         logger.info(f"Generated rule_text: {rule_text[:100]}...")
         return rule_text.strip()
 
