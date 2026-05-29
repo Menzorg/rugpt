@@ -166,6 +166,7 @@ async def _supervisor_agent_call(
             output_mode="last_message",
             supervisor_name=supervisor_name,
             parallel_tool_calls=False,
+            #add_handoff_back_messages=False, Never ever disable this shit if u don't wanna get looping supervisors
         )
         agent = workflow.compile(name=supervisor_name)
 
@@ -258,7 +259,7 @@ async def _build_subagents(
     for role in subagent_roles:
         agent_name = _agent_name(role.code)
         subagent_descriptions[agent_name] = (
-            role.as_subagent_description
+            role.agent_scope_description
             or role.description
             or f"Ask role '{role.name or role.code}' for help"
         )

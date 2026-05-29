@@ -62,6 +62,7 @@ class Chat:
     support_ticket_id: Optional[UUID] = None         # Set iff type == SUPPORT
     poll_id: Optional[UUID] = None                   # Set iff type == POLL (FK task_polls.id)
     mem_id: Optional[UUID] = None                    # FK memory_snapshots (active memory for this chat)
+    active_agent: Optional[UUID] = None              # FK users (system user) — currently active AI agent for this chat
     is_active: bool = True                           # Active/archived status
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
@@ -81,6 +82,7 @@ class Chat:
             "support_ticket_id": str(self.support_ticket_id) if self.support_ticket_id else None,
             "poll_id": str(self.poll_id) if self.poll_id else None,
             "mem_id": str(self.mem_id) if self.mem_id else None,
+            "active_agent": str(self.active_agent) if self.active_agent else None,
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
@@ -111,6 +113,7 @@ class Chat:
             support_ticket_id=_uuid_or_none(data.get("support_ticket_id")),
             poll_id=_uuid_or_none(data.get("poll_id")),
             mem_id=_uuid_or_none(data.get("mem_id")),
+            active_agent=_uuid_or_none(data.get("active_agent")),
             is_active=data.get("is_active", True),
             created_at=datetime.fromisoformat(data["created_at"]) if isinstance(data.get("created_at"), str) else data.get("created_at", datetime.utcnow()),
             updated_at=datetime.fromisoformat(data["updated_at"]) if isinstance(data.get("updated_at"), str) else data.get("updated_at", datetime.utcnow()),

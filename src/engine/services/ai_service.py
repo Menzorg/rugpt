@@ -43,10 +43,6 @@ if TYPE_CHECKING:
 
 logger = get_logger("services")
 
-_OTHER_ROLE_HISTORY_PLACEHOLDER = (
-    "[Исторический ответ другой роли скрыт. Текущая роль не наследует его "
-    "инструменты, обещания и полномочия.]"
-)
 
 
 # Poll-dialog role codes (lives in system org per migration 029).
@@ -119,6 +115,7 @@ class AIService:
         responder_id: UUID,
         strip_username: Optional[str] = None,
         role_code: str = "",
+        invocation_kind_override: Optional[str] = None,
     ) -> Optional[UUID]:
         """Create AgentRun row + publish to agent.requests. Returns request_id or None on failure."""
         if not self._is_async_mode():
@@ -137,18 +134,21 @@ class AIService:
             status="pending",
         )
         try:
+            payload = {
+                "request_id": str(request_id),
+                "chat_id": str(message.chat_id),
+                "user_message_id": str(message.id),
+                "triggering_user_id": str(message.sender_id),
+                "responder_id": str(responder_id),
+                "strip_username": strip_username,
+                "role_code": role_code or "",
+            }
+            if invocation_kind_override is not None:
+                payload["invocation_kind_override"] = invocation_kind_override
             await self.agent_run_storage.create(run)
             await self.kafka_producer.send(
                 Config.KAFKA_TOPIC_AGENT_REQUESTS,
-                {
-                    "request_id": str(request_id),
-                    "chat_id": str(message.chat_id),
-                    "user_message_id": str(message.id),
-                    "triggering_user_id": str(message.sender_id),
-                    "responder_id": str(responder_id),
-                    "strip_username": strip_username,
-                    "role_code": role_code or "",
-                },
+                payload,
                 key=str(message.chat_id),
             )
             return request_id
@@ -195,46 +195,82 @@ class AIService:
                 )
                 return None
 
+        # Collect system participants (excluding sender)
+        system_users = []
         for pid in chat.participants:
             if pid == sender_id:
                 continue
-            participant = await self.user_storage.get_by_id(pid)
-            if participant and participant.is_system:
-                logger.info(
-                    f"try_auto_respond: chat={chat_id} responder={participant.id} "
-                    f"mode={'async' if self._is_async_mode() else 'sync'}"
-                )
-                if self._is_async_mode():
-                    await self._enqueue_agent_run(
-                        message=message,
-                        responder_id=participant.id,
-                    )
-                    # NOTE: async-path support stamping (ai_first_response_at +
-                    # AI_RESPONDED audit) is handled by AgentRequestHandler
-                    # after it generates the response. See Task 18 follow-up.
-                    return None
-                ai_response = await self.generate_response(
-                    message=message,
-                    responder_id=participant.id,
-                )
-                # Post-hook: stamp first AI response + audit event for
-                # SUPPORT chats. Only fires in sync path; async path stamps
-                # via AgentRequestHandler. Idempotent on the storage side
-                # (set_ai_first_response is a guarded UPDATE).
-                if (
-                    ai_response is not None
-                    and chat.type == ChatType.SUPPORT
-                    and self._is_support_aware()
-                    and chat.support_ticket_id is not None
-                ):
-                    await self._record_support_ai_response(
-                        ticket_id=chat.support_ticket_id,
-                        ai_user_id=participant.id,
-                        response_message_id=ai_response.id,
-                    )
-                return ai_response
+            u = await self.user_storage.get_by_id(pid)
+            if u and u.is_system:
+                system_users.append(u)
 
-        return None
+        # Add active_agent if set and not already in the list
+        last_active_user = None
+        if chat.active_agent is not None:
+            last_active_user = next((u for u in system_users if u.id == chat.active_agent), None)
+            if last_active_user is None:
+                fetched = await self.user_storage.get_by_id(chat.active_agent)
+                if fetched and fetched.id != sender_id:
+                    system_users.append(fetched)
+                    last_active_user = fetched
+
+        if not system_users:
+            return None
+
+        # Determine responder: route if multiple candidates, otherwise use the only one.
+        # default_user is the primary system user (first in participants list).
+        # last_active_user hints the router about the previously active agent.
+        primary_responder = system_users[0]
+        if len(system_users) > 1 and self.agent_executor is not None:
+            responder = await self.agent_executor.route(
+                await self._build_conversation(message),
+                system_users,
+                sender_id,
+                default_responder=primary_responder,
+                last_active_responder=last_active_user,
+            )
+        else:
+            responder = primary_responder
+        await self.chat_storage.set_active_agent(chat_id, responder.id)
+        invocation_kind_override = (
+            "mention" if responder.id not in chat.participants else None
+        )
+
+        logger.info(
+            f"try_auto_respond: chat={chat_id} responder={responder.id} "
+            f"mode={'async' if self._is_async_mode() else 'sync'}"
+        )
+        if self._is_async_mode():
+            await self._enqueue_agent_run(
+                message=message,
+                responder_id=responder.id,
+                invocation_kind_override=invocation_kind_override,
+            )
+            # NOTE: async-path support stamping (ai_first_response_at +
+            # AI_RESPONDED audit) is handled by AgentRequestHandler
+            # after it generates the response. See Task 18 follow-up.
+            return None
+        ai_response = await self.generate_response(
+            message=message,
+            responder_id=responder.id,
+            invocation_kind_override=invocation_kind_override,
+        )
+        # Post-hook: stamp first AI response + audit event for
+        # SUPPORT chats. Only fires in sync path; async path stamps
+        # via AgentRequestHandler. Idempotent on the storage side
+        # (set_ai_first_response is a guarded UPDATE).
+        if (
+            ai_response is not None
+            and chat.type == ChatType.SUPPORT
+            and self._is_support_aware()
+            and chat.support_ticket_id is not None
+        ):
+            await self._record_support_ai_response(
+                ticket_id=chat.support_ticket_id,
+                ai_user_id=responder.id,
+                response_message_id=ai_response.id,
+            )
+        return ai_response
 
     async def _record_support_ai_response(
         self,
@@ -292,6 +328,7 @@ class AIService:
 
         if self._is_async_mode():
             for mention in ai_mentions:
+                await self.chat_storage.set_active_agent(message.chat_id, mention.user_id)
                 await self._enqueue_agent_run(
                     message=message,
                     responder_id=mention.user_id,
@@ -301,6 +338,7 @@ class AIService:
 
         responses = []
         for mention in ai_mentions:
+            await self.chat_storage.set_active_agent(message.chat_id, mention.user_id)
             response = await self.generate_response(
                 message=message,
                 responder_id=mention.user_id,
@@ -321,6 +359,7 @@ class AIService:
         message: Message,
         responder_id: UUID,
         strip_username: Optional[str] = None,
+        invocation_kind_override: Optional[str] = None,
     ) -> Optional[Message]:
         """
         Generate AI response from a responder user.
@@ -334,6 +373,7 @@ class AIService:
             message: The user message to respond to
             responder_id: User ID of who should respond (system user or regular user)
             strip_username: If set, strip @@username from message content before sending to LLM
+            invocation_kind_override: If set, overrides mention/direct detection
         """
         logger.info(
             f"generate_response: message={message.id} responder={responder_id}"
@@ -370,9 +410,11 @@ class AIService:
         conv_messages = await self._build_conversation(
             message,
             strip_username,
-            responder_id=responder_id,
         )
         is_mention_call = self._is_mention_call(message, responder_id)
+        invocation_kind = invocation_kind_override or (
+            "mention" if is_mention_call else "direct"
+        )
 
         # Generate
         try:
@@ -380,9 +422,10 @@ class AIService:
                 role,
                 conv_messages,
                 caller_user_id=message.sender_id,
-                callee_user_id=responder_id if is_mention_call else None,
-                invocation_kind="mention" if is_mention_call else "direct",
+                callee_user_id=responder_id if invocation_kind == "mention" else None,
+                invocation_kind=invocation_kind,
                 chat_id=message.chat_id,
+                agent_name=responder.username,
             )
             if agent_call is None:
                 return None
@@ -405,7 +448,7 @@ class AIService:
 
             logger.info(
                 f"AI response from {role.name} ({role.model_name}): "
-                f"{len(agent_result.content)} chars"
+                f"{len(agent_result.content)} chars, metadata={ai_message.metadata or {}}"
             )
             return ai_message
 
@@ -458,6 +501,7 @@ class AIService:
         callee_user_id: Optional[UUID] = None,
         invocation_kind: str = "direct",
         chat_id: Optional[UUID] = None,
+        agent_name: Optional[str] = None,
     ) -> Optional[tuple[AgentResult, dict]]:
         """Call LLM via AgentExecutor.
 
@@ -476,6 +520,7 @@ class AIService:
             callee_user_id=callee_user_id,
             invocation_kind=invocation_kind,
             chat_id=chat_id,
+            agent_name=agent_name,
         )
         
         if result.finish_reason == "error":
@@ -483,29 +528,40 @@ class AIService:
             return None
         return result, metadata
 
+    async def _resolve_agent_name(self, sender_id: UUID) -> str:
+        """Resolve username marker for an AI message sender."""
+        user = await self.user_storage.get_by_id(sender_id)
+        if user and user.username:
+            return user.username
+        return str(sender_id)
+
+    @staticmethod
+    def _wrap_agent_content(agent_name: str, content: str) -> str:
+        return f"<name>{agent_name}</name><content>{content}</content>"
+
     async def _build_conversation(
         self,
         message: Message,
         strip_username: Optional[str] = None,
-        responder_id: Optional[UUID] = None,
+        limit: int = 10,
     ) -> List[dict]:
         """Build conversation as list of {"role": str, "content": str} dicts."""
         messages = []
 
-        # Recent chat history (last 10 messages)
-        history = await self.message_storage.list_by_chat(message.chat_id, limit=10)
+        history = await self.message_storage.list_by_chat(message.chat_id, limit=limit)
+
+        # Cache agent names to avoid redundant DB hits per unique sender.
+        agent_name_cache: dict[UUID, str] = {}
 
         for msg in history:
             if msg.id == message.id:
                 continue
             role_name = "assistant" if msg.sender_type == SenderType.AI_ROLE else "user"
             content = self._with_attachment_ids(msg)
-            if (
-                role_name == "assistant"
-                and responder_id is not None
-                and msg.sender_id != responder_id
-            ):
-                content = _OTHER_ROLE_HISTORY_PLACEHOLDER
+            if role_name == "assistant":
+                if msg.sender_id not in agent_name_cache:
+                    agent_name_cache[msg.sender_id] = await self._resolve_agent_name(msg.sender_id)
+                content = self._wrap_agent_content(agent_name_cache[msg.sender_id], content)
             messages.append({"role": role_name, "content": content})
 
         # Current message
@@ -582,9 +638,24 @@ class AIService:
         r"$\times$": "×",
         r"$\sqrt": "√",
     }
+    _INLINE_AGENT_RESPONSE_RE = re.compile(
+        r"^\s*<name>.*?</name>\s*<content>(?P<content>.*)</content>\s*$",
+        re.DOTALL,
+    )
+    _INLINE_AGENT_NAME_PREFIX_RE = re.compile(r"^\s*<name>.*?</name>\s*", re.DOTALL)
+    _INLINE_CONTENT_PREFIX_RE = re.compile(r"^\s*<content>", re.DOTALL)
+    _INLINE_CONTENT_SUFFIX_RE = re.compile(r"</content>\s*$", re.DOTALL)
 
     @classmethod
     def _postprocess_content(cls, content: str) -> str:
+        match = cls._INLINE_AGENT_RESPONSE_RE.match(content)
+        if match:
+            content = match.group("content")
+        else:
+            content = cls._INLINE_AGENT_NAME_PREFIX_RE.sub("", content, count=1)
+            content = cls._INLINE_CONTENT_PREFIX_RE.sub("", content, count=1)
+            content = cls._INLINE_CONTENT_SUFFIX_RE.sub("", content, count=1)
+
         for latex, ascii_char in cls._LATEX_REPLACEMENTS.items():
             content = content.replace(latex, ascii_char)
         return content
@@ -715,13 +786,15 @@ class AIService:
         )
         user_input = "\n".join(lines)
 
+        responder = await self.user_storage.get_by_id(responder_id)
         result, metadata  = await self.agent_executor.execute(
             role=role,
             messages=[{"role": "user", "content": user_input}],
             temperature=0.5,
             max_tokens=1024,
             caller_user_id=poll.assignee_user_id,
-            invocation_kind="system"
+            invocation_kind="system",
+            agent_name=responder.username if responder else role.code,
         )
 
         if not (result and result.content and result.content.strip()):
@@ -731,7 +804,7 @@ class AIService:
             chat_id=chat_id,
             sender_id=responder_id,
             sender_type=SenderType.AI_ROLE,
-            content=result.content.strip(),
+            content=self._postprocess_content(result.content).strip(),
             ai_is_valid=True,
         )
         return await self.message_storage.create(ai_message)
@@ -838,19 +911,21 @@ class AIService:
             f"Извлеки сводку по структуре, описанной в системном промпте."
         )
 
+        responder = await self.user_storage.get_by_id(responder_id)
         result, metadata  = await self.agent_executor.execute(
             role=role,
             messages=[{"role": "user", "content": user_input}],
             temperature=0.3,
             max_tokens=2048,
             caller_user_id=poll.assignee_user_id,
-            invocation_kind="system"
+            invocation_kind="system",
+            agent_name=responder.username if responder else role.code,
         )
 
         if not (result and result.content and result.content.strip()):
             raise RuntimeError("agent_executor returned empty content")
 
-        summary_text = result.content.strip()
+        summary_text = self._postprocess_content(result.content).strip()
 
         # Sequential UPDATE pair. If failure between — handler marks agent_run failed,
         # Kafka redelivery will retry idempotently (CAS pending->running guards re-runs).

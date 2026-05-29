@@ -62,6 +62,7 @@ class AgentRequestHandler:
         # --- Validate kind-specific fields BEFORE acquiring agent_run lock ---
         user_message_id: UUID | None = None
         strip_username = None
+        invocation_kind_override = None
         poll_id: UUID | None = None
 
         if kind == "message_reply":
@@ -79,6 +80,7 @@ class AgentRequestHandler:
                 )
                 return
             strip_username = payload.get("strip_username")
+            invocation_kind_override = payload.get("invocation_kind_override")
         elif kind in ("poll_initial", "poll_summary"):
             poll_id_raw = payload.get("poll_id")
             if not poll_id_raw:
@@ -113,6 +115,7 @@ class AgentRequestHandler:
                     message=user_message,
                     responder_id=responder_id,
                     strip_username=strip_username,
+                    invocation_kind_override=invocation_kind_override,
                 )
             elif kind == "poll_initial":
                 ai_message = await self.ai_service.generate_poll_initial(
@@ -160,7 +163,7 @@ class AgentRequestHandler:
                 logger.error(f"Failed to publish AI message to chat.events: {e}")
 
             logger.info(
-                f"agent_run {request_id} kind={kind} done: ai_message={ai_message.id}"
+                f"agent_run {request_id} kind={kind} done: ai_message={ai_message.id} metadata={ai_message.metadata or {}}"
             )
 
         except Exception as e:

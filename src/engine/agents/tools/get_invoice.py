@@ -24,7 +24,7 @@ def create_get_invoice_tool(engine):
     async def _get(
         invoice_id: str,
         config: RunnableConfig,
-        runtime: ToolRuntime[RuntimeContext] | None = None,
+        runtime: ToolRuntime[RuntimeContext],
     ) -> str:
         cfg = (config or {}).get("configurable", {}) or {}
         caller_raw = cfg.get("caller_user_id")

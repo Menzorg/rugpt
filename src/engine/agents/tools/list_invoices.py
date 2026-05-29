@@ -152,7 +152,7 @@ def create_list_invoices_tool(engine):
 
     async def _list(
         config: RunnableConfig,
-        runtime: ToolRuntime[RuntimeContext] = None,
+        runtime: ToolRuntime[RuntimeContext],
         uploaded_by_user_id: str = "",
         status: Optional[str] = None,
         due_from: Optional[date] = None,

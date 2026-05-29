@@ -34,7 +34,9 @@ def make_ai_service(
     message_storage.create = AsyncMock(side_effect=lambda m: m)
 
     agent_executor = AsyncMock()
-    agent_executor.execute = AsyncMock(return_value=AgentResult(content=agent_result_content))
+    agent_executor.execute = AsyncMock(
+        return_value=(AgentResult(content=agent_result_content), {})
+    )
 
     agent_run_storage = AsyncMock()
     agent_run_storage.create = AsyncMock(side_effect=lambda r: r)

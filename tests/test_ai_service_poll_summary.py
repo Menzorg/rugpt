@@ -34,7 +34,9 @@ def make_service(
     role_storage.get_by_code = AsyncMock(return_value=role)
 
     executor = AsyncMock()
-    executor.execute = AsyncMock(return_value=AgentResult(content=agent_result_content))
+    executor.execute = AsyncMock(
+        return_value=(AgentResult(content=agent_result_content), {})
+    )
 
     user_storage = AsyncMock()
     chat_storage = AsyncMock()
