@@ -86,9 +86,9 @@ async def create_organization(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/{org_id}", response_model=OrgResponse)
+@router.get("/{target_org_id}", response_model=OrgResponse)
 async def get_organization(
-    org_id: str,
+    target_org_id: str,
     current_user: dict = Depends(get_current_user)
 ):
     """Get organization by ID. Юзер видит только свою org — иначе 404, чтобы
@@ -97,11 +97,11 @@ async def get_organization(
     org_service = OrgService(engine.org_storage)
 
     try:
-        org_uuid = UUID(org_id)
+        org_uuid = UUID(target_org_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
-    if org_uuid != UUID(current_user["org_id"]):
+    if org_uuid != current_user["org_id"]:
         raise HTTPException(status_code=404, detail="Organization not found")
 
     org = await org_service.get_organization(org_uuid)
@@ -110,9 +110,9 @@ async def get_organization(
 
     return OrgResponse(**org.to_dict())
 
-@router.patch("/{org_id}", response_model=OrgResponse)
+@router.patch("/{target_org_id}", response_model=OrgResponse)
 async def update_organization(
-    org_id: str,
+    target_org_id: str,
     request: UpdateOrgRequest,
     current_user: dict = Depends(get_current_user)
 ):
@@ -125,7 +125,7 @@ async def update_organization(
         raise HTTPException(status_code=403, detail="Admin access required")
 
     try:
-        org_uuid = UUID(org_id)
+        org_uuid = UUID(target_org_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
@@ -156,9 +156,9 @@ async def update_organization(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.delete("/{org_id}")
+@router.delete("/{target_org_id}")
 async def deactivate_organization(
-    org_id: str,
+    target_org_id: str,
     current_user: dict = Depends(get_current_user)
 ):
     """Deactivate organization (admin only)"""
@@ -170,7 +170,7 @@ async def deactivate_organization(
         raise HTTPException(status_code=403, detail="Admin access required")
 
     try:
-        org_uuid = UUID(org_id)
+        org_uuid = UUID(target_org_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
@@ -182,9 +182,9 @@ async def deactivate_organization(
 
     return {"success": True, "message": "Organization deactivated"}
 
-@router.post("/{org_id}/context/upload")
+@router.post("/{target_org_id}/context/upload")
 async def upload_org_context(
-    org_id: str,
+    target_org_id: str,
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
 ):
@@ -193,7 +193,7 @@ async def upload_org_context(
         raise HTTPException(status_code=403, detail="Admin access required")
 
     engine = get_engine_service()
-    org = await engine.org_storage.get_by_id(UUID(org_id))
+    org = await engine.org_storage.get_by_id(UUID(target_org_id))
     if not org or org.id != current_user["org_id"]:
         raise HTTPException(status_code=404, detail="Organization not found")
 

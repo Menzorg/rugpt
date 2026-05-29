@@ -49,7 +49,7 @@ class FileResponse(BaseModel):
 @router.post("/upload", response_model=FileResponse)
 async def upload_file(
     file: UploadFile = File(...),
-    user_id: Optional[str] = Form(None, description="Employee UUID who owns this file (defaults to authenticated user)"),
+    target_user_id: Optional[str] = Form(None, description="Employee UUID who owns this file (defaults to authenticated user). Only admins may set it to another user."),
     is_public: bool = Form(False, description="Make file visible to all org users"),
     folder_id: Optional[str] = Form(None, description="Target folder UUID (defaults to root)"),
     current_user: dict = Depends(get_current_user),
@@ -59,9 +59,9 @@ async def upload_file(
 
 
     try:
-        user_uuid = UUID(user_id) if user_id else current_user["user_id"]
+        user_uuid = UUID(target_user_id) if target_user_id else current_user["user_id"]
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user_id")
+        raise HTTPException(status_code=400, detail="Invalid target_user_id")
 
     if not current_user.get("is_admin") and user_uuid != current_user["user_id"]:
         raise HTTPException(status_code=403, detail="You can only upload files for yourself")

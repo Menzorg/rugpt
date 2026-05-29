@@ -58,3 +58,14 @@ def verify_device_signature(
     except Exception as e:
         logger.error(f"Signature verification error: {e}")
         return False
+
+
+import time as _time
+
+
+def check_timestamp(timestamp: int, tolerance: int) -> bool:
+    """True если |now - timestamp| <= tolerance (секунды)."""
+    try:
+        return abs(int(_time.time()) - int(timestamp)) <= tolerance
+    except (ValueError, TypeError):
+        return False

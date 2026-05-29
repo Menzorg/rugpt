@@ -49,6 +49,12 @@ async def list_departments(current_user: dict = Depends(get_current_user)):
     depts = await engine.department_service.list_departments(current_user["org_id"])
     return [d.to_dict() for d in depts]
 
+@router.get("/visibility")
+async def list_visibility_rules(current_user: dict = Depends(get_current_user)):
+    engine = get_engine_service()
+    rules = await engine.department_service.list_visibility_rules(current_user["org_id"])
+    return [r.to_dict() for r in rules]
+
 @router.get("/{department_id}")
 async def get_department(
     department_id: str,
@@ -89,10 +95,10 @@ async def delete_department(
         raise HTTPException(status_code=404, detail="Department not found")
     return {"status": "deleted"}
 
-@router.post("/{department_id}/head/{user_id}")
+@router.post("/{department_id}/head/{target_user_id}")
 async def set_head(
     department_id: str,
-    user_id: str,
+    target_user_id: str,
     current_user: dict = Depends(get_current_user),
 ):
     _require_admin(current_user)
@@ -100,7 +106,7 @@ async def set_head(
     dept = await engine.department_service.get_department(UUID(department_id))
     if not dept or dept.org_id != current_user["org_id"]:
         raise HTTPException(status_code=404, detail="Department not found")
-    success = await engine.department_service.set_head(UUID(department_id), UUID(user_id))
+    success = await engine.department_service.set_head(UUID(department_id), UUID(target_user_id))
     if not success:
         raise HTTPException(status_code=400, detail="User not found or not in this department")
     return {"status": "ok"}
@@ -143,9 +149,3 @@ async def delete_visibility_rule(
     if not deleted:
         raise HTTPException(status_code=404, detail="Rule not found")
     return {"status": "deleted"}
-
-@router.get("/visibility")
-async def list_visibility_rules(current_user: dict = Depends(get_current_user)):
-    engine = get_engine_service()
-    rules = await engine.department_service.list_visibility_rules(current_user["org_id"])
-    return [r.to_dict() for r in rules]

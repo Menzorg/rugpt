@@ -86,6 +86,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from .middleware.web_signature import WebSignatureMiddleware
+
+# Zero Trust: проверка device-подписей для /api/v1/web/*
+app.add_middleware(WebSignatureMiddleware)
+
 
 # Глобальный exception handler — uvicorn по дефолту пишет traceback только в stderr,
 # наш DailyDirJsonlHandler этого не видит. Здесь явно прогоняем через `rugpt`-логгер

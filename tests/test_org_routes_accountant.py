@@ -49,9 +49,9 @@ async def admin_ctx(engine_initialized):
 
     # NB: real JWT-derived dict has stringified UUIDs; PATCH handler uses
     # current_user["user_id"] only via user_storage.get_by_id which tolerates
-    # either type, but other routes (GET) parse via UUID(str). Match prod shape.
+    # Real get_current_user returns user_id/org_id as UUID instances. Match prod shape.
     async def _override():
-        return {"user_id": str(admin.id), "org_id": str(org.id), "is_admin": True}
+        return {"user_id": admin.id, "org_id": org.id, "is_admin": True}
     app.dependency_overrides[get_current_user] = _override
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 
@@ -91,29 +91,38 @@ def verify_token(token: str) -> Optional[dict]:
         return None
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
 ) -> dict:
-    """Dependency to get current authenticated user"""
+    """JWT = session-gate; личность = device-подписанный user_id (Plan A). FAIL-CLOSED.
+
+    JWT обязан быть валиден и не протух. Запрос ОБЯЗАН пройти WebSignatureMiddleware —
+    он выставляет request.state.zt_user_id. Нет его → 401 (unsigned). Его user_id
+    ОБЯЗАН совпасть с JWT, иначе 401 (склейка чужой подписи с чужим JWT). Никакого
+    fallback на голый JWT. Личность и org_id — из живой user-записи.
+    """
     if not credentials:
         raise HTTPException(status_code=401, detail="Authorization header required")
-
-    token = credentials.credentials
-    payload = verify_token(token)
+    payload = verify_token(credentials.credentials)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    user_id = UUID(payload["user_id"])
-    org_id = UUID(payload["org_id"])
+    jwt_user_id = UUID(payload["user_id"])
+    zt_user_id = getattr(request.state, "zt_user_id", None)
+    if zt_user_id is None:
+        raise HTTPException(status_code=401, detail="Unsigned request")
+    if str(jwt_user_id) != str(zt_user_id):
+        raise HTTPException(status_code=401, detail="Identity mismatch")
+    actor_user_id = UUID(str(zt_user_id))
 
-    # Verify user still exists and is active in DB
     engine = get_engine_service()
-    user = await engine.user_storage.get_by_id(user_id)
+    user = await engine.user_storage.get_by_id(actor_user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="User not found or inactive")
-    set_user_id(str(user_id))
+    set_user_id(str(actor_user_id))
     return {
-        "user_id": user_id,
-        "org_id": org_id,
+        "user_id": actor_user_id,
+        "org_id": user.org_id,
         "is_admin": user.is_admin,
         "department_id": user.department_id,
         "is_head": user.is_head,
@@ -249,38 +258,6 @@ async def refresh_token(current_user: dict = Depends(get_current_user)):
     """Refresh JWT token"""
     token = create_token(current_user["user_id"], current_user["org_id"])
     return {"token": token}
-
-class VerifySignatureRequest(BaseModel):
-    """Request to verify a device signature"""
-    user_id: str
-    payload: str
-    signature: str
-
-@router.post("/verify-signature")
-async def verify_signature(request: VerifySignatureRequest):
-    """
-    Verify device signature for a user.
-    Used by WebClient backend to verify request signatures.
-    """
-    from ..services.crypto_service import verify_device_signature
-
-    engine = get_engine_service()
-    user_id = UUID(request.user_id)
-
-    # Get all active device public keys for user
-    public_keys = await engine.device_storage.get_all_public_keys(user_id)
-
-    if not public_keys:
-        return {"valid": False, "error": "No device keys registered"}
-
-    # Try each key until one works
-    for pk in public_keys:
-        if verify_device_signature(pk, request.payload, request.signature):
-            # Update last_used
-            await engine.device_storage.update_last_used(user_id, pk)
-            return {"valid": True}
-
-    return {"valid": False, "error": "Invalid signature"}
 
 @router.get("/devices")
 async def get_user_devices(current_user: dict = Depends(get_current_user)):

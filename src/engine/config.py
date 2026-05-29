@@ -45,6 +45,32 @@ class Config:
     REDIS_DB = os.getenv("REDIS_DB", "0")
     REDIS_URL = os.getenv("REDIS_URL", f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}")
 
+    # ---- Zero Trust: web signature enforcement ----
+    # Окно валидности подписи и TTL nonce (защита от replay). Оба = 5 минут.
+    SIG_TIMESTAMP_TOLERANCE_SECONDS = int(os.getenv("SIG_TIMESTAMP_TOLERANCE_SECONDS", "300"))
+    NONCE_TTL_SECONDS = int(os.getenv("NONCE_TTL_SECONDS", "300"))
+
+    # Префикс web-роутов, на которые навешивается проверка подписи.
+    WEB_PREFIX = "/api/v1/web"
+
+    # Роуты (суффикс после /api/v1/web), доступные через web. Остальное → 404.
+    WEB_ALLOWED_ROUTES = [
+        "/auth", "/users", "/roles", "/chats", "/organizations",
+        "/calendar", "/notifications", "/in-app-notifications",
+        "/tasks", "/task-polls", "/task-reports", "/projects",
+        "/files", "/folders", "/rag", "/departments", "/support",
+        "/corrections", "/actions", "/invoices", "/config", "/health",
+    ]
+
+    # Роуты без проверки подписи (pre-auth / server-to-server).
+    WEB_NO_SIGNATURE_ROUTES = [
+        "/auth/login",
+        "/auth/engine-public-key",
+        "/config",
+        "/health",
+        "/notifications/telegram/webhook",
+    ]
+
     # Kafka settings (item 10: PM-agent + async inference via agent.requests / chat.events)
     KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     KAFKA_ENABLED = os.getenv("KAFKA_ENABLED", "true").lower() == "true"

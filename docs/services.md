@@ -14,25 +14,35 @@ class EngineService:
     org_storage: OrgStorage
     user_storage: UserStorage
     role_storage: RoleStorage
+    role_subagent_storage: RoleSubagentStorage         # supervisor → subagent маппинг
     chat_storage: ChatStorage
     message_storage: MessageStorage
+    message_attachment_storage: MessageAttachmentStorage
+    chat_read_state_storage: ChatReadStateStorage
     calendar_storage: CalendarStorage
     notification_channel_storage: NotificationChannelStorage
     notification_log_storage: NotificationLogStorage
 
     # Storages (alpha)
+    in_app_notification_storage: InAppNotificationStorage
     task_storage: TaskStorage
+    task_participant_storage: TaskParticipantStorage
     task_poll_storage: TaskPollStorage
     task_report_storage: TaskReportStorage
-    in_app_notification_storage: InAppNotificationStorage
     user_file_storage: UserFileStorage
+    user_file_folder_storage: UserFileFolderStorage
     correction_rule_storage: CorrectionRuleStorage
     device_storage: DeviceStorage
+    department_storage: DepartmentStorage              # item 8
+    project_storage: ProjectStorage                    # item 11
+    task_event_storage: TaskEventStorage               # item 11
+    agent_run_storage: AgentRunStorage                 # item 10
+    support_ticket_storage: SupportTicketStorage       # техподдержка
+    support_ticket_event_storage: SupportTicketEventStorage
+    memory_snapshot_storage: MemorySnapshotStorage     # сжатие истории чата
+    invoice_storage: InvoiceStorage                    # счета
     rag_store: RAG_store
-    department_storage: DepartmentStorage          # item 8
-    project_storage: ProjectStorage                # item 11
-    task_event_storage: TaskEventStorage           # item 11
-    agent_run_storage: AgentRunStorage             # item 10
+    nonce_store: NonceStore                            # Zero Trust replay (Redis)
 
     # Services (core)
     chat_service: ChatService
@@ -43,19 +53,24 @@ class EngineService:
     notification_service: NotificationService
 
     # Services (alpha)
+    in_app_notification_service: InAppNotificationService
     task_service: TaskService
     task_poll_service: TaskPollService
     task_report_service: TaskReportService
-    in_app_notification_service: InAppNotificationService
     file_service: FileService
+    folder_service: FolderService
     rag_service: RAGService
     correction_rule_service: CorrectionRuleService
-    crypto_service: CryptoService
+    memory_service: MemoryService                      # memory-snapshot
     department_service: DepartmentService              # item 8
     project_service: ProjectService                    # item 11
     task_event_service: TaskEventService               # item 11
     reference_service: ReferenceService                # item 11 (!/!! ссылки)
-    task_notification_service: TaskNotificationService # item 10 PM-агент
+    role_subagent_service: RoleSubagentService         # supervisor-сабагенты
+    support_ticket_service: SupportTicketService       # техподдержка
+    support_notification_service: SupportNotificationService
+    invoice_service: InvoiceService                    # счета
+    signature_service: SignatureService                # Zero Trust проверка подписи
 
     # Kafka (item 10)
     kafka_producer: KafkaProducerService
@@ -66,34 +81,56 @@ class EngineService:
     prompt_cache: PromptCache
     tool_registry: ToolRegistry
     agent_executor: AgentExecutor
+    action_registry: ActionRegistry                    # show_modal / action-подтверждения
 
     # File storage
     storage_adapter: LocalStorageAdapter
-
-    # LLM (legacy — оставлен для health checks / model listing; prod-инференс через LiteLLM)
-    llm_provider: OllamaProvider
 
 # Использование
 engine = get_engine_service()
 await engine.initialize()
 ```
 
+> Никакого `OllamaProvider` / `llm_provider` на синглтоне нет — инференс идёт
+> через `AgentExecutor` (LangChain ChatOpenAI → LiteLLM). См. `docs/llm.md`.
+
 **Методы:**
-- `initialize()` -- инициализация всех хранилищ, запуск планировщика
-- `close()` -- остановка планировщика, закрытие соединений
+- `initialize()` -- `init()` всех хранилищ, токенайзер, проводка RAG/tool, старт Kafka + scheduler, заполнение action registry
+- `close()` -- остановка планировщика и Kafka, закрытие соединений, reset action registry
 
 **Порядок инициализации:**
-1. Storages (все 17)
-2. LLM Provider, PromptCache
-3. CalendarService, InAppNotificationService
-4. TaskService, TaskPollService, TaskReportService
-5. FileService (+ LocalStorageAdapter)
-6. RAGService
-7. NotificationService (+ TelegramSender, EmailSender)
-8. ToolRegistry, AgentExecutor
-9. SchedulerService (с calendar, notifications, agent_executor, tasks, per-org timezone)
-10. ChatService, MentionService, AIService
-11. CorrectionRuleService
+
+`__init__()` (синхронный, конструирует все объекты, БД ещё не подключена):
+1. Storages — ~29 хранилищ через DSN; `message_storage.attachment_storage`
+   проводится вручную для auto-hydration `Message.attachments`
+2. `NonceStore` (Redis), `SignatureService(device_storage, nonce_store, tolerance)`
+3. `PromptCache`, `CalendarService`, `RoleSubagentService`, `DepartmentService`
+4. `KafkaProducerService` (no-op при `KAFKA_ENABLED=false`)
+5. `InAppNotificationService`, `SupportNotificationService`
+6. `ChatService` → `SupportTicketService` → `TaskEventService` →
+   `ProjectService` → `TaskService` → `ReferenceService` →
+   `TaskPollService` → `TaskReportService` (порядок важен для DI)
+7. `LocalStorageAdapter`, `FileService`, `InvoiceService`
+8. `RAG_store`, `RAGService`, `FolderService`
+9. `NotificationService` + регистрация `TelegramSender`/`EmailSender`
+   (только если заданы `TELEGRAM_BOT_TOKEN` / `SMTP_HOST`)
+10. tools + `ActionRegistry` (пустой) + `ToolRegistry` (регистрация инструментов)
+11. `AgentExecutor` → `MemoryService` → проводка
+    `agent_executor.memory_service` и `task_report_service.agent_executor`
+    (разрыв chicken-egg через сеттеры)
+12. `SchedulerService`, `MentionService`, `AIService`; проводка AI/chat-зависимостей
+    в `support_ticket_service`, `task_poll_service`, `scheduler_service`
+13. `AgentRequestHandler` + `KafkaConsumerLoop(agent.requests)`
+14. `CorrectionRuleService`; проводка `agent_executor.correction_rule_service`
+
+`initialize()` (асинхронный):
+1. `await storage.init()` для всех хранилищ + `nonce_store.init()` + `rag_store.init()`
+2. `init_token_counter()` (локальный токенайзер, fallback tiktoken)
+3. Проводка общего `RAGService` в rag/table_rows/list_documents tools
+4. `kafka_producer.start()` + `agent_request_consumer.start()` (no-op при disabled)
+5. `register_all_actions(action_registry)` → регистрация `show_modal` tool
+6. Регистрация `list_invoices` / `get_invoice` tools (фабрики захватывают `self`)
+7. `scheduler_service.start()`
 
 ---
 
@@ -137,20 +174,27 @@ class PromptCache:
 
 ```python
 class AgentExecutor:
-    def __init__(self, base_url, default_model, prompt_cache, tool_registry, timeout=300.0)
+    def __init__(self, base_url, api_key, default_model, prompt_cache=None,
+                 tool_registry=None, timeout=300.0, memory_service=None)
 
-    async def execute(role, messages, user_id=None, temperature=0.7, max_tokens=2048) -> AgentResult
+    async def execute(role, messages, caller_user_id=None, temperature=0.7,
+                      max_tokens=2048, callee_user_id=None,
+                      invocation_kind=None, chat_id=None) -> AgentResult
 ```
 
-`user_id` передается в `RunnableConfig(configurable={"org_id": ..., "user_id": ...})` для scope-aware инструментов (rag_search, task tools).
+`memory_service` и `correction_rule_service` проставляются сеттерами после
+конструирования (chicken-egg, см. `EngineService.__init__`).
 
-**Маршрутизация по agent_type:**
+**RunnableConfig (configurable) для scope-aware инструментов:**
+`org_id`, `caller_user_id`, `callee_user_id`, `invocation_kind`, `chat_id`,
+`is_admin`, `timezone`, `role`. Строится в `_make_config()`.
+
+**Маршрутизация по agent_type** (только два варианта):
 - `simple` без tools -> прямой вызов ChatOpenAI (LiteLLM → vLLM)
 - `simple` с tools -> LangGraph ReAct agent
-- `chain` -> последовательные шаги из `agent_config["steps"]`
-- `multi_agent` -> LangGraph StateGraph из `agent_config["graph"]`
+- `supervisor` -> LangGraph multi-agent supervisor над ролями-сабагентами
 
-Подробнее про LLM-стек — `docs/llm.md`.
+`agent_config["steps"]` / `["graph"]` НЕ читаются. Подробнее — `docs/llm.md`.
 
 **AgentResult:**
 ```python
@@ -176,24 +220,38 @@ class AgentResult:
 ```python
 class ToolRegistry:
     def register(name: str, tool: BaseTool)
-    def resolve(names: List[str]) -> List[BaseTool]
+    def resolve(names: List[str]) -> Tuple[List[BaseTool], str]  # (tools, warning)
+    def get(name: str) -> Optional[BaseTool]
     @property available_tools -> List[str]
 ```
 
-**Зарегистрированные инструменты:**
-- `calendar_create` -- создание календарного события (работает)
-- `calendar_query` -- запрос событий (работает)
-- `task_create` -- создание задачи (работает)
-- `task_query` -- запрос задач (работает)
-- `task_update` -- обновление задачи (работает)
-- `rag_search` -- гибридный поиск по документам (работает, pgvector + TSV)
-- `web_search` -- веб-поиск (stub)
-- `role_call` -- вызов другой роли (stub)
+`resolve()` возвращает **кортеж** `(resolved_tools, warning)`; неизвестные имена
+пропускаются и попадают в строку-предупреждение.
 
-Calendar и task tools используют factory pattern:
+**Зарегистрированные инструменты (19):**
+
+Регистрируются в `__init__`:
+- `calendar_create`, `calendar_query` -- календарные события
+- `task_create`, `task_query`, `task_update`, `task_deadline_proposal`,
+  `get_own_tasks` -- задачи (`create_task_tools` возвращает 5 tools)
+- `rag_search` -- гибридный поиск по документам (pgvector + TSV)
+- `expand_chunk` -- развернуть соседние чанки документа
+- `table_rows_search` -- поиск по табличным данным (xlsx/csv)
+- `web_search` -- веб-поиск
+- `role_call` -- вызов другой роли (stub)
+- `list_documents`, `list_own_documents` -- список документов
+- `analyze_image` -- анализ изображения
+- `user_search` -- поиск пользователей (`create_user_tools` возвращает 1 tool)
+
+Регистрируются в `initialize()` (после заполнения action registry):
+- `show_modal` -- запрос action-подтверждения у пользователя через ActionRegistry
+- `list_invoices`, `get_invoice` -- счета (фабрики захватывают engine instance)
+
+Часть tools использует factory pattern:
 ```python
 def create_calendar_tools(calendar_service) -> (create_tool, query_tool)
-def create_task_tools(task_service) -> (create_tool, query_tool, update_tool)
+def create_task_tools(task_service) -> (create, query, update, deadline_proposal, get_own)
+def create_user_tools(user_storage, role_storage, department_service) -> (user_search,)
 ```
 
 ---
@@ -383,7 +441,9 @@ class RolesService:
 
 ```python
 class ChatService:
-    def __init__(self, chat_storage: ChatStorage, message_storage: MessageStorage)
+    def __init__(self, chat_storage, message_storage,
+                 chat_read_state_storage=None, user_file_storage=None,
+                 message_attachment_storage=None)
 
     # Chat operations
     async def create_direct_chat(user1_id, user2_id, org_id) -> Chat
@@ -474,53 +534,26 @@ class TaskService:
 - Assignee: `take_task`, `mark_done`, `propose_deadline`
 - Creator: `accept_task`, `reject_task`, `set_deadline`, `accept/reject_proposed_deadline`
 
-**Hook-ки (items 10/11):**
+**Hook-ки (items 9/11):**
 - После каждого перехода — `_record_event(...)` пишет в `task_events` (item 11)
-- После каждого перехода — `_notify('notify_<name>', task, user)` в PM-агент
-  через `TaskNotificationService` (item 10). Silent no-op если Kafka disabled
-- `create` — auto-create task chat + link to project chat (item 11)
+- После каждого перехода — bell-уведомления через
+  `in_app_notification_service.create(type="task_status_change", ...)`:
+  - `_bell_to_recipients(task, actor, ...)` — fan-out всем причастным
+    (creator + assignee + participants), кроме actor. Список собирает
+    `_resolve_recipients` (только `is_active=true`)
+  - `_bell_to_user(...)` — одному адресату (add/remove participant)
+- `create` — auto-create task chat + link to project chat + bell новым
+  участникам + `type="new_task"` ассайни (item 11)
 - `deactivate` — archive task chat + archive project chat если это была
   последняя активная задача проекта (item 11)
 
-**В TaskService DI инжектится:** `chat_service`, `task_event_service`,
-`project_service`, `task_notification_service` — все опциональные
-`Optional[...] = None` для обратной совместимости с тестами.
+Никакого PM-агента / direct-chat / Kafka-публикации по задачам нет —
+все уведомления идут только через колокольчик (`in_app_notifications`).
 
----
-
-## TaskNotificationService (item 10)
-
-**Файл:** `src/engine/services/task_notification_service.py`
-
-PM-агент как автоматический уведомитель по задачам. Постит plain-text
-сообщения в личный direct-chat между PM system user (`username='pm'`) и
-каждой заинтересованной стороной. Публикует в Kafka `chat.events` для
-live-доставки через WS.
-
-```python
-class TaskNotificationService:
-    async def notify_take(task, actor)                   # assignee взял -> creator
-    async def notify_mark_done(task, actor)              # готово -> creator
-    async def notify_accept(task, actor)                 # принято -> assignee
-    async def notify_reject(task, actor, comment?)       # возврат -> assignee
-    async def notify_set_deadline(task, actor)           # новый срок -> assignee
-    async def notify_propose_deadline(task, actor)       # предложение -> creator
-    async def notify_accept_proposed_deadline(task, actor)   # -> assignee
-    async def notify_reject_proposed_deadline(task, actor)   # -> assignee
-    async def notify_overdue(task)                       # -> обе стороны
-```
-
-**Правило адресации:** уведомляется сторона, которая **не инициировала**
-изменение.
-
-**Реализация `_post()`:**
-1. Lazy-lookup PM user (`user_storage.get_system_user_by_username('pm')`),
-   cached after first call
-2. Lazy-create direct chat PM↔recipient через `chat_service.create_direct_chat`
-   (идемпотентно — возвращает существующий, если есть)
-3. Persist message в БД (`sender_type=ai_role`, `ai_is_valid=true`)
-4. Publish в Kafka `chat.events` с полным payload
-5. Kafka publish failures не ломают DB persist (best-effort)
+**В TaskService DI инжектится:** `in_app_notification_service` (обязательный),
+плюс опциональные `chat_service`, `task_event_service`, `project_service`,
+`user_storage`, `task_participant_storage` (`Optional[...] = None` для
+обратной совместимости с тестами). `TaskNotificationService` НЕ существует.
 
 ---
 
@@ -612,8 +645,8 @@ class FileService:
 
 ```python
 class RAGService:
-    def __init__(self, store, *, ollama_model, ollama_embeddings_base_url, ollama_base_url,
-                 chunk_size, chunk_overlap, summary_input_max_chars, file_storage?)
+    def __init__(self, store, embedding_model, llm_base_url, llm_api_key,
+                 chunk_size, chunk_overlap, summary_input_max_tokens, file_storage=None)
 
     async def ingest(org_id, user_id, filename, data, file_id) -> dict
     async def try_ingest(..., max_retries=3) -> dict   # С retry
@@ -646,27 +679,191 @@ class CorrectionRuleService:
 
 ---
 
-## CryptoService
+## SignatureService (Zero Trust)
+
+**Файл:** `src/engine/services/signature_service.py`
+
+Единая точка проверки подписи запроса. Держится на синглтоне как
+`signature_service`. Вызывается из `WebSignatureMiddleware` — **отдельного
+эндпоинта `/auth/verify-signature` НЕТ**.
+
+```python
+class SignatureService:
+    def __init__(self, device_storage, nonce_store, timestamp_tolerance: int)
+
+    async def verify_request_signature(
+        user_id, payload, signature, nonce, timestamp,
+    ) -> Tuple[bool, Dict[str, Any]]   # (True, {}) | (False, {"error": code})
+
+    async def has_device_key(user_id) -> bool
+```
+
+**Флоу `verify_request_signature`:**
+1. `check_timestamp(timestamp, tolerance)` — окно `SIG_TIMESTAMP_TOLERANCE_SECONDS`
+2. `device_storage.get_all_public_keys(user_id)` → если пусто, отказ
+3. ECDSA: `any(verify_device_signature(pk, payload, signature) ...)`
+4. nonce-replay **последним**: `nonce_store.check_and_store(user_id, nonce)`
+   (после успешной подписи; `NonceStoreUnavailable` пробрасывается → 503)
+
+### crypto_service.py (module-level функции, НЕ класс)
 
 **Файл:** `src/engine/services/crypto_service.py`
 
-Верификация устройств (Zero Trust). Используется в `POST /auth/verify-signature` — точке, куда ходит NestJS `SignatureGuard` за верификацией каждого mutation-запроса от webclient.
-
 ```python
-class CryptoService:
-    def verify_device_signature(public_key_pem, payload, signature) -> bool
-    # ECDSA P-256 signature verification (cryptography lib)
+def verify_device_signature(device_public_key_pem, payload, signature_b64) -> bool
+# ECDSA P-256 (cryptography lib). Web Crypto отдаёт IEEE P1363 (r||s, 64 байта)
+# → конвертация в DER через encode_dss_signature. Любая ошибка → False.
+
+def check_timestamp(timestamp: int, tolerance: int) -> bool
+# True если |now - timestamp| <= tolerance (секунды)
 ```
 
-**Полный флоу `verify_signature` в `AuthRouter`:**
-1. Парсит payload (canonical JSON от клиента: `path`, `body`, `nonce`, `sig_timestamp`, `user_id`).
-2. Проверка `|now − sig_timestamp| < 5 min`.
-3. Проверка nonce не в TTL-cache (in-memory, **не persistent** — security-пункт 12).
-4. `device_storage.list_by_user(user_id)` → итерируем публичные ключи.
-5. Для каждого — `verify_device_signature(pem, payload, signature)`; если хоть один OK → 200.
-6. Иначе 401.
+### NonceStore (защита от replay)
+
+**Файл:** `src/engine/services/nonce_store.py`
+
+Redis-хранилище одноразовых nonce. **Fail-closed**: Redis недоступен →
+`NonceStoreUnavailable` → middleware отдаёт **503**.
+
+```python
+class NonceStore:
+    def __init__(self, redis_url, ttl_seconds)
+    async def init()
+    async def close()
+    async def check_and_store(user_id, nonce) -> bool
+    # True если nonce новый (атомарный SET nx ex). False если уже использован.
+    # Raise NonceStoreUnavailable при недоступности Redis.
+
+class NonceStoreUnavailable(Exception): ...
+```
+
+### WebSignatureMiddleware
+
+**Файл:** `src/engine/middleware/web_signature.py`
+
+Перехватывает `/api/v1/web/*`, срезает `/web` (→ внутренний `/api/v1/...`),
+для мутаций (POST/PUT/PATCH/DELETE) извлекает заголовки `X-User-Id`,
+`X-Signature`, `X-Nonce`, `X-Timestamp`, `X-Signature-Payload` и делегирует
+в `signature_service.verify_request_signature`. GET/HEAD/OPTIONS проходят
+без проверки. Нет заголовков → 401; `NonceStoreUnavailable` → 503; отказ → 401.
 
 Подробный Zero-Trust флоу и threat matrix — `docs/networking.md`.
+
+---
+
+## RoleSubagentService
+
+**Файл:** `src/engine/services/role_subagent_service.py`
+
+CRUD-обёртка над `role_subagents` (маппинг supervisor-роль → роли-сабагенты
+для multi-agent оркестрации).
+
+```python
+class RoleSubagentService:
+    def __init__(self, role_subagent_storage: RoleSubagentStorage)
+    async def get_available_subagent_roles(role_id) -> List[Role]
+    # активные роли, которые role_id может вызвать как сабагенты
+```
+
+---
+
+## SupportTicketService
+
+**Файл:** `src/engine/services/support_ticket_service.py`
+
+Бизнес-логика тикетов техподдержки RuGPT. Тикет = спец-чат пользователя с
+AI-агентом поддержки (`HOW_TO`) либо живым оператором (`BUG`/`REQUEST`),
+с эскалацией `HOW_TO` → человек.
+
+```python
+class SupportTicketService:
+    def __init__(self, ticket_storage, event_storage, chat_storage,
+                 message_storage, user_storage,
+                 notification_service=None, kafka_producer=None)
+    # self.ai_service проводится после конструирования (chicken-egg с AIService):
+    # create_ticket(HOW_TO) запускает первый AI-ответ
+```
+
+```python
+    async def create_ticket(requester, category, initial_message) -> (SupportTicket, Chat)
+    async def escalate(ticket_id, by_user) -> SupportTicket          # AI → человек
+    async def take_ticket(ticket_id, operator) -> SupportTicket      # атомарный CAS
+    async def close_ticket(ticket_id, by_user) -> SupportTicket      # любая сторона
+    async def reopen_if_within_window(ticket_id, by_user?) -> SupportTicket?
+    async def handle_incoming_message(chat, sender_id) -> None       # pre-send hook
+```
+
+Категории: `HOW_TO | BUG | OTHER`. `HOW_TO` → AI в участниках чата, очередь не
+уведомляется; `BUG/OTHER` → `ai_handoff_at` ставится сразу, очередь операторов
+уведомляется. Статусные переходы (take/close/reopen) пишут в
+`support_ticket_events` (audit) и шлют in-app уведомление — НЕ системные
+сообщения в чат. `_publish_ticket_update` шлёт `ticket_update` в Kafka
+`chat.events` для live-обновления через WS.
+
+---
+
+## SupportNotificationService
+
+**Файл:** `src/engine/services/support_notification_service.py`
+
+Фан-аут in-app уведомлений операторам поддержки.
+
+Тип уведомлений `support_*` не входит в allowlist `InAppNotificationService`,
+поэтому маршрутизация идёт через `type="system"` +
+`reference_type="support_ticket"` + `reference_id=ticket.id` (фронт разбирает
+по `reference_type`).
+
+```python
+class SupportNotificationService:
+    def __init__(self, in_app_notification_service, user_storage)
+    async def notify_new_in_queue(ticket)   # fan-out всем операторам RUGPT_SUPPORT_ORG_ID
+    async def notify_taken(ticket)           # → requester
+    async def notify_closed(ticket)          # → второй стороне (по closed_by_role)
+    async def notify_reopened(ticket)        # → очередь или assignee
+```
+
+---
+
+## InvoiceService
+
+**Файл:** `src/engine/services/invoice_service.py`
+
+Бизнес-логика счетов. Бинарь переиспользует `user_files`, RAG-summary оседает
+в `user_files.summary`; InvoiceService хранит структурные поля.
+
+```python
+class InvoiceService:
+    def __init__(self, invoice_storage: InvoiceStorage, file_service)
+    async def upload(org_id, uploader_user_id, filename, data, due_date) -> Invoice
+    # бинарь через FileService + явный index_for_rag (summary → user_files.summary)
+    async def approve(invoice_id, actor_user_id) -> Invoice          # created → approved
+    async def reject(invoice_id, actor_user_id, reason?) -> Invoice  # created → rejected
+    async def mark_processed(invoice_id, actor_user_id) -> Invoice   # approved → processed
+```
+
+Граф статусов: `created → approved | rejected`; `approved → processed`.
+
+---
+
+## MemoryService
+
+**Файл:** `src/engine/services/memory_service.py`
+
+Сжатие истории чата в memory-snapshot для длинных диалогов: старые сообщения
+суммируются LLM-агентом, snapshot инжектится в контекст вместо сырой истории.
+
+```python
+class MemoryService:
+    def __init__(self, agent_executor, chat_storage, message_storage,
+                 memory_snapshot_storage)
+    async def get_summary_for_chat(chat_id) -> Optional[str]   # snapshot по chat.mem_id
+    async def generate_summary(messages, previous_summary?) -> str   # LLM-суммаризация
+    async def check_resummary_needed(chat_id) -> bool         # ≥10 из 15 последних с текущим mem_id
+    async def update_summary(chat_id, history) -> None        # fire-and-forget, пишет snapshot + mem_id
+```
+
+`AgentExecutor` дёргает `get_summary_for_chat` + `check_resummary_needed` и
+запускает `update_summary` в фоне через `asyncio.create_task`.
 
 ---
 
@@ -785,54 +982,85 @@ Pipeline:
 
 ```
 EngineService (singleton)
-    +-- Storages:
-    |   +-- org_storage, user_storage, role_storage, chat_storage, message_storage
+    +-- Storages (~29):
+    |   +-- org_storage, user_storage, role_storage, role_subagent_storage
+    |   +-- chat_storage, message_storage, message_attachment_storage,
+    |   |   chat_read_state_storage
     |   +-- calendar_storage
-    |   +-- notification_channel_storage, notification_log_storage
-    |   +-- task_storage, task_poll_storage, task_report_storage
-    |   +-- in_app_notification_storage
-    |   +-- user_file_storage, correction_rule_storage, device_storage
-    |   +-- rag_store
-    |   +-- department_storage (item 8)
-    |   +-- project_storage, task_event_storage (item 11)
-    |   +-- agent_run_storage (item 10)
+    |   +-- notification_channel_storage, notification_log_storage,
+    |   |   in_app_notification_storage
+    |   +-- task_storage, task_participant_storage, task_poll_storage,
+    |   |   task_report_storage, task_event_storage (item 11)
+    |   +-- user_file_storage, user_file_folder_storage
+    |   +-- correction_rule_storage, device_storage
+    |   +-- department_storage (item 8), project_storage (item 11),
+    |   |   agent_run_storage (item 10)
+    |   +-- support_ticket_storage, support_ticket_event_storage
+    |   +-- memory_snapshot_storage, invoice_storage
+    |   +-- rag_store, nonce_store (Redis)
     |
-    +-- Agents & LLM:
+    +-- Agents:
     |   +-- storage_adapter (LocalStorageAdapter)
     |   +-- prompt_cache
-    |   +-- tool_registry (calendar, task, rag, web, role_call)
-    |   +-- agent_executor (llm, prompt_cache, tool_registry)
+    |   +-- action_registry (ActionRegistry → show_modal)
+    |   +-- tool_registry (19 tools)
+    |   +-- agent_executor (base_url, api_key, default_model, prompt_cache,
+    |   |                   tool_registry; memory_service + correction_rule_service
+    |   |                   проводятся сеттерами)
     |
     +-- Kafka (item 10):
     |   +-- kafka_producer (KafkaProducerService)
     |   +-- agent_request_consumer (KafkaConsumerLoop on agent.requests)
     |   +-- _agent_request_handler (AgentRequestHandler)
     |
+    +-- Security (Zero Trust):
+    |   +-- nonce_store (NonceStore: redis_url, ttl)
+    |   +-- signature_service (device_storage, nonce_store, timestamp_tolerance)
+    |
     +-- Services (order matters for DI):
     |   +-- calendar_service (calendar_storage)
+    |   +-- role_subagent_service (role_subagent_storage)
     |   +-- department_service (department_storage, user_storage)
-    |   +-- in_app_notification_service (in_app_notification_storage)
-    |   +-- chat_service (chat_storage, message_storage)
+    |   +-- in_app_notification_service (in_app_notification_storage, kafka_producer)
+    |   +-- support_notification_service (in_app_notification_service, user_storage)
+    |   +-- chat_service (chat_storage, message_storage, chat_read_state_storage,
+    |   |                 user_file_storage, message_attachment_storage)
+    |   +-- support_ticket_service (ticket/event/chat/message/user storages,
+    |   |                           notification_service, kafka_producer; ai_service сеттером)
     |   +-- task_event_service (task_event_storage)                    item 11
     |   +-- project_service (project_storage, chat_service)            item 11
-    |   +-- task_notification_service (chat_service, message_storage,  item 10
-    |   |                              user_storage, kafka_producer)
     |   +-- task_service (task_storage, in_app_notification_service,
-    |   |                 chat_service, task_event_service,
-    |   |                 project_service, task_notification_service)
-    |   +-- task_poll_service (task_poll_storage, task_service, in_app_notification_service)
-    |   +-- task_report_service (task_report_storage, task_poll_storage,
-    |   |                        user_storage, in_app_notification_service)
+    |   |                 chat_service, task_event_service, project_service,
+    |   |                 user_storage, task_participant_storage)
     |   +-- reference_service (task_storage, project_storage)          item 11
+    |   +-- task_poll_service (task_poll_storage, task_service, in_app_notification_service;
+    |   |                      chat_service/ai_service/user_storage сеттерами)
+    |   +-- task_report_service (task_report_storage, task_poll_service,
+    |   |                        in_app_notification_service, role_storage,
+    |   |                        task_storage, user_storage; agent_executor +
+    |   |                        chat/message_storage сеттерами)
+    |   +-- file_service (user_file_storage, storage_adapter, max_size, allowed_types)
+    |   +-- invoice_service (invoice_storage, file_service)
+    |   +-- rag_service (rag_store, embedding_model, llm_base_url, llm_api_key,
+    |   |                chunk_size, chunk_overlap, summary_input_max_tokens, file_storage)
+    |   +-- folder_service (user_file_folder_storage, user_file_storage,
+    |   |                   rag_service, storage_adapter)
+    |   +-- notification_service (channel_storage, log_storage; senders регистрируются)
+    |   +-- agent_executor → memory_service (agent_executor, chat_storage,
+    |   |                    message_storage, memory_snapshot_storage)
+    |   +-- scheduler_service (calendar_service, notification_service, agent_executor,
+    |   |                     role/user/org_storage, task_service, task_poll_service,
+    |   |                     task_report_service, ...; AI/chat/invoice deps сеттерами)
     |   +-- mention_service (user_storage)
-    |   +-- ai_service (role_storage, user_storage, chat_storage,
-    |   |               message_storage, prompt_cache, agent_executor,
-    |   |               agent_run_storage, kafka_producer)             item 10 async mode
-    |   +-- correction_rule_service (correction_rule_storage, agent_executor)
-    |   +-- file_service (user_file_storage, storage_adapter)
-    |   +-- rag_service (rag_store, user_file_storage)
-    |   +-- notification_service (channel_storage, log_storage, senders)
-    |   +-- scheduler_service (calendar, notifications, agent_executor, ...)
+    |   +-- ai_service (role/user/chat/message_storage, prompt_cache, agent_executor,
+    |   |               agent_run_storage, kafka_producer, support_ticket_storage,
+    |   |               support_ticket_event_storage, task_poll_storage, task_storage,
+    |   |               storage_adapter)                               item 10 async mode
+    |   +-- correction_rule_service (correction_rule_storage, message_storage,
+    |   |                            role_storage, user_storage, chat_service,
+    |   |                            memory_snapshot_storage, agent_executor,
+    |   |                            embedding_model, llm_base_url, llm_api_key,
+    |   |                            kafka_producer)
 ```
 
 ---

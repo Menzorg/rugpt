@@ -114,7 +114,7 @@ async def create_correction(
         ai_message_id = UUID(body.corrected_message_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid corrected_message_id")
-    user_id = UUID(current_user["user_id"])
+    user_id = current_user["user_id"]
     try:
         rule = await engine.correction_rule_service.reject_and_create_rule(
             ai_message_id=ai_message_id,

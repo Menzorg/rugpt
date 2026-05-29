@@ -40,6 +40,11 @@ class ActionRegistry:
             raise ValueError(f"action_type {definition.action_type!r} already registered")
         self._defs[definition.action_type] = definition
 
+    def reset(self) -> None:
+        """Drop all registered actions. Mirrors the EngineService lifecycle so a
+        re-initialize after close() can repopulate without duplicate-registration."""
+        self._defs.clear()
+
     def get(self, action_type: str) -> Optional[ActionDefinition]:
         return self._defs.get(action_type)
 

@@ -125,15 +125,37 @@ def get_engine() -> EngineService:
     return get_engine_service()
 
 
+async def _load_actor(engine: EngineService, current_user: dict):
+    """Загрузить актора (User) по проверенной личности из current_user."""
+    user = await engine.user_storage.get_by_id(current_user["user_id"])
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+
+def _require_chat_manager(chat, user) -> None:
+    """Authz-гейт уровня роута: управлять чатом/его составом может только
+    создатель чата либо админ той же организации. Проверка живёт в роуте, а не
+    в сервисе: сервисные методы (archive/add/remove) переиспользуются фоновыми
+    задачами (scheduler, Kafka) без пользовательского контекста.
+    """
+    if chat.created_by == user.id:
+        return
+    if user.is_admin and chat.org_id == user.org_id:
+        return
+    raise HTTPException(status_code=403, detail="Not allowed to manage this chat")
+
+
 # Endpoints
 
 @router.get("/my", response_model=List[ChatResponse])
 async def list_my_chats(
-    user_id: UUID,  # In real app, get from JWT
     type: Optional[str] = Query(None, description="direct | task | project"),
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine)
 ):
     """List current user's chats. Optional ?type filter."""
+    user_id = current_user["user_id"]
     if type is not None and type not in ("direct", "task", "project"):
         raise HTTPException(status_code=400, detail="Invalid chat type")
     chats = await engine.chat_service.list_user_chats(user_id, chat_type=type)
@@ -142,10 +164,11 @@ async def list_my_chats(
 
 @router.get("/unread-counts")
 async def get_unread_counts(
-    user_id: UUID = Query(..., description="In real app, get from JWT"),
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine),
 ):
     """Bulk: return {chat_id: count} for all chats of the user (count > 0 only)."""
+    user_id = current_user["user_id"]
     user = await engine.user_storage.get_by_id(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -158,11 +181,12 @@ async def get_unread_counts(
 @router.post("/direct", response_model=ChatResponse)
 async def create_direct_chat(
     request: CreateDirectChatRequest,
-    user_id: UUID,  # In real app, get from JWT
-    org_id: UUID,
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine)
 ):
     """Create direct chat with another user"""
+    user_id = current_user["user_id"]
+    org_id = current_user["org_id"]
     # Visibility check
     if not await engine.department_service.check_visible(
         user_id, request.other_user_id, org_id,
@@ -177,7 +201,7 @@ async def create_direct_chat(
 
 @router.get("/pending-review", response_model=List[MessageResponse])
 async def get_pending_review_messages(
-    user_id: UUID,  # In real app, get from JWT
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine),
 ):
     """Get AI messages pending review by user (ai_is_valid IS NULL).
@@ -185,14 +209,15 @@ async def get_pending_review_messages(
     NB: должен быть объявлен ДО `/{chat_id}` — иначе FastAPI сматчит
     'pending-review' как chat_id и упадёт на UUID-валидации (422).
     """
+    user_id = current_user["user_id"]
     messages = await engine.chat_service.get_pending_review_messages(user_id)
     return [MessageResponse(**msg.to_dict()) for msg in messages]
 
 
 @router.get("/reviewed", response_model=List[MessageResponse])
 async def get_reviewed_messages(
-    user_id: UUID,
     limit: int = 50,
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine),
 ):
     """Get AI messages already validated/rejected by user (ai_is_valid IS NOT NULL).
@@ -200,6 +225,7 @@ async def get_reviewed_messages(
     Парный к /pending-review для UI таба «Моя роль → Проверенные».
     Тоже должен быть ДО `/{chat_id}` (см. комментарий выше).
     """
+    user_id = current_user["user_id"]
     messages = await engine.chat_service.get_reviewed_messages(user_id, limit)
     return [MessageResponse(**msg.to_dict()) for msg in messages]
 
@@ -207,10 +233,11 @@ async def get_reviewed_messages(
 # Keep old endpoint for backward compatibility (та же причина с порядком).
 @router.get("/unvalidated", response_model=List[MessageResponse])
 async def get_unvalidated_messages(
-    user_id: UUID,
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine),
 ):
     """Deprecated: use /pending-review instead"""
+    user_id = current_user["user_id"]
     messages = await engine.chat_service.get_pending_review_messages(user_id)
     return [MessageResponse(**msg.to_dict()) for msg in messages]
 
@@ -218,12 +245,16 @@ async def get_unvalidated_messages(
 @router.get("/{chat_id}", response_model=ChatResponse)
 async def get_chat(
     chat_id: UUID,
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine)
 ):
     """Get chat by ID"""
     chat = await engine.chat_service.get_chat(chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
+    actor = await _load_actor(engine, current_user)
+    if not await engine.chat_service.can_user_access_chat(actor, chat):
+        raise HTTPException(status_code=403, detail="Not allowed to access this chat")
     return ChatResponse(**chat.to_dict())
 
 
@@ -231,11 +262,17 @@ async def get_chat(
 async def add_participant(
     chat_id: UUID,
     participant_id: UUID,
-    user_id: UUID,  # In real app, get from JWT
-    org_id: UUID,
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine)
 ):
     """Add participant to chat"""
+    user_id = current_user["user_id"]
+    org_id = current_user["org_id"]
+    chat = await engine.chat_service.get_chat(chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    actor = await _load_actor(engine, current_user)
+    _require_chat_manager(chat, actor)
     # Visibility check
     if not await engine.department_service.check_visible(
         user_id, participant_id, org_id,
@@ -252,9 +289,15 @@ async def add_participant(
 async def remove_participant(
     chat_id: UUID,
     participant_id: UUID,
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine)
 ):
     """Remove participant from chat"""
+    chat = await engine.chat_service.get_chat(chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    actor = await _load_actor(engine, current_user)
+    _require_chat_manager(chat, actor)
     success = await engine.chat_service.remove_participant(chat_id, participant_id)
     if not success:
         raise HTTPException(status_code=400, detail="Could not remove participant")
@@ -264,9 +307,15 @@ async def remove_participant(
 @router.delete("/{chat_id}")
 async def archive_chat(
     chat_id: UUID,
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine)
 ):
     """Archive chat"""
+    chat = await engine.chat_service.get_chat(chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    actor = await _load_actor(engine, current_user)
+    _require_chat_manager(chat, actor)
     success = await engine.chat_service.archive_chat(chat_id)
     if not success:
         raise HTTPException(status_code=400, detail="Could not archive chat")
@@ -298,13 +347,14 @@ async def _enrich_attachments_cloned_by_me(messages, user_id, engine):
 @router.get("/{chat_id}/messages", response_model=List[MessageResponse])
 async def list_messages(
     chat_id: UUID,
-    user_id: UUID,  # viewer — needed to compute per-viewer reference accessibility
     limit: int = 50,
     before_id: Optional[UUID] = None,
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine)
 ):
     """List messages in chat. Response includes a `references` field per message
     with per-viewer resolution of !<task_uuid> and !!<project_uuid>."""
+    user_id = current_user["user_id"]  # viewer — for per-viewer reference accessibility
     messages = await engine.chat_service.list_messages(chat_id, limit, before_id)
 
     actor = await engine.user_storage.get_by_id(user_id)
@@ -343,11 +393,12 @@ class SendMessageResponse(BaseModel):
 async def send_message(
     chat_id: UUID,
     request: SendMessageRequest,
-    user_id: UUID,  # In real app, get from JWT
-    org_id: UUID,
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine)
 ):
     """Send message to chat"""
+    user_id = current_user["user_id"]
+    org_id = current_user["org_id"]
     # Pre-send hook: support-ticket reopen-on-message + archived-ticket guard.
     # No-op for non-SUPPORT chats; raises HTTPException(403) for archived tickets.
     chat = await engine.chat_service.get_chat(chat_id)
@@ -452,10 +503,11 @@ async def send_message(
 async def mark_chat_read(
     chat_id: UUID,
     body: MarkReadRequest,
-    user_id: UUID = Query(..., description="In real app, get from JWT"),
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine),
 ):
     """Mark messages in chat as read up to and including message_id."""
+    user_id = current_user["user_id"]
     try:
         await engine.chat_service.mark_chat_read(
             chat_id=chat_id, user_id=user_id, message_id=body.message_id,
@@ -483,14 +535,15 @@ async def get_message(
 async def validate_message(
     message_id: UUID,
     request: ValidateMessageRequest,
-    user_id: UUID,
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine),
 ):
-    """Validate AI message. Identity берётся из подписанного payload
+    """Validate AI message. Identity берётся из device-подписанного current_user
     (Zero Trust: webclient SignatureGuard уже проверил подпись = ключ устройства
-    этого user_id), не из JWT. Allowed for admin OR owner of the role
+    этого user_id), не из голого JWT. Allowed for admin OR owner of the role
     (user_id == ai_message.sender_id).
     """
+    user_id = current_user["user_id"]
     target = await engine.chat_service.get_message(message_id)
     if not target:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -544,16 +597,17 @@ class CorrectionRuleResponse(BaseModel):
 async def reject_message(
     message_id: UUID,
     request: RejectMessageRequest,
-    user_id: UUID,
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine),
 ):
     """Reject AI message and create correction rule.
 
-    Identity берётся из подписанного payload (user_id query, прошедший проверку
-    SignatureGuard на webclient), не из JWT. Allowed for admin OR owner
+    Identity берётся из device-подписанного current_user (прошедшего проверку
+    SignatureGuard на webclient), не из голого JWT. Allowed for admin OR owner
     of the role (user_id == ai_message.sender_id) — владелец роли учит свою же
     роль через correction rules.
     """
+    user_id = current_user["user_id"]
     target = await engine.chat_service.get_message(message_id)
     if not target:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -594,7 +648,7 @@ def _is_mentioned(original, sender) -> bool:
 async def reply_to_mention(
     message_id: UUID,
     request: ReplyToMentionRequest,
-    user_id: UUID,
+    current_user: dict = Depends(get_current_user),
     engine: EngineService = Depends(get_engine),
 ):
     """Reply to a mentioning message without joining the chat as participant.
@@ -604,6 +658,7 @@ async def reply_to_mention(
 
     org_id не нужен — извлекается из sender.org_id при необходимости.
     """
+    user_id = current_user["user_id"]
     original = await engine.chat_service.get_message(message_id)
     if not original:
         raise HTTPException(status_code=404, detail="Message not found")

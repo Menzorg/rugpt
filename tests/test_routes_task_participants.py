@@ -94,14 +94,14 @@ async def test_post_participant_201_and_409_on_duplicate(setup):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             r1 = await c.post(
                 f"/api/v1/tasks/{task.id}/participants",
-                json={"user_id": str(setup["part"])},
+                json={"target_user_id": str(setup["part"])},
             )
             assert r1.status_code == 201, r1.text
             assert r1.json()["id"] == str(setup["part"])
 
             r2 = await c.post(
                 f"/api/v1/tasks/{task.id}/participants",
-                json={"user_id": str(setup["part"])},
+                json={"target_user_id": str(setup["part"])},
             )
             assert r2.status_code == 409, r2.text
     finally:

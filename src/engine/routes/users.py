@@ -184,9 +184,9 @@ async def create_user(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/{user_id}", response_model=UserResponse)
+@router.get("/{target_user_id}", response_model=UserResponse)
 async def get_user(
-    user_id: str,
+    target_user_id: str,
     current_user: dict = Depends(get_current_user)
 ):
     """Get user by ID"""
@@ -194,7 +194,7 @@ async def get_user(
     users_service = UsersService(engine.user_storage)
 
     try:
-        user_uuid = UUID(user_id)
+        user_uuid = UUID(target_user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
@@ -251,9 +251,9 @@ async def get_user_by_username(
 
     return UserResponse(**data)
 
-@router.patch("/{user_id}", response_model=UserResponse)
+@router.patch("/{target_user_id}", response_model=UserResponse)
 async def update_user(
-    user_id: str,
+    target_user_id: str,
     request: UpdateUserRequest,
     current_user: dict = Depends(get_current_user)
 ):
@@ -262,7 +262,7 @@ async def update_user(
     users_service = UsersService(engine.user_storage)
 
     try:
-        user_uuid = UUID(user_id)
+        user_uuid = UUID(target_user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
@@ -342,15 +342,15 @@ async def update_user(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/{user_id}/password")
+@router.post("/{target_user_id}/password")
 async def change_password(
-    user_id: str,
+    target_user_id: str,
     request: ChangePasswordRequest,
     current_user: dict = Depends(get_current_user)
 ):
     """Change user password (self only)"""
     try:
-        user_uuid = UUID(user_id)
+        user_uuid = UUID(target_user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
@@ -369,9 +369,9 @@ async def change_password(
     await users_service.change_password(user_uuid, request.new_password)
     return {"success": True, "message": "Password changed"}
 
-@router.post("/{user_id}/role")
+@router.post("/{target_user_id}/role")
 async def assign_role(
-    user_id: str,
+    target_user_id: str,
     request: AssignRoleRequest,
     current_user: dict = Depends(get_current_user)
 ):
@@ -384,7 +384,7 @@ async def assign_role(
         raise HTTPException(status_code=403, detail="Admin access required")
 
     try:
-        user_uuid = UUID(user_id)
+        user_uuid = UUID(target_user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
@@ -413,9 +413,9 @@ async def assign_role(
 
     return {"success": True, "message": "Role assigned" if role_id else "Role unassigned"}
 
-@router.delete("/{user_id}")
+@router.delete("/{target_user_id}")
 async def deactivate_user(
-    user_id: str,
+    target_user_id: str,
     current_user: dict = Depends(get_current_user)
 ):
     """Deactivate user (admin only)"""
@@ -427,7 +427,7 @@ async def deactivate_user(
         raise HTTPException(status_code=403, detail="Admin access required")
 
     try:
-        user_uuid = UUID(user_id)
+        user_uuid = UUID(target_user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 

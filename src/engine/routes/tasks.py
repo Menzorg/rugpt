@@ -30,7 +30,7 @@ class CreateTaskRequest(BaseModel):
     participant_user_ids: Optional[list[str]] = None
 
 class AddParticipantRequest(BaseModel):
-    user_id: str
+    target_user_id: str
 
 class UpdateTaskRequest(BaseModel):
     title: Optional[str] = None
@@ -679,7 +679,7 @@ async def add_participant(
     engine = get_engine_service()
     try:
         task_uuid = UUID(task_id)
-        user_uuid = UUID(request.user_id)
+        user_uuid = UUID(request.target_user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid id")
 
@@ -704,17 +704,17 @@ async def add_participant(
 
     return {"id": str(result["id"]), "name": result["name"]}
 
-@router.delete("/{task_id}/participants/{user_id}", status_code=204)
+@router.delete("/{task_id}/participants/{target_user_id}", status_code=204)
 async def remove_participant(
     task_id: str,
-    user_id: str,
+    target_user_id: str,
     current_user: dict = Depends(get_current_user),
 ):
     """Remove a participant. 204 on success. 404 if not present. 403 on perms."""
     engine = get_engine_service()
     try:
         task_uuid = UUID(task_id)
-        user_uuid = UUID(user_id)
+        user_uuid = UUID(target_user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid id")
 

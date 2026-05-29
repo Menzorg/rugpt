@@ -122,6 +122,12 @@ class EngineService:
         self.support_ticket_event_storage = SupportTicketEventStorage(self.postgres_dsn)
         self.memory_snapshot_storage = MemorySnapshotStorage(self.postgres_dsn)
         self.invoice_storage = InvoiceStorage(self.postgres_dsn)
+        from .nonce_store import NonceStore
+        self.nonce_store = NonceStore(Config.REDIS_URL, Config.NONCE_TTL_SECONDS)
+        from .signature_service import SignatureService
+        self.signature_service = SignatureService(
+            self.device_storage, self.nonce_store, Config.SIG_TIMESTAMP_TOLERANCE_SECONDS
+        )
 
         # Initialize prompt cache (prompts dir relative to project root)
         prompts_dir = str(Config.BASE_DIR / "src" / "engine" / "prompts")
@@ -480,6 +486,7 @@ class EngineService:
         await self.support_ticket_event_storage.init()
         await self.memory_snapshot_storage.init()
         await self.invoice_storage.init()
+        await self.nonce_store.init()
 
         await self.rag_store.init()
 
@@ -568,6 +575,7 @@ class EngineService:
         await self.support_ticket_event_storage.close()
         await self.memory_snapshot_storage.close()
         await self.invoice_storage.close()
+        await self.nonce_store.close()
         await self.rag_store.close()
         await self.scheduler_service.stop()
         await self.notification_service.close()
@@ -580,6 +588,12 @@ class EngineService:
             await self.kafka_producer.stop()
         except Exception as e:
             logger.error(f"Kafka producer failed to stop: {e}")
+
+        # Clear the action registry so a subsequent initialize() (e.g. test
+        # modules re-initializing the singleton on a fresh loop) can repopulate
+        # without "action_type already registered". In prod close() runs once at
+        # shutdown, so this is a harmless no-op there.
+        self.action_registry.reset()
 
         self._initialized = False
         logger.info("EngineService closed")
