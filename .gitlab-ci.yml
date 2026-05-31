@@ -1,0 +1,18 @@
+stages:
+  - deploy
+
+deploy-dev:
+  stage: deploy
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev"'
+  variables:
+    DEV_HOST: "192.168.1.85"
+    DEV_USER: "rugptdev"
+    DEV_PATH: "/home/rugptdev/rugpt"
+    GIT_DEPTH: "20"
+  script:
+    - chmod 600 "$DEV_SSH_KEY"
+    - SSHOPT="-i $DEV_SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    - rsync -az --exclude venv --exclude .git --exclude '*.log' --exclude .env --exclude __pycache__ --exclude uploads --exclude logs -e "ssh $SSHOPT" ./ "$DEV_USER@$DEV_HOST:$DEV_PATH/"
+    - rsync -az --delete -e "ssh $SSHOPT" ./src/engine/migrations/ "$DEV_USER@$DEV_HOST:$DEV_PATH/src/engine/migrations/"
+    - ssh $SSHOPT "$DEV_USER@$DEV_HOST" "cd $DEV_PATH && if [ -d venv ]; then venv/bin/pip install -q -r requirements.txt && ./local_restart.sh engine; else echo 'venv нет — сделай разовый bootstrap (.env, deps up, venv), потом повтори деплой'; fi"
