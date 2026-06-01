@@ -47,7 +47,12 @@ def _err(status: int, detail: str) -> JSONResponse:
 class WebSignatureMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+        logger.info("ZTDBG-in", operation="web_signature", path=path,
+                    method=request.method, ct=request.headers.get("content-type", ""),
+                    is_web=path.startswith(Config.WEB_PREFIX),
+                    allowed=_is_allowed(path), req_sig=_requires_signature(path))
         if not path.startswith(Config.WEB_PREFIX):
+            logger.info("ZTDBG-passthrough-nonweb", operation="web_signature", path=path)
             return await call_next(request)
 
         if not _is_allowed(path):
@@ -79,7 +84,12 @@ class WebSignatureMiddleware(BaseHTTPMiddleware):
                 except json.JSONDecodeError:
                     return _err(400, "Invalid JSON body")
 
+        logger.info("ZTDBG-body", operation="web_signature", path=path,
+                    method=method, body_len=len(body_bytes),
+                    keys=list(body_data.keys()), multipart=is_multipart)
+
         if not _requires_signature(path):
+            logger.info("ZTDBG-forward-nosig", operation="web_signature", path=path)
             return await self._forward(request, call_next, body_data, had_body=bool(body_bytes))
 
         if method == "GET":
