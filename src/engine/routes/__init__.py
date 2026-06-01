@@ -25,6 +25,7 @@ from .folders import router as folders_router
 from .actions import router as actions_router
 from .invoices import router as invoices_router
 from .connect import router as connect_router
+from .internal import router as internal_router
 
 __all__ = [
     'health_router',
@@ -49,4 +50,5 @@ __all__ = [
     'actions_router',
     'invoices_router',
     'connect_router',
+    'internal_router',
 ]
