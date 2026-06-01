@@ -3,17 +3,19 @@ Connect Route
 
 Zero Trust WebSocket handshake endpoint. The client signs POST /api/v1/connect
 with its device ECDSA key; the backend relays it under /api/v1/web/connect.
-WebSignatureMiddleware verifies the signature and sets request.state.zt_user_id,
-from which get_current_user derives the identity. This route returns the socket
-identity the client needs to open an authenticated WS connection.
+WebSignatureMiddleware verifies the signature and sets request.state.zt_user_id.
+This route reads that signature-verified identity DIRECTLY (no JWT): the device
+signature is the proof. It deliberately does NOT use get_current_user, which
+additionally requires a JWT Authorization header that the WS handshake (signature
+only) does not carry.
 """
 import logging
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 from typing import Optional
 
-from .auth import get_current_user
 from ..services.engine_service import get_engine_service, EngineService
 
 logger = logging.getLogger("rugpt.routes.connect")
@@ -36,12 +38,14 @@ class ConnectResponse(BaseModel):
 
 @router.post("/connect", response_model=ConnectResponse)
 async def connect(
-    current_user: dict = Depends(get_current_user),
+    request: Request,
     engine: EngineService = Depends(get_engine),
 ):
     """Return the socket identity for the signature-verified user (WS handshake)."""
-    user_id = current_user["user_id"]
-    user = await engine.user_storage.get_by_id(user_id)
+    zt_user_id = getattr(request.state, "zt_user_id", None)
+    if zt_user_id is None:
+        raise HTTPException(status_code=401, detail="Unsigned request")
+    user = await engine.user_storage.get_by_id(UUID(str(zt_user_id)))
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     return ConnectResponse(
