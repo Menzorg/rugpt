@@ -59,7 +59,7 @@ class Config:
         "/calendar", "/notifications", "/in-app-notifications",
         "/tasks", "/task-polls", "/task-reports", "/projects",
         "/files", "/folders", "/rag", "/departments", "/support",
-        "/corrections", "/actions", "/invoices", "/config", "/health",
+        "/corrections", "/actions", "/invoices", "/connect", "/config", "/health",
     ]
 
     # Роуты без проверки подписи (pre-auth / server-to-server).

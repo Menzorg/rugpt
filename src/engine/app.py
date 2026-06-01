@@ -44,6 +44,7 @@ from .routes import (
     folders_router,
     actions_router,
     invoices_router,
+    connect_router,
 )
 
 # Configure logging with correlation_id in every record
@@ -143,6 +144,7 @@ app.include_router(organizations_router, prefix="/api/v1", tags=["organizations"
 app.include_router(users_router, prefix="/api/v1", tags=["users"])
 app.include_router(roles_router, prefix="/api/v1", tags=["roles"])
 app.include_router(chats_router, tags=["chats"])
+app.include_router(connect_router, tags=["connect"])
 app.include_router(calendar_router, prefix="/api/v1", tags=["calendar"])
 app.include_router(notifications_router, prefix="/api/v1", tags=["notifications"])
 app.include_router(in_app_notifications_router, prefix="/api/v1", tags=["in-app-notifications"])
