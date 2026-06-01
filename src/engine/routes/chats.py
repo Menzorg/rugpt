@@ -446,6 +446,20 @@ async def send_message(
         file_ids=request.file_ids,
     )
 
+    # Publish to chat.events for real-time WS delivery via NestJS consumer.
+    # Same pattern as reply-to-mention / agent_handler — engine является
+    # единственным источником истины для broadcast'а пользовательского сообщения.
+    if engine.kafka_producer is not None:
+        try:
+            from ..config import Config
+            await engine.kafka_producer.send(
+                Config.KAFKA_TOPIC_CHAT_EVENTS,
+                {"chat_id": str(chat_id), "message": message.to_dict()},
+                key=str(chat_id),
+            )
+        except Exception as e:
+            logger.error(f"Failed to publish user message to Kafka: {e}")
+
     # In-app notifications для @user-упоминаний (без self-mention).
     # @@-mentions идут отдельным путём ниже через process_ai_mentions.
     sender = await engine.user_storage.get_by_id(user_id)
