@@ -530,6 +530,26 @@ async def mark_chat_read(
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+    # Publish to chat.events for multi-device sync via NestJS consumer.
+    # Старый WS-обработчик слал chat:unread-cleared в комнату user:{reader}
+    # (только свои вкладки/устройства, не другим участникам). Consumer
+    # ребродкастит то же по user_id читателя.
+    if engine.kafka_producer is not None:
+        try:
+            from ..config import Config
+            await engine.kafka_producer.send(
+                Config.KAFKA_TOPIC_CHAT_EVENTS,
+                {
+                    "kind": "unread_cleared",
+                    "user_id": str(user_id),
+                    "chat_id": str(chat_id),
+                },
+                key=str(chat_id),
+            )
+        except Exception as e:
+            logger.error(f"Failed to publish unread_cleared to Kafka: {e}")
+
     return None
 
 
@@ -576,6 +596,26 @@ async def validate_message(
     )
     if not message:
         raise HTTPException(status_code=404, detail="Message not found or not AI message")
+
+    # Publish to chat.events for real-time WS delivery via NestJS consumer.
+    # Same pattern as send_message — engine является единственным источником
+    # истины для broadcast'а. `kind` маршрутизирует событие в consumer'е
+    # (message:validated в комнату чата).
+    if engine.kafka_producer is not None:
+        try:
+            from ..config import Config
+            await engine.kafka_producer.send(
+                Config.KAFKA_TOPIC_CHAT_EVENTS,
+                {
+                    "kind": "message_validated",
+                    "chat_id": str(message.chat_id),
+                    "message": message.to_dict(),
+                },
+                key=str(message.chat_id),
+            )
+        except Exception as e:
+            logger.error(f"Failed to publish message_validated to Kafka: {e}")
+
     return MessageResponse(**message.to_dict())
 
 
@@ -640,6 +680,26 @@ async def reject_message(
         user_id=user_id,
         correction_text=request.correction_text,
     )
+
+    # Publish to chat.events for real-time WS delivery via NestJS consumer.
+    # chat_id берём из отклонённого сообщения; consumer ребродкастит
+    # message:rejected {messageId, rule} в комнату чата.
+    if engine.kafka_producer is not None:
+        try:
+            from ..config import Config
+            await engine.kafka_producer.send(
+                Config.KAFKA_TOPIC_CHAT_EVENTS,
+                {
+                    "kind": "message_rejected",
+                    "chat_id": str(target.chat_id),
+                    "message_id": str(message_id),
+                    "rule": rule.to_dict(),
+                },
+                key=str(target.chat_id),
+            )
+        except Exception as e:
+            logger.error(f"Failed to publish message_rejected to Kafka: {e}")
+
     return CorrectionRuleResponse(**rule.to_dict())
 
 
