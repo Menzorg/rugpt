@@ -10,17 +10,21 @@ from uuid import UUID
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 _DOC_SUMMARY_PROMPT: str = (_PROMPTS_DIR / "rag_doc_summary.md").read_text(encoding="utf-8")
 _TABLE_SUMMARY_PROMPT: str = (_PROMPTS_DIR / "rag_table_summary.md").read_text(encoding="utf-8")
+_IMAGE_SUMMARY_PROMPT: str = (_PROMPTS_DIR / "rag_image_summary.md").read_text(encoding="utf-8")
 
 from bs4 import BeautifulSoup
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from tika import parser
 
 from ..agents.metadata import build_initial_extra_body, resolve_litellm_session_id
 from ..config import Config
+from ..constants import IMAGE_TYPES
 from ..models.rag import ChunkRow, ChunkSearchResult, RelatedDoc
 from ..storage.rag_store import RAG_store
 from ..storage.user_file_storage import UserFileStorage
+from ..utils.image_parser import image_bytes_to_data_url
 
 logger = get_logger("services")
 _ABSTRACT_SEARCH_MIN_WORDS = 5
@@ -82,12 +86,21 @@ class RAGService:
             api_key=llm_api_key,
             timeout=180
         )
+        # TODO: Refactor. Use agentexecutor with invocation kind system for summaries
         self._summary_llm = ChatOpenAI(
             model=Config.RAG_SUMMARY_MODEL,
             base_url=llm_base_url,
             api_key=llm_api_key,
             temperature=0,
             max_tokens=4096
+        )
+        self._image_summary_llm = ChatOpenAI(
+            model=Config.IMAGE_ANALYSIS_MODEL,
+            base_url=llm_base_url,
+            api_key=llm_api_key,
+            temperature=0,
+            max_tokens=4096,
+            timeout=120,
         )
         self._splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
@@ -219,6 +232,19 @@ class RAGService:
             raise ValueError("LLM returned empty summary.")
         return summary
 
+    async def _generate_image_summary(self, data: bytes, file_type: str) -> str:
+        data_url = image_bytes_to_data_url(data, file_type=file_type)
+        result = await self._image_summary_llm.ainvoke([
+            HumanMessage(content=[
+                {"type": "text", "text": _IMAGE_SUMMARY_PROMPT.strip()},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ])
+        ])
+        summary = str(result.content).strip()
+        if not summary:
+            raise ValueError("LLM returned empty image summary.")
+        return summary
+
     async def set_status(self, file_id: UUID, status: str):
         if file_id and self._file_storage:
             await self._file_storage.change_rag_status(file_id, status)
@@ -231,6 +257,7 @@ class RAGService:
         filename: str | None,
         data: bytes,
         file_id: UUID | None = None,
+        is_invoice: bool = False,
     ) -> dict[str, str | int | bool]:
         """
         Проиндексировать файл в RAG-хранилище.
@@ -264,17 +291,46 @@ class RAGService:
 
         # is_table is owned by FileService at upload time; we just read it from DB.
         is_table = False
+        file_record = None
         if self._file_storage:
             file_record = await self._file_storage.get_by_id(file_id)
             if file_record:
                 is_table = file_record.is_table
-        logger.info(f"[{fid}] is_table={is_table}")
+        is_image = bool(file_record and file_record.file_type in IMAGE_TYPES)
+        logger.info(f"[{fid}] is_table={is_table} is_image={is_image}")
 
         # Single try/except wraps all pipeline stages.
         # `stage` is updated before each step so the except block
         # can report exactly where the failure occurred.
         stage = "init"
         try:
+            if is_image:
+                if is_invoice:
+                    stage = "image_summary"
+                    logger.info(f"[{fid}] stage={stage}")
+                    summary = await self._generate_image_summary(data, file_record.file_type)
+                    logger.info(f"[{fid}] image summary generated ({len(summary)} chars)")
+
+                    stage = "summary_embedding"
+                    logger.info(f"[{fid}] stage={stage}")
+                    summary_embedding = self._embed_query(summary)
+
+                    stage = "db_write"
+                    logger.info(f"[{fid}] stage={stage}")
+                    await self._store.update_user_file_summary(
+                        file_id=str(file_id),
+                        summary=summary,
+                        summary_embedding=summary_embedding,
+                    )
+                    # Per design: image invoices get a summary but are NOT marked indexed.
+                    await self.set_status(file_id, "not_indexed")
+                    logger.info(f"[{fid}] ingest completed (image invoice) — summarized")
+                    return {"file_id": fid, "image": True, "summarized": True}
+                # Non-invoice image: no LLM call, leave it un-indexed.
+                await self.set_status(file_id, "not_indexed")
+                logger.info(f"[{fid}] skipping image (not an invoice) — no summary generated")
+                return {"file_id": fid, "image": True, "summarized": False}
+
             if is_table:
                 stage = "table_parsing"
                 logger.info(f"[{fid}] stage={stage}")
@@ -370,6 +426,7 @@ class RAGService:
         filename: str | None,
         data: bytes,
         file_id: UUID | None = None,
+        is_invoice: bool = False,
         max_retries: int = 3,
     ) -> dict[str, str | int | bool]:
         """
@@ -391,6 +448,7 @@ class RAGService:
                     filename=filename,
                     data=data,
                     file_id=file_id,
+                    is_invoice=is_invoice,
                 )
             except Exception as exc:
                 last_exc = exc

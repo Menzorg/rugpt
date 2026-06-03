@@ -13,7 +13,13 @@ from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
 
 from src.engine.agents.runtime import RuntimeContext
+from src.engine.config import Config
+from src.engine.constants import IMAGE_TYPES
+from src.engine.utils.image_parser import image_bytes_to_data_url
 from src.engine.utils.token_counter import count_tokens
+from src.engine.unified_logger import get_logger
+
+logger = get_logger("agents")
 
 
 class GetInvoiceInput(BaseModel):
@@ -25,7 +31,7 @@ def create_get_invoice_tool(engine):
         invoice_id: str,
         config: RunnableConfig,
         runtime: ToolRuntime[RuntimeContext],
-    ) -> str:
+    ):
         cfg = (config or {}).get("configurable", {}) or {}
         caller_raw = cfg.get("caller_user_id")
         async def _count_and_return(s: str) -> str:
@@ -65,17 +71,43 @@ def create_get_invoice_tool(engine):
         lines = [
             f"id: {inv.id}",
             f"file: {f.original_filename if f else inv.file_id}",
+            f"file_id: {inv.file_id}",
             f"status: {inv.status.value}",
             f"due_date: {inv.due_date or '—'}",
             f"uploader: {uploader.name if uploader else inv.uploaded_by_user_id}",
         ]
+        if f and f.is_table:
+            lines.append("is_table: true")
         if f and f.summary:
             lines.append(f"summary: {f.summary}")
         if inv.status.value == "rejected" and inv.rejection_reason:
             lines.append(f"rejection_reason: {inv.rejection_reason}")
         result = "\n".join(lines)
 
-        return await _count_and_return(result)
+        # Experiment: attach the invoice image for the vision LLM to read.
+        # TODO: remove the image-vs-text content distinction below (gated by
+        # Config.INVOICE_CLERK_IMAGE_TO_LLM) once the image-to-LLM path has been
+        # tested thoroughly, and always return the image content for images.
+        is_image = bool(f and (f.file_type or "").lower() in IMAGE_TYPES)
+        if is_image and Config.INVOICE_CLERK_IMAGE_TO_LLM:
+            try:
+                data = await engine.storage_adapter.read(f.storage_key)
+                data_url = image_bytes_to_data_url(data, file_type=(f.file_type or "").lower())
+                content = [
+                    {"type": "text", "text": result},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ]
+            except Exception as exc:
+                # Fall back to text-only if the image can't be read/encoded.
+                logger.warning("get_invoice: failed to attach image for invoice %s: %s", inv.id, exc)
+                content = result
+        else:
+            content = result
+
+        # Token accounting always uses the text portion only; the returned
+        # content may be a plain string or a multimodal list.
+        await _count_and_return(result)
+        return content
 
     return StructuredTool.from_function(
         coroutine=_get,
