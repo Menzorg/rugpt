@@ -48,7 +48,7 @@ class InvoiceService:
         # Best-effort RAG-ingest enqueue. Skipping on error so a transient
         # ingestion failure doesn't block invoice creation.
         try:
-            await self._file_service.index_for_rag(uf.id, uploader_user_id)
+            await self._file_service.index_for_rag(uf.id, uploader_user_id, is_invoice=True)
         except Exception as exc:
             logger.warning(
                 "invoice upload: index_for_rag failed for file=%s: %s — invoice still created with empty summary",
