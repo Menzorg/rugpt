@@ -112,6 +112,10 @@ class Config:
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "google/gemma-4-31B-it")
     IMAGE_ANALYSIS_MODEL = os.getenv("IMAGE_ANALYSIS_MODEL", DEFAULT_MODEL)
 
+    # Experiment: when true, get_invoice returns the invoice image to the vision
+    # LLM (multimodal). Off by default.
+    INVOICE_CLERK_IMAGE_TO_LLM = os.getenv("INVOICE_CLERK_IMAGE_TO_LLM", "false").lower() == "true"
+
     # Legacy OpenAI fields kept as aliases — some older code paths may still
     # read them, but new code should use LLM_* above.
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", LLM_API_KEY)
