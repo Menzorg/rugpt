@@ -84,12 +84,8 @@ def create_get_invoice_tool(engine):
             lines.append(f"rejection_reason: {inv.rejection_reason}")
         result = "\n".join(lines)
 
-        # Experiment: attach the invoice image for the vision LLM to read.
-        # TODO: remove the image-vs-text content distinction below (gated by
-        # Config.INVOICE_CLERK_IMAGE_TO_LLM) once the image-to-LLM path has been
-        # tested thoroughly, and always return the image content for images.
         is_image = bool(f and (f.file_type or "").lower() in IMAGE_TYPES)
-        if is_image and Config.INVOICE_CLERK_IMAGE_TO_LLM:
+        if is_image:
             try:
                 data = await engine.storage_adapter.read(f.storage_key)
                 data_url = image_bytes_to_data_url(data, file_type=(f.file_type or "").lower())
