@@ -15,6 +15,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
 
 from src.engine.agents.runtime import RuntimeContext
+from src.engine.constants import IMAGE_TYPES
 from src.engine.models.invoice import Invoice
 from src.engine.models.user_file import UserFile
 from src.engine.utils.token_counter import count_tokens
@@ -132,10 +133,12 @@ def _format_invoice_page(
         remaining = budget_result.remaining_tokens
         tokens_spent += budget_result.tokens_spent
         filename = file.original_filename if file else str(inv.file_id)
+        is_image = bool(file and (file.file_type or "").lower() in IMAGE_TYPES)
         lines.append(
             f"- id={inv.id} | file={filename} | "
             f"status={inv.status.value} | due={inv.due_date or '-'} | "
             f"uploader={users_by_id.get(inv.uploaded_by_user_id, str(inv.uploaded_by_user_id))} | "
+            f"is_image={'true' if is_image else 'false'} | "
             f"{budget_result.summary_part}"
         )
 

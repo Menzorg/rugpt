@@ -28,6 +28,9 @@ class ChatOpenAI(_ChatOpenAI):
     ) -> dict:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         for msg in payload.get("messages", []):
+            # LLM starts talking bullshit to user when it adds internal content along with tool calls.
+            if msg.get("tool_calls") and msg.get("content"):
+                msg["content"] = ""
             if msg.get("content") is None:
                 msg["content"] = ""
         return payload
