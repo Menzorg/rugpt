@@ -89,6 +89,7 @@ def create_get_invoice_tool(engine):
         # to work at the vLLM level, so we no longer return the binary.
         return await _count_and_return(result)
 
+
     return StructuredTool.from_function(
         coroutine=_get,
         name="get_invoice",
