@@ -15,7 +15,6 @@ from langgraph.prebuilt import ToolRuntime
 from src.engine.agents.runtime import RuntimeContext
 from src.engine.config import Config
 from src.engine.constants import IMAGE_TYPES
-from src.engine.utils.image_parser import image_bytes_to_data_url
 from src.engine.utils.token_counter import count_tokens
 from src.engine.unified_logger import get_logger
 
@@ -76,6 +75,8 @@ def create_get_invoice_tool(engine):
             f"due_date: {inv.due_date or '—'}",
             f"uploader: {uploader.name if uploader else inv.uploaded_by_user_id}",
         ]
+        is_image = bool(f and (f.file_type or "").lower() in IMAGE_TYPES)
+        lines.append(f"is_image: {'true' if is_image else 'false'}")
         if f and f.is_table:
             lines.append("is_table: true")
         if f and f.summary:
@@ -84,26 +85,10 @@ def create_get_invoice_tool(engine):
             lines.append(f"rejection_reason: {inv.rejection_reason}")
         result = "\n".join(lines)
 
-        is_image = bool(f and (f.file_type or "").lower() in IMAGE_TYPES)
-        if is_image:
-            try:
-                data = await engine.storage_adapter.read(f.storage_key)
-                data_url = image_bytes_to_data_url(data, file_type=(f.file_type or "").lower())
-                content = [
-                    {"type": "text", "text": result},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ]
-            except Exception as exc:
-                # Fall back to text-only if the image can't be read/encoded.
-                logger.warning("get_invoice: failed to attach image for invoice %s: %s", inv.id, exc)
-                content = result
-        else:
-            content = result
+        # Text-only: attaching the invoice image via a tool message proved not
+        # to work at the vLLM level, so we no longer return the binary.
+        return await _count_and_return(result)
 
-        # Token accounting always uses the text portion only; the returned
-        # content may be a plain string or a multimodal list.
-        await _count_and_return(result)
-        return content
 
     return StructuredTool.from_function(
         coroutine=_get,

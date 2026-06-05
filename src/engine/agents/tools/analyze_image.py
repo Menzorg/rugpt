@@ -25,6 +25,14 @@ _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 class AnalyzeImageInput(BaseModel):
     query: str = Field(description="Question or instruction for analyzing the image")
     file_id: str = Field(description="UUID of the uploaded image file")
+    accent_proposal: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional. Specify what exactly to extract or focus on in the image "
+            "(e.g. 'Every single row in table verbatim', 'count of people on image'). "
+            "Use this to narrow the analysis to the details you care about."
+        ),
+    )
 
 def create_analyze_image_tool(
     file_storage: UserFileStorage,
@@ -57,18 +65,30 @@ def create_analyze_image_tool(
             },
         }
 
-    async def _analyze_image_async(query: str, file_id: str) -> str:
+    async def _analyze_image_async(
+        query: str, file_id: str, accent_proposal: Optional[str] = None
+    ) -> str:
         """Analyze an uploaded image with an LLM.
 
         Args:
             query: Question or instruction for the image.
             file_id: UUID of an uploaded image file.
+            accent_proposal: Optional focus on what specifically to extract.
         """
-        logger.info("tool analyze_image: file_id=%s query=%r", file_id, query)
+        logger.info(
+            "tool analyze_image: file_id=%s query=%r accent_proposal=%r",
+            file_id,
+            query,
+            accent_proposal,
+        )
         try:
             media_payload = await _read_image_payload(file_id)
             if isinstance(media_payload, str):
                 return media_payload
+
+            prompt = query
+            if accent_proposal:
+                prompt = f"{query}\n\nFocus specifically on: {accent_proposal}"
 
             llm = ChatOpenAI(
                 base_url=Config.LLM_BASE_URL,
@@ -79,7 +99,7 @@ def create_analyze_image_tool(
             )
             result = await llm.ainvoke([
                 HumanMessage(content=[
-                    {"type": "text", "text": query},
+                    {"type": "text", "text": prompt},
                     media_payload,
                 ])
             ])
