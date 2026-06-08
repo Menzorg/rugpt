@@ -163,6 +163,84 @@ class AgentExecutor:
                         lines += [f"  ID проекта: {project.id}", f"  Название: {project.name}"]
                         if project.description:
                             lines.append(f"  Описание: {project.description}")
+            case ChatType.SUPPORT:
+                if chat.support_ticket_id:
+                    ticket = await engine.support_ticket_storage.get_by_id(chat.support_ticket_id)
+                    if ticket:
+                        def _format_dt(value: Any) -> str:
+                            return value.isoformat() if value else "нет"
+
+                        def _format_optional(value: Any) -> str:
+                            return str(value) if value else "нет"
+
+                        lines += [
+                            f"  ID тикета: {ticket.id}",
+                            f"  Заголовок: {_format_optional(ticket.title)}",
+                            f"  Категория: {ticket.category.value}",
+                            f"  Статус: {ticket.status.value}",
+                            f"  ID заявителя: {ticket.requester_user_id}",
+                            f"  ID организации заявителя: {ticket.requester_org_id}",
+                            f"  ID оператора: {_format_optional(ticket.assignee_user_id)}",
+                            f"  Первый ответ AI: {_format_dt(ticket.ai_first_response_at)}",
+                            f"  Передано оператору: {_format_dt(ticket.ai_handoff_at)}",
+                            f"  Закрыто: {_format_dt(ticket.closed_at)}",
+                            f"  Закрыл пользователь: {_format_optional(ticket.closed_by_user_id)}",
+                            f"  Закрыто ролью: {_format_optional(ticket.closed_by_role.value if ticket.closed_by_role else None)}",
+                            f"  Создано: {ticket.created_at.isoformat()}",
+                            f"  Обновлено: {ticket.updated_at.isoformat()}",
+                        ]
+
+                        requester = await engine.user_storage.get_by_id(ticket.requester_user_id)
+                        if requester:
+                            requester_details = f"{requester.name} (@{requester.username}, id: {requester.id})"
+                            if requester.email:
+                                requester_details += f", email: {requester.email}"
+                            lines.append(f"  Заявитель: {requester_details}")
+
+                        requester_org = await engine.org_storage.get_by_id(ticket.requester_org_id)
+                        if requester_org:
+                            lines.append(f"  Организация заявителя: {requester_org.name} (ID: {requester_org.id})")
+
+                        if ticket.assignee_user_id:
+                            assignee = await engine.user_storage.get_by_id(ticket.assignee_user_id)
+                            if assignee:
+                                assignee_details = f"{assignee.name} (@{assignee.username}, id: {assignee.id})"
+                                if assignee.email:
+                                    assignee_details += f", email: {assignee.email}"
+                                lines.append(f"  Оператор: {assignee_details}")
+                            else:
+                                lines.append("  Оператор: не найден")
+                        else:
+                            lines.append("  Оператор: не назначен")
+                    else:
+                        lines.append(f"  ID тикета: {chat.support_ticket_id} (тикет не найден)")
+                else:
+                    lines.append("  ID тикета: не указан")
+            case ChatType.POLL:
+                if chat.poll_id:
+                    poll :TaskPoll = await engine.task_poll_storage.get_by_id(chat.poll_id)
+                    if poll:
+                        lines += [
+                            f"  ID опроса: {poll.id}",
+                            f"  Дата опроса: {poll.poll_date.isoformat()}",
+                            f"  Статус: {poll.status}",
+                            f"  Создано: {poll.created_at.isoformat()}",
+                        ]
+                        if poll.expires_at:
+                            lines.append(f"  Истекает: {poll.expires_at.isoformat()}")
+                        if poll.completed_at:
+                            lines.append(f"  Завершено: {poll.completed_at.isoformat()}")
+                        if poll.summary:
+                            lines.append(f"  Сводка: {poll.summary}")
+                            
+                        if poll.task_ids:
+                            tasks: Dict[UUID, Task] = await engine.task_storage.get_many_by_ids(poll.task_ids)
+                            for _, task in tasks.items():
+                                lines.append(f"  Задача: {task.title} Описание: {task.description} Статус: {task.status} Дедлайн: {task.deadline.isoformat() if task.deadline else 'нет'}")
+                    else:
+                        lines.append(f"  ID опроса: {chat.poll_id} (опрос не найден)")
+                else:
+                    lines.append("  ID опроса: не указан")
         chat_type_block = "\n".join(lines)
 
         # --- Participants block ---
