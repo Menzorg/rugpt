@@ -251,7 +251,7 @@ class AgentExecutor:
                 if user is None:
                     continue
                 dept = f", отдел: {user.department_name}" if user.department_name else ""
-                participant_lines.append(f"  - {user.name} (code: {user.code}, id: {user.id}{dept})")
+                participant_lines.append(f"  - {user.name} (code: {user.username}, id: {user.id}{dept})")
             if len(participant_lines) > 1:
                 participants_block = "\n".join(participant_lines)
 
