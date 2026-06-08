@@ -204,34 +204,11 @@ class AIService:
             if u and u.is_system:
                 system_users.append(u)
 
-        # Add active_agent if set and not already in the list
-        last_active_user = None
-        if chat.active_agent is not None:
-            last_active_user = next((u for u in system_users if u.id == chat.active_agent), None)
-            if last_active_user is None:
-                fetched = await self.user_storage.get_by_id(chat.active_agent)
-                if fetched and fetched.id != sender_id:
-                    system_users.append(fetched)
-                    last_active_user = fetched
-
         if not system_users:
             return None
 
-        # Determine responder: route if multiple candidates, otherwise use the only one.
-        # default_user is the primary system user (first in participants list).
-        # last_active_user hints the router about the previously active agent.
-        primary_responder = system_users[0]
-        if len(system_users) > 1 and self.agent_executor is not None:
-            responder = await self.agent_executor.route(
-                await self._build_conversation(message),
-                system_users,
-                sender_id,
-                default_responder=primary_responder,
-                last_active_responder=last_active_user,
-            )
-        else:
-            responder = primary_responder
-        await self.chat_storage.set_active_agent(chat_id, responder.id)
+        responder = system_users[0]
+        
         invocation_kind_override = (
             "mention" if responder.id not in chat.participants else None
         )
