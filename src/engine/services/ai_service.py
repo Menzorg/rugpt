@@ -505,7 +505,7 @@ class AIService:
             return None
         return result, metadata
 
-    async def _resolve_agent_name(self, sender_id: UUID) -> str:
+    async def _resolve_user_name(self, sender_id: UUID) -> str:
         """Resolve username marker for an AI message sender."""
         user = await self.user_storage.get_by_id(sender_id)
         if user and user.username:
@@ -535,10 +535,10 @@ class AIService:
                 continue
             role_name = "assistant" if msg.sender_type == SenderType.AI_ROLE else "user"
             content = self._with_attachment_ids(msg)
-            if role_name == "assistant":
-                if msg.sender_id not in agent_name_cache:
-                    agent_name_cache[msg.sender_id] = await self._resolve_agent_name(msg.sender_id)
-                content = self._wrap_agent_content(agent_name_cache[msg.sender_id], content)
+        
+            if msg.sender_id not in agent_name_cache:
+                agent_name_cache[msg.sender_id] = await self._resolve_user_name(msg.sender_id)
+            content = self._wrap_agent_content(agent_name_cache[msg.sender_id], content)
             messages.append({"role": role_name, "content": content})
 
         # Current message
