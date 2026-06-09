@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from src.engine.unified_logger import get_logger
 import re
+from datetime import datetime
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -513,8 +514,9 @@ class AIService:
         return str(sender_id)
 
     @staticmethod
-    def _wrap_agent_content(agent_name: str, content: str) -> str:
-        return f"<name>{agent_name}</name><content>{content}</content>"
+    def _wrap_agent_content(agent_name: str, content: str, created_at: Optional[datetime] = None) -> str:
+        time_tag = f"<time>{created_at.isoformat()}</time>" if created_at is not None else ""
+        return f"{time_tag}<name>{agent_name}</name><content>{content}</content>"
 
     async def _build_conversation(
         self,
@@ -538,7 +540,7 @@ class AIService:
         
             if msg.sender_id not in agent_name_cache:
                 agent_name_cache[msg.sender_id] = await self._resolve_user_name(msg.sender_id)
-            content = self._wrap_agent_content(agent_name_cache[msg.sender_id], content)
+            content = self._wrap_agent_content(agent_name_cache[msg.sender_id], content, msg.created_at)
             messages.append({"role": role_name, "content": content})
 
         # Current message
@@ -547,7 +549,7 @@ class AIService:
             content = self._strip_mention(content, strip_username)
         content = self._with_attachment_ids(message, content)
         content = await self._with_image_attachments(message, content)
-        messages.append({"role": "user", "content": content})
+        messages.append({"role": "user", "content": self._wrap_agent_content("", content, message.created_at)})
 
         return messages
 
