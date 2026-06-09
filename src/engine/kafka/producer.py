@@ -4,9 +4,6 @@ Kafka producer service (item 10 / async agent execution).
 Wraps aiokafka AIOKafkaProducer with JSON serialization and idempotent
 producer semantics (exactly-once per partition). Single instance lives
 on EngineService.
-
-If Config.KAFKA_ENABLED is false, send() becomes a no-op so tests and
-environments without Kafka keep working.
 """
 import json
 
@@ -31,15 +28,11 @@ def _json_default(o: Any) -> Any:
     raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
 class KafkaProducerService:
-    def __init__(self, bootstrap_servers: Optional[str] = None, enabled: Optional[bool] = None):
+    def __init__(self, bootstrap_servers: Optional[str] = None):
         self.bootstrap_servers = bootstrap_servers or Config.KAFKA_BOOTSTRAP_SERVERS
-        self.enabled = Config.KAFKA_ENABLED if enabled is None else enabled
         self._producer = None
 
     async def start(self) -> None:
-        if not self.enabled:
-            logger.info("Kafka producer disabled (Config.KAFKA_ENABLED=false)")
-            return
         if self._producer is not None:
             return
         # Lazy import so test envs without aiokafka don't fail on import.
@@ -61,13 +54,13 @@ class KafkaProducerService:
             logger.info("Kafka producer stopped")
 
     async def send(self, topic: str, value: dict, key: Optional[str] = None) -> None:
-        """Send a JSON-serializable value to a topic. No-op when disabled.
+        """Send a JSON-serializable value to a topic.
 
         Injects the current correlation_id into the payload under
         `_correlation_id` so the downstream consumer can rebind it and keep
         the trace coherent across the async boundary.
         """
-        if not self.enabled or self._producer is None:
+        if self._producer is None:
             return
         if _CORRELATION_FIELD not in value:
             value = {**value, _CORRELATION_FIELD: get_correlation_id()}

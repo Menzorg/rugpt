@@ -44,16 +44,6 @@ def make_ai_service(async_mode: bool = True) -> AIService:
     return svc
 
 
-def test_is_async_mode_true_when_wired():
-    svc = make_ai_service(async_mode=True)
-    assert svc._is_async_mode() is True
-
-
-def test_is_async_mode_false_without_producer():
-    svc = make_ai_service(async_mode=False)
-    assert svc._is_async_mode() is False
-
-
 def test_process_ai_mentions_async_enqueues():
     async def go():
         svc = make_ai_service(async_mode=True)
@@ -176,75 +166,6 @@ def test_try_auto_respond_async_enqueues_mention_override_for_out_of_chat_agent(
         call = svc.kafka_producer.send.call_args
         assert call.args[1]["responder_id"] == str(active_agent_id)
         assert call.args[1]["invocation_kind_override"] == "mention"
-
-    asyncio.run(go())
-
-
-def test_try_auto_respond_sync_passes_mention_override_for_out_of_chat_agent():
-    async def go():
-        svc = make_ai_service(async_mode=False)
-        sender = uuid4()
-        active_agent_id = uuid4()
-
-        chat = Chat(
-            org_id=uuid4(),
-            type=ChatType.DIRECT,
-            participants=[sender],
-            active_agent=active_agent_id,
-        )
-        svc.chat_storage.get_by_id = AsyncMock(return_value=chat)
-
-        async def fake_get_user(uid):
-            user = MagicMock()
-            user.id = uid
-            user.is_system = uid == active_agent_id
-            return user
-
-        svc.user_storage.get_by_id = AsyncMock(side_effect=fake_get_user)
-        svc.generate_response = AsyncMock(return_value=make_message(chat_id=chat.id))
-
-        msg = make_message(chat_id=chat.id, sender_id=sender)
-        await svc.try_auto_respond(msg, chat.id, sender)
-
-        svc.generate_response.assert_called_once_with(
-            message=msg,
-            responder_id=active_agent_id,
-            invocation_kind_override="mention",
-        )
-
-    asyncio.run(go())
-
-
-def test_try_auto_respond_sync_keeps_participant_agent_direct():
-    async def go():
-        svc = make_ai_service(async_mode=False)
-        sender = uuid4()
-        system_user_id = uuid4()
-
-        chat = Chat(
-            org_id=uuid4(),
-            type=ChatType.DIRECT,
-            participants=[sender, system_user_id],
-        )
-        svc.chat_storage.get_by_id = AsyncMock(return_value=chat)
-
-        async def fake_get_user(uid):
-            user = MagicMock()
-            user.id = uid
-            user.is_system = uid == system_user_id
-            return user
-
-        svc.user_storage.get_by_id = AsyncMock(side_effect=fake_get_user)
-        svc.generate_response = AsyncMock(return_value=make_message(chat_id=chat.id))
-
-        msg = make_message(chat_id=chat.id, sender_id=sender)
-        await svc.try_auto_respond(msg, chat.id, sender)
-
-        svc.generate_response.assert_called_once_with(
-            message=msg,
-            responder_id=system_user_id,
-            invocation_kind_override=None,
-        )
 
     asyncio.run(go())
 

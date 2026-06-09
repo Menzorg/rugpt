@@ -525,9 +525,9 @@ corrections, actions, invoices
 3. Engine: MentionService парсит @@ -> находит роль lawyer
 4. Engine: сохраняет сообщение пользователя в PostgreSQL
 5. Engine: находит User c role_id -> Role(lawyer), читает agent_type
-6. AIService: при KAFKA_ENABLED создаёт agent_runs(pending) и публикует
-   в 'agent.requests', возвращает agent_pending=true мгновенно (HTTP не ждёт
-   инференс). При выключенном Kafka — синхронно в HTTP-цикле.
+6. AIService: создаёт agent_runs(pending) и публикует в 'agent.requests',
+   возвращает agent_pending=true мгновенно (HTTP не ждёт инференс). Это
+   единственный путь — Kafka обязательна.
 7. AgentExecutor выбирает граф по agent_type:
    - simple: при наличии tools -> ReAct agent (langchain.agents.create_agent);
              без tools -> прямой вызов ChatOpenAI (LiteLLM)
@@ -640,9 +640,10 @@ KafkaConsumerLoop('agent.requests') -> AgentRequestHandler:
 **Broadcast pattern в NestJS** — каждый инстанс в своей consumer group
 (`webclient-<hostname>-<pid>`), все инстансы получают все события.
 
-**Fallback без Kafka.** `Config.KAFKA_ENABLED=false` → `KafkaProducerService` и
-consumer становятся no-op: bell-сообщения видны после F5, агентные вызовы
-синхронны в HTTP-цикле. Для тестов без брокера и graceful degradation.
+**Kafka обязательна.** Синхронного fallback'а нет — агентные вызовы всегда
+идут через `agent.requests`. Если брокер недоступен на старте, `KafkaProducerService.start()`
+бросает исключение и Engine не поднимается (fail-fast). Тесты используют
+мок-продюсер.
 
 **Инфраструктура:** `docker-compose.kafka.yml` (Apache Kafka 3.7, KRaft,
 single-node), скрипты `scripts/kafka_up.sh|down.sh|init.sh`.
