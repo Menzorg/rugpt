@@ -5,8 +5,10 @@ Main router: dispatches execution to the right graph based on role.agent_type.
 """
 import asyncio
 
+from src.engine.models.task import Task
+from src.engine.models.task_poll import TaskPoll
 from src.engine.unified_logger import get_logger
-from typing import Any, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from uuid import UUID
 
 from langchain.agents.middleware import ToolCallLimitMiddleware
@@ -28,11 +30,15 @@ class ChatOpenAI(_ChatOpenAI):
     ) -> dict:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         for msg in payload.get("messages", []):
+            # LLM starts talking bullshit to user when it adds internal content along with tool calls.
+            if msg.get("tool_calls") and msg.get("content"):
+                msg["content"] = ""
             if msg.get("content") is None:
                 msg["content"] = ""
         return payload
 
 from ..config import Config
+from ..models.chat import ChatType
 from ..models.role import Role
 from ..models.user import User
 from ..services.prompt_cache import PromptCache
@@ -111,43 +117,175 @@ class AgentExecutor:
             kwargs["extra_body"] = extra_body
         return ChatOpenAI(**kwargs)
 
-    async def _build_chat_attachments_block(
+    async def resolve_chat_type(self, engine: Any, chat_id: UUID) -> Optional[ChatType]:
+        """Return the ChatType for the given chat_id, or None if not found."""
+        chat = await engine.chat_storage.get_by_id(chat_id)
+        return chat.type if chat else None
+
+    async def _build_chat_context(
         self,
         engine: Any,
         chat_id: UUID,
-        limit: int = 10,
-    ) -> Optional[str]:
-        """Build prompt context for recent chat attachments."""
+        attachments_limit: int = 10,
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """Return (chat_type_block, participants_block, attachments_block) for the chat."""
+        chat = await engine.chat_storage.get_by_id(chat_id)
+        if not chat:
+            return None, None, None
+
+        # --- Chat type block ---
+        lines = [f"Тип чата: {chat.type.value}"]
+        match chat.type:
+            case ChatType.TASK:
+                if chat.task_id:
+                    task = await engine.task_storage.get_by_id(chat.task_id)
+                    if task:
+                        lines += [
+                            f"  ID задачи: {task.id}",
+                            f"  Название: {task.title}",
+                        ]
+                        if task.description:
+                            lines.append(f"  Описание: {task.description}")
+                        lines.append(f"  Статус: {task.status}")
+                        if task.deadline:
+                            lines.append(f"  Дедлайн: {task.deadline.isoformat()}")
+                        if task.project_id:
+                            project = await engine.project_storage.get_by_id(task.project_id)
+                            if project:
+                                lines.append(f"  Проект: {project.name} (ID: {project.id})")
+                                if project.description:
+                                    lines.append(f"  Описание проекта: {project.description}")
+            case ChatType.PROJECT:
+                if chat.project_id:
+                    project = await engine.project_storage.get_by_id(chat.project_id)
+                    if project:
+                        lines += [f"  ID проекта: {project.id}", f"  Название: {project.name}"]
+                        if project.description:
+                            lines.append(f"  Описание: {project.description}")
+            case ChatType.SUPPORT:
+                if chat.support_ticket_id:
+                    ticket = await engine.support_ticket_storage.get_by_id(chat.support_ticket_id)
+                    if ticket:
+                        def _format_dt(value: Any) -> str:
+                            return value.isoformat() if value else "нет"
+
+                        def _format_optional(value: Any) -> str:
+                            return str(value) if value else "нет"
+
+                        lines += [
+                            f"  ID тикета: {ticket.id}",
+                            f"  Заголовок: {_format_optional(ticket.title)}",
+                            f"  Категория: {ticket.category.value}",
+                            f"  Статус: {ticket.status.value}",
+                            f"  ID заявителя: {ticket.requester_user_id}",
+                            f"  ID организации заявителя: {ticket.requester_org_id}",
+                            f"  ID оператора: {_format_optional(ticket.assignee_user_id)}",
+                            f"  Первый ответ AI: {_format_dt(ticket.ai_first_response_at)}",
+                            f"  Передано оператору: {_format_dt(ticket.ai_handoff_at)}",
+                            f"  Закрыто: {_format_dt(ticket.closed_at)}",
+                            f"  Закрыл пользователь: {_format_optional(ticket.closed_by_user_id)}",
+                            f"  Закрыто ролью: {_format_optional(ticket.closed_by_role.value if ticket.closed_by_role else None)}",
+                            f"  Создано: {ticket.created_at.isoformat()}",
+                            f"  Обновлено: {ticket.updated_at.isoformat()}",
+                        ]
+
+                        requester = await engine.user_storage.get_by_id(ticket.requester_user_id)
+                        if requester:
+                            requester_details = f"{requester.name} (@{requester.username}, id: {requester.id})"
+                            if requester.email:
+                                requester_details += f", email: {requester.email}"
+                            lines.append(f"  Заявитель: {requester_details}")
+
+                        requester_org = await engine.org_storage.get_by_id(ticket.requester_org_id)
+                        if requester_org:
+                            lines.append(f"  Организация заявителя: {requester_org.name} (ID: {requester_org.id})")
+
+                        if ticket.assignee_user_id:
+                            assignee = await engine.user_storage.get_by_id(ticket.assignee_user_id)
+                            if assignee:
+                                assignee_details = f"{assignee.name} (@{assignee.username}, id: {assignee.id})"
+                                if assignee.email:
+                                    assignee_details += f", email: {assignee.email}"
+                                lines.append(f"  Оператор: {assignee_details}")
+                            else:
+                                lines.append("  Оператор: не найден")
+                        else:
+                            lines.append("  Оператор: не назначен")
+                    else:
+                        lines.append(f"  ID тикета: {chat.support_ticket_id} (тикет не найден)")
+                else:
+                    lines.append("  ID тикета: не указан")
+            case ChatType.POLL:
+                if chat.poll_id:
+                    poll :TaskPoll = await engine.task_poll_storage.get_by_id(chat.poll_id)
+                    if poll:
+                        lines += [
+                            f"  ID опроса: {poll.id}",
+                            f"  Дата опроса: {poll.poll_date.isoformat()}",
+                            f"  Статус: {poll.status}",
+                            f"  Создано: {poll.created_at.isoformat()}",
+                        ]
+                        if poll.expires_at:
+                            lines.append(f"  Истекает: {poll.expires_at.isoformat()}")
+                        if poll.completed_at:
+                            lines.append(f"  Завершено: {poll.completed_at.isoformat()}")
+                        if poll.summary:
+                            lines.append(f"  Сводка: {poll.summary}")
+                            
+                        if poll.task_ids:
+                            tasks: Dict[UUID, Task] = await engine.task_storage.get_many_by_ids(poll.task_ids)
+                            for _, task in tasks.items():
+                                lines.append(f"  Задача: {task.title} Описание: {task.description} Статус: {task.status} Дедлайн: {task.deadline.isoformat() if task.deadline else 'нет'}")
+                    else:
+                        lines.append(f"  ID опроса: {chat.poll_id} (опрос не найден)")
+                else:
+                    lines.append("  ID опроса: не указан")
+        chat_type_block = "\n".join(lines)
+
+        # --- Participants block ---
+        participants_block: Optional[str] = None
+        if chat.participants:
+            participant_lines = ["Участники чата:"]
+            for p_id in chat.participants:
+                user = await engine.user_storage.get_by_id(p_id)
+                if user is None:
+                    continue
+                dept = f", отдел: {user.department_name}" if user.department_name else ""
+                participant_lines.append(f"  - {user.name} (code: {user.username}, id: {user.id}{dept})")
+            if len(participant_lines) > 1:
+                participants_block = "\n".join(participant_lines)
+
+        # --- Attachments block ---
+        attachments_block: Optional[str] = None
         recent_attachment_ids = await engine.chat_storage.get_attachments(
             chat_id,
-            limit=limit,
+            limit=attachments_limit,
         )
-        attachments_by_id = await engine.user_file_storage.get_many_by_ids(
-            recent_attachment_ids,
-        )
+        if recent_attachment_ids:
+            attachments_by_id = await engine.user_file_storage.get_many_by_ids(
+                recent_attachment_ids,
+            )
+            attachment_lines = []
+            for file_id in recent_attachment_ids:
+                file = attachments_by_id.get(file_id)
+                if file is None:
+                    continue
+                if file.rag_status == "indexed":
+                    summary_text = file.summary.strip() if file.summary else "нет сводки"
+                    detail = f"summary: {summary_text[:100]}..."
+                else:
+                    detail = f"status: {file.rag_status}"
+                attachment_lines.append(f"- {file.original_filename} (id: {file.id}, {detail})")
+            if attachment_lines:
+                attachments_block = f"Вложения чата (последние {attachments_limit}):\n" + "\n".join(attachment_lines)
 
-        attachment_lines = []
-        for file_id in recent_attachment_ids:
-            file = attachments_by_id.get(file_id)
-            if file is None:
-                continue
-            if file.rag_status == "indexed":
-                summary_text = file.summary.strip() if file.summary else "нет сводки"
-                detail = f"summary: {summary_text[:100]}..."
-            else:
-                detail = f"status: {file.rag_status}"
-            attachment_lines.append(f"- {file.original_filename} (id: {file.id}, {detail})")
-
-        if not attachment_lines:
-            return None
-        return f"Вложения чата (последние {limit}):\n" + "\n".join(attachment_lines)
+        return chat_type_block, participants_block, attachments_block
 
     async def _build_user_info_block(
         self,
         engine: Any,
         user: Any,
         title: str,
-        attachments_block: Optional[str] = None,
     ) -> str:
         """Build injected user identity context."""
         user_lines = [
@@ -162,8 +300,6 @@ class AgentExecutor:
             if dept:
                 user_lines.append(f"Отдел: {dept.name}")
                 user_lines.append(f"Руководитель отдела: {'да' if user.is_head else 'нет'}")
-        if attachments_block:
-            user_lines.append(attachments_block)
         block = f"{title}:\n" + "\n".join(line for line in user_lines if line)
         block += "\nНе раскрывать пользователю его ID."
         return block
@@ -173,21 +309,15 @@ class AgentExecutor:
         engine: Any,
         caller: Optional[Any],
         callee: Optional[Any],
-        *,
-        chat_id: Optional[UUID],
     ) -> tuple[Optional[str], Optional[str]]:
         caller_block = None
         callee_block = None
 
         if caller:
-            attachments_block = None
-            if chat_id is not None:
-                attachments_block = await self._build_chat_attachments_block(engine, chat_id)
             caller_block = await self._build_user_info_block(
                 engine,
                 caller,
                 "Информация о пользователе, который произвёл вызов (caller)",
-                attachments_block=attachments_block,
             )
 
         if callee:
@@ -303,116 +433,6 @@ class AgentExecutor:
             logger.info("rag_search tool call limit: run_limit=%d", _RAG_SEARCH_TOOL_CALL_LIMIT)
         return middleware
 
-    async def route(
-        self,
-        messages: List[dict],
-        users: List[User],
-        sender_id: UUID,
-        default_responder: User,
-        last_active_responder: Optional[User] = None,
-    ) -> User:
-        """
-        Ask the LLM to pick which system user should respond to the conversation.
-
-        Resolves each user's role internally (mirror → sender's role).
-        Users without a resolvable role are excluded.
-        Always returns a user: the LLM choice on success, default_user on any failure.
-
-        last_active_user: hints the router that this agent was last used in the chat.
-        default_user: primary system user — used as fallback on routing failure.
-        """
-        import json
-        from pathlib import Path
-        from typing import Literal, Tuple
-
-        from pydantic import create_model
-
-        if not users:
-            return default_responder
-
-        from ..services.engine_service import get_engine_service
-        engine = get_engine_service()
-
-        async def _resolve(user: Any) -> Optional[Role]:
-            if user.role_id:
-                return await engine.role_storage.get_by_id(user.role_id)
-            if user.is_system:
-                sender = await engine.user_storage.get_by_id(sender_id)
-                if sender and sender.role_id:
-                    return await engine.role_storage.get_by_id(sender.role_id)
-            return None
-
-        candidates: List[Tuple[Any, Role]] = []
-        for u in users:
-            r = await _resolve(u)
-            if r is not None:
-                candidates.append((u, r))
-
-        if not candidates:
-            return default_responder
-
-        system_prompt = (Path(__file__).parent.parent / "prompts" / "router.md").read_text(encoding="utf-8").strip()
-
-        agent_codes = [r.code for _, r in candidates]
-        last_active_id = last_active_responder.id if last_active_responder is not None else None
-        agents_dict = {}
-        for u, r in candidates:
-            desc = r.agent_scope_description
-            if u.id == default_responder.id:
-                desc = desc + "\nЭта роль используется в чате по умолчанию"
-            if last_active_id is not None and u.id == last_active_id:
-                desc = desc + "\nЭта роль была последней активной в этом чате"
-            agents_dict[r.code] = {"name": r.name, "description": desc}
-        agents_json = json.dumps(agents_dict, ensure_ascii=False, indent=2)
-
-        history_lines = []
-        for msg in messages[-10:]:
-            label = "User" if msg.get("role") == "user" else "Assistant"
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                content = " ".join(
-                    p.get("text", "") if isinstance(p, dict) else str(p) for p in content
-                )
-            history_lines.append(f"{label}: {str(content)[:300]}")
-
-        routing_messages = [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    f"Agents:\n{agents_json}\n\n"
-                    "Conversation:\n" + "\n".join(history_lines) + "\n\nChoose agent code:"
-                ),
-            },
-        ]
-
-        # Constrain LLM output to exactly the known agent codes — no parsing, no clamping.
-        RouterDecision = create_model(
-            "RouterDecision",
-            agent=(Literal[tuple(agent_codes)], ...),  # type: ignore[valid-type]
-        )
-
-        llm = self._create_llm(
-            self.default_model,
-            temperature=0.0,
-            max_tokens=16,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-        )
-        try:
-            decision = await llm.with_structured_output(RouterDecision).ainvoke(routing_messages)
-            chosen_code = decision.agent
-            chosen_user, chosen_role = next(
-                (u, r) for u, r in candidates if r.code == chosen_code
-            )
-            logger.info(
-                "route: selected agent=%s user=%s from %d candidates",
-                chosen_code, chosen_user.id, len(candidates),
-            )
-            return chosen_user
-        except Exception:
-            logger.exception("route: failed for %d users, falling back to default_user", len(candidates))
-            return default_responder
-
     async def execute(
         self,
         role: Role,
@@ -484,6 +504,13 @@ class AgentExecutor:
         caller = await engine.user_storage.get_by_id(caller_user_id)
         if caller and caller.org_id:
             scope_org_id = caller.org_id
+
+        # When callee is a system-org user, replace it with caller so that tool access
+        # rules (file access, etc.) operate under the caller's privileges.
+        from ..config import Config
+        if callee is not None and callee.org_id == Config.SYSTEM_ORG_ID:
+            callee = caller
+
         org = await engine.org_storage.get_by_id(scope_org_id)
         
         system_prompt = self.prompt_cache.get_prompt(role, timezone=org.timezone if org else "Europe/Moscow")
@@ -516,6 +543,7 @@ class AgentExecutor:
                 "is_admin": bool(caller.is_admin) if caller else False,
                 "timezone": org.timezone if org else "Europe/Moscow",
                 "role": role,
+                "chat_id": str(chat_id) if chat_id else None,
             },
         )
 
@@ -540,8 +568,10 @@ class AgentExecutor:
             engine,
             caller,
             callee,
-            chat_id=chat_id,
         )
+        chat_type_block, participants_block, attachments_block = (None, None, None)
+        if chat_id is not None:
+            chat_type_block, participants_block, attachments_block = await self._build_chat_context(engine, chat_id)
 
         # --- Injection phase ---
 
@@ -549,7 +579,6 @@ class AgentExecutor:
         context_blocks: list[str] = []
         subagent_context_blocks: list[str] = []
 
-        
         for identity_block in (caller_block, callee_block):
             if identity_block:
                 context_blocks.append(identity_block)
@@ -558,6 +587,10 @@ class AgentExecutor:
         if org_context:
             context_blocks.append(f"Контекст организации:\n{org_context}")
             logger.info("org_context: prepared injected message for org=%s", scope_org_id)
+
+        for chat_block in (chat_type_block, participants_block, attachments_block):
+            if chat_block:
+                context_blocks.append(chat_block)
 
         if memory_block:
             context_blocks.append(memory_block)
@@ -593,7 +626,7 @@ class AgentExecutor:
                                         " Ты сам никого больше в чат вызывать не можешь." if role.agent_type != "supervisor" else "Те ассистенты, которых можешь вызвать ты - не могут общаться с пользователем. С ними работаешь только ты."
                 )
             case "mention":
-                who_is_agent_in_chat = "- ты не являешься основным агентом в этом чате. Ваш диалог с пользователем будет автоматически переключен системой на ассистента по умолчанию для данного чата, когда она определит, что тема разговора вышла за пределы твоей роли"
+                who_is_agent_in_chat = "- ты не являешься основным агентом в этом чате. Тебя сюда пригласили для конкретной работы"
         
         system_prompt += (
             "\n\n##ВАЖНЫЕ ОГРАНИЧЕНИЯ НА УРОВНЕ СИСТЕМЫ\n"
@@ -632,7 +665,7 @@ class AgentExecutor:
         agent_middleware = [
             HistoryCompactionMiddleware(
                 llm_summarizer,
-                trigger_tokens=23000,
+                trigger_tokens=40000,
                 keep_last=3,
             )
         ]
