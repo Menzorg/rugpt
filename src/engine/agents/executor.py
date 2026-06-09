@@ -504,6 +504,13 @@ class AgentExecutor:
         caller = await engine.user_storage.get_by_id(caller_user_id)
         if caller and caller.org_id:
             scope_org_id = caller.org_id
+
+        # When callee is a system-org user, replace it with caller so that tool access
+        # rules (file access, etc.) operate under the caller's privileges.
+        from ..config import Config
+        if callee is not None and callee.org_id == Config.SYSTEM_ORG_ID:
+            callee = caller
+
         org = await engine.org_storage.get_by_id(scope_org_id)
         
         system_prompt = self.prompt_cache.get_prompt(role, timezone=org.timezone if org else "Europe/Moscow")
@@ -536,6 +543,7 @@ class AgentExecutor:
                 "is_admin": bool(caller.is_admin) if caller else False,
                 "timezone": org.timezone if org else "Europe/Moscow",
                 "role": role,
+                "chat_id": str(chat_id) if chat_id else None,
             },
         )
 
