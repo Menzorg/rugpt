@@ -374,14 +374,14 @@ class AIService:
                 f"generate_response aborted: role unresolved for @{getattr(responder, 'username', responder.id)} "
                 f"(message={message.id} chat={message.chat_id})"
             )
-            return None
+            return None # TODO: return message that user has no role
 
         if not role.is_active:
             logger.warning(
                 f"Role {role.code or role.id} is inactive "
                 f"(responder=@{getattr(responder, 'username', responder.id)} chat={message.chat_id})"
             )
-            return None
+            return None # TODO: return message that user has no active role
 
         # Build conversation context
         conv_messages = await self._build_conversation(
