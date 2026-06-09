@@ -476,35 +476,26 @@ async def send_message(
                 reference_id=message.id,
             )
 
-    # Process @@ mentions -> AI responses (sync path) OR enqueue (async path)
+    # Enqueue AI work — always async via Kafka. Reply arrives later via chat.events;
+    # set agent_pending so the client shows the pending indicator.
     ai_responses = []
     ai_mentions = [m for m in mentions if m.type.value == "ai_role"]
     agent_pending = False
 
     if ai_mentions:
-        ai_messages = await engine.ai_service.process_ai_mentions(message, org_id)
-        # Async mode: process_ai_mentions returns empty list, enqueue happened internally
-        if not ai_messages and engine.ai_service._is_async_mode():
-            agent_pending = True
-        ai_responses = [MessageResponse(**msg.to_dict()) for msg in ai_messages]
+        await engine.ai_service.process_ai_mentions(message, org_id)
+        agent_pending = True
     else:
-        ai_msg = await engine.ai_service.try_auto_respond(message, chat_id, user_id)
-        if ai_msg:
-            ai_responses = [MessageResponse(**ai_msg.to_dict())]
-        elif engine.ai_service._is_async_mode():
-            # Auto-respond path may have enqueued if there's a system user in the chat.
-            # We can't cheaply tell if enqueue happened without extra DB lookup; err
-            # on the side of showing the pending indicator when async mode is on and
-            # the chat has at least one system participant.
-            chat = await engine.chat_service.get_chat(chat_id)
-            if chat:
-                for pid in chat.participants:
-                    if pid == user_id:
-                        continue
-                    u = await engine.user_storage.get_by_id(pid)
-                    if u and u.is_system:
-                        agent_pending = True
-                        break
+        await engine.ai_service.try_auto_respond(message, chat_id, user_id)
+        chat = await engine.chat_service.get_chat(chat_id)
+        if chat:
+            for pid in chat.participants:
+                if pid == user_id:
+                    continue
+                u = await engine.user_storage.get_by_id(pid)
+                if u and u.is_system:
+                    agent_pending = True
+                    break
 
     return SendMessageResponse(
         user_message=MessageResponse(**message.to_dict()),

@@ -101,14 +101,6 @@ class AIService:
             and getattr(self, "support_ticket_event_storage", None) is not None
         )
 
-    def _is_async_mode(self) -> bool:
-        """Async path enabled iff both Kafka producer and agent_run storage are wired AND Kafka is enabled."""
-        return (
-            self.kafka_producer is not None
-            and self.kafka_producer.enabled
-            and self.agent_run_storage is not None
-        )
-
     async def _enqueue_agent_run(
         self,
         message: Message,
@@ -118,8 +110,6 @@ class AIService:
         invocation_kind_override: Optional[str] = None,
     ) -> Optional[UUID]:
         """Create AgentRun row + publish to agent.requests. Returns request_id or None on failure."""
-        if not self._is_async_mode():
-            return None
         request_id = uuid4()
         logger.info(
             f"Enqueue agent run: request_id={request_id} chat={message.chat_id} "
@@ -166,12 +156,9 @@ class AIService:
         Auto-respond if chat has a system user participant.
         Called when message has no @@ mentions.
 
-        Async mode (Kafka enabled): publishes to agent.requests and returns None —
-        the AI message will arrive later via chat.events WS broadcast. Returns None
-        does NOT mean "no handler"; check try_auto_respond_async_enqueued if the
-        caller needs to know whether a pending run was scheduled.
-
-        Sync fallback: directly calls generate_response and returns the Message.
+        Publishes the agent request to agent.requests and returns None — the AI
+        message arrives later via chat.events WS broadcast. Returning None does
+        NOT mean "no handler"; an agent run may have been enqueued.
         """
         chat = await self.chat_storage.get_by_id(chat_id)
         if not chat:
@@ -238,39 +225,14 @@ class AIService:
 
         logger.info(
             f"try_auto_respond: chat={chat_id} responder={responder.id} "
-            f"mode={'async' if self._is_async_mode() else 'sync'}"
         )
-        if self._is_async_mode():
-            await self._enqueue_agent_run(
-                message=message,
-                responder_id=responder.id,
-                invocation_kind_override=invocation_kind_override,
-            )
-            # NOTE: async-path support stamping (ai_first_response_at +
-            # AI_RESPONDED audit) is handled by AgentRequestHandler
-            # after it generates the response. See Task 18 follow-up.
-            return None
-        ai_response = await self.generate_response(
+        await self._enqueue_agent_run(
             message=message,
             responder_id=responder.id,
             invocation_kind_override=invocation_kind_override,
+            # after it generates the response. See Task 18 follow-up.
         )
-        # Post-hook: stamp first AI response + audit event for
-        # SUPPORT chats. Only fires in sync path; async path stamps
-        # via AgentRequestHandler. Idempotent on the storage side
-        # (set_ai_first_response is a guarded UPDATE).
-        if (
-            ai_response is not None
-            and chat.type == ChatType.SUPPORT
-            and self._is_support_aware()
-            and chat.support_ticket_id is not None
-        ):
-            await self._record_support_ai_response(
-                ticket_id=chat.support_ticket_id,
-                ai_user_id=responder.id,
-                response_message_id=ai_response.id,
-            )
-        return ai_response
+        return None
 
     async def _record_support_ai_response(
         self,
@@ -302,6 +264,25 @@ class AIService:
                 "Failed to record support AI response for ticket=%s", ticket_id,
             )
 
+    async def record_support_first_response(
+        self,
+        chat_id: UUID,
+        ai_user_id: UUID,
+        response_message_id: UUID,
+    ) -> None:
+        """After a successful AI reply, stamp support-ticket SLA (idempotent).
+        No-op for non-support chats / when support storages aren't wired."""
+        if not self._is_support_aware():
+            return
+        chat = await self.chat_storage.get_by_id(chat_id)
+        if not chat or chat.type != ChatType.SUPPORT or chat.support_ticket_id is None:
+            return
+        await self._record_support_ai_response(
+            ticket_id=chat.support_ticket_id,
+            ai_user_id=ai_user_id,
+            response_message_id=response_message_id,
+        )
+
     async def process_ai_mentions(
         self,
         message: Message,
@@ -310,44 +291,26 @@ class AIService:
         """
         Process @@ mentions in a message and enqueue AI responses.
 
-        Async mode (Kafka enabled): each mention -> AgentRun + Kafka publish;
-        returns empty list. The caller should also consult `has_pending_agent_runs`
-        to set `agent_pending=true` in the HTTP response.
-
-        Sync fallback: returns list of generated AI messages inline.
+        Each mention -> AgentRun + Kafka publish to agent.requests; returns an
+        empty list. The caller should consult `has_pending_agent_runs` to set
+        `agent_pending=true` in the HTTP response.
         """
         ai_mentions = [m for m in message.mentions if m.type == MentionType.AI_ROLE]
         if not ai_mentions:
             return []
 
-        mode = "async" if self._is_async_mode() else "sync"
         logger.info(
             f"process_ai_mentions: message={message.id} chat={message.chat_id} "
-            f"mentions={len(ai_mentions)} mode={mode}"
         )
 
-        if self._is_async_mode():
-            for mention in ai_mentions:
-                await self.chat_storage.set_active_agent(message.chat_id, mention.user_id)
-                await self._enqueue_agent_run(
-                    message=message,
-                    responder_id=mention.user_id,
-                    strip_username=mention.username,
-                )
-            return []
-
-        responses = []
         for mention in ai_mentions:
             await self.chat_storage.set_active_agent(message.chat_id, mention.user_id)
-            response = await self.generate_response(
+            await self._enqueue_agent_run(
                 message=message,
                 responder_id=mention.user_id,
                 strip_username=mention.username,
             )
-            if response:
-                responses.append(response)
-
-        return responses
+        return []
 
     def has_pending_agent_runs(self, message: Message) -> bool:
         """Does this message trigger any agent work? Used for agent_pending HTTP flag.
