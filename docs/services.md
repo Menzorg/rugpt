@@ -105,7 +105,7 @@ await engine.initialize()
    проводится вручную для auto-hydration `Message.attachments`
 2. `NonceStore` (Redis), `SignatureService(device_storage, nonce_store, tolerance)`
 3. `PromptCache`, `CalendarService`, `RoleSubagentService`, `DepartmentService`
-4. `KafkaProducerService` (no-op при `KAFKA_ENABLED=false`)
+4. `KafkaProducerService` (обязателен; Engine fail-fast, если брокер недоступен)
 5. `InAppNotificationService`, `SupportNotificationService`
 6. `ChatService` → `SupportTicketService` → `TaskEventService` →
    `ProjectService` → `TaskService` → `ReferenceService` →
@@ -943,7 +943,7 @@ class KafkaProducerService:
     async def start()
     async def stop()
     async def send(topic, value: dict, key: Optional[str] = None)
-    # No-op when Config.KAFKA_ENABLED=false
+    # start() raises if the broker is unreachable -> Engine fails fast
 ```
 
 ### KafkaConsumerLoop

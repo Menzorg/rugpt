@@ -143,7 +143,6 @@ class EngineService:
         self.department_service = DepartmentService(self.department_storage, self.user_storage)
 
         # Kafka producer — event bus to NestJS (chat.events) + internal queue (agent.requests).
-        # No-op when Config.KAFKA_ENABLED=false, so tests without Kafka keep working.
         self.kafka_producer = KafkaProducerService()
 
         # Initialize in-app notification service
@@ -506,13 +505,17 @@ class EngineService:
         from ..agents.tools.list_documents import init_document_service
         init_document_service(self.user_file_storage, self.rag_service, self.user_storage)
 
-        # Start Kafka producer (no-op when KAFKA_ENABLED=false)
+        # Start Kafka producer. Kafka is a mandatory dependency: crash at startup
+        # if the broker is unavailable, so agent requests never go to a dead producer.
         try:
             await self.kafka_producer.start()
         except Exception as e:
-            logger.error(f"Kafka producer failed to start: {e}")
+            raise RuntimeError(
+                f"Kafka required but unreachable at "
+                f"{self.kafka_producer.bootstrap_servers}: {e}"
+            ) from e
 
-        # Start Kafka consumer loop for agent.requests (no-op when disabled)
+        # Start Kafka consumer loop for agent.requests
         try:
             await self.agent_request_consumer.start()
         except Exception as e:

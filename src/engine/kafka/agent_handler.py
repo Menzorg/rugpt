@@ -162,6 +162,12 @@ class AgentRequestHandler:
             except Exception as e:
                 logger.error(f"Failed to publish AI message to chat.events: {e}")
 
+            if kind == "message_reply":
+                try:
+                    await self.ai_service.record_support_first_response(chat_id, responder_id, ai_message.id)
+                except Exception as e:
+                    logger.error(f"Failed to record support first response (chat={chat_id}): {e}")
+
             logger.info(
                 f"agent_run {request_id} kind={kind} done: ai_message={ai_message.id} metadata={ai_message.metadata or {}}"
             )
