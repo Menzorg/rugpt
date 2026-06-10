@@ -67,7 +67,7 @@ async def upload_file(
         raise HTTPException(status_code=403, detail="You can only upload files for yourself")
 
     folder_uuid: Optional[UUID] = None
-    if folder_id:
+    if folder_id and folder_id != "null":
         try:
             folder_uuid = UUID(folder_id)
         except ValueError:
