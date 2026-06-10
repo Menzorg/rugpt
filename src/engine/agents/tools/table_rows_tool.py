@@ -19,6 +19,7 @@ from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 
 from ...services.rag_service import RAGService
+from ...storage.chat_storage import ChatStorage
 from ...storage.user_file_storage import UserFileStorage
 
 logger = get_logger("agents")
@@ -26,18 +27,21 @@ _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _rag_service: Optional[RAGService] = None
 _user_file_storage: Optional[UserFileStorage] = None
+_chat_storage: Optional[ChatStorage] = None
 
 def init_table_rows_service(
     service: RAGService,
     file_storage: Optional[UserFileStorage] = None,
+    chat_storage: Optional[ChatStorage] = None,
 ) -> None:
     """Set the shared RAGService and UserFileStorage for table rows tool calls."""
-    global _rag_service, _user_file_storage
+    global _rag_service, _user_file_storage, _chat_storage
     _rag_service = service
     _user_file_storage = file_storage
+    _chat_storage = chat_storage
     logger.info("Table rows tool service initialized")
 
-async def _can_access_file(file_id: str, org_id: str, user_id: str) -> bool:
+async def _can_access_file(file_id: str, org_id: str, user_id: str, chat_id: Optional[str] = None) -> bool:
     if _user_file_storage is None:
         logger.error("table_rows_search: file storage not initialized")
         return False
@@ -47,6 +51,13 @@ async def _can_access_file(file_id: str, org_id: str, user_id: str) -> bool:
         file_uuid = UUID(file_id)
     except ValueError:
         return False
+    if chat_id and _chat_storage is not None:
+        try:
+            attachment_ids = await _chat_storage.get_attachments(UUID(chat_id))
+            if file_uuid in attachment_ids:
+                return True
+        except Exception:
+            pass
     all_files = await _user_file_storage.list_by_org(org_uuid)
     return any(
         f.id == file_uuid and (f.uploaded_by_user_id == user_uuid or f.is_public)
@@ -72,19 +83,20 @@ async def table_rows_search(
         configurable = config.get("configurable", {})
         org_id = configurable["org_id"]
         user_id = configurable["caller_user_id"]
+        chat_id = configurable.get("chat_id")
 
         row_end = min(row_end, row_start + _MAX_ROWS - 1)
 
         logger.info(
-            "table_rows_search called: file_id=%s, row_start=%d, row_end=%d, org_id=%s, user_id=%s",
-            file_id, row_start, row_end, org_id, user_id,
+            "table_rows_search called: file_id=%s, row_start=%d, row_end=%d, org_id=%s, user_id=%s, chat_id=%s",
+            file_id, row_start, row_end, org_id, user_id, chat_id,
         )
 
         if _rag_service is None:
             logger.error("table_rows_search: service not initialized")
             return "Table rows search unavailable: service not initialized."
 
-        if not await _can_access_file(file_id, org_id, user_id):
+        if not await _can_access_file(file_id, org_id, user_id, chat_id):
             return "You don't have access to that document."
 
         rows = await _rag_service.get_table_rows_by_range(

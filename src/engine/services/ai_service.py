@@ -466,7 +466,20 @@ class AIService:
         
         if result.finish_reason == "error":
             logger.error(f"Agent error: {result.error}")
-            return None
+            # TODO: include into error message "Разработчикам уже отправлен автоматический технический отчет об ошибке" once automatic report storage is implemented
+            if result.error and "ContextWindowExceededError" in result.error:
+                result.content = (
+                    "Ой, эта задача оказалась слишком большой для меня — "
+                    "я просто не могу удержать всё это в голове за один раз. "
+                    "Давайте попробуем разбить запрос на несколько этапов и выполнить по очереди."
+                )
+            else:
+                result.content = (
+                    "Что-то пошло не так на моей стороне — я столкнулся с технической ошибкой "
+                    "и не смог ответить. Попробуйте ещё раз чуть позже, а если не поможет — "
+                    "напишите в поддержку, они разберутся."
+                )
+            return result, {}
         return result, metadata
 
     async def _resolve_user_name(self, sender_id: UUID) -> str:

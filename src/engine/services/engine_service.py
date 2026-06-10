@@ -300,7 +300,7 @@ class EngineService:
 
         # Create task tools wired to TaskService
         task_create_tool, task_query_tool, task_update_tool, task_deadline_proposal_tool, get_own_tasks_tool = create_task_tools(self.task_service)
-        expand_chunk_tool = create_expand_chunk_tool(self.rag_service, self.user_file_storage)
+        expand_chunk_tool = create_expand_chunk_tool(self.rag_service, self.user_file_storage, self.chat_storage)
         analyze_image_tool = create_analyze_image_tool(
             self.user_file_storage,
             self.storage_adapter,
@@ -495,15 +495,15 @@ class EngineService:
 
         # Wire the shared RAGService into the RAG tool
         from ..agents.tools.rag_tool import init_rag_service
-        init_rag_service(self.rag_service, self.user_file_storage)
+        init_rag_service(self.rag_service, self.user_file_storage, self.chat_storage)
 
         # Wire the shared RAGService into the table rows tool
         from ..agents.tools.table_rows_tool import init_table_rows_service
-        init_table_rows_service(self.rag_service, self.user_file_storage)
+        init_table_rows_service(self.rag_service, self.user_file_storage, self.chat_storage)
 
         # Wire the shared UserFileStorage into the document tool
         from ..agents.tools.list_documents import init_document_service
-        init_document_service(self.user_file_storage, self.rag_service, self.user_storage)
+        init_document_service(self.user_file_storage, self.rag_service, self.user_storage, self.chat_storage)
 
         # Start Kafka producer. Kafka is a mandatory dependency: crash at startup
         # if the broker is unavailable, so agent requests never go to a dead producer.

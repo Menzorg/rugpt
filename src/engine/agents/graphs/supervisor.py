@@ -47,6 +47,7 @@ class _SubagentInputWrapper:
         return self._agent.invoke(self._input_from_state(state), config)
 
     async def ainvoke(self, state: dict, config: Optional[RunnableConfig] = None) -> dict:
+        logger.debug("Subagent %r ainvoke config is not None: %s", self.name, config is not None)
         return await self._agent.ainvoke(self._input_from_state(state), config)
 
 
