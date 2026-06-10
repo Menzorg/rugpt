@@ -492,7 +492,6 @@ class AgentExecutor:
             invocation_kind = "system"
         elif invocation_kind != "mention" or callee_user_id is None:
             invocation_kind = "direct"
-
         # Resolve the CALLER's org — that's the scope tools should operate in.
         # so tools don't try to run in system org scope because role_org for system roles is 00000000-0000-0000-0000-000000000000.
         scope_org_id = role.org_id
