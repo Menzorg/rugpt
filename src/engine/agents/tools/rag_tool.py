@@ -20,6 +20,7 @@ from langgraph.prebuilt import ToolRuntime
 
 from ..runtime import RagSearchRuntimeData, RuntimeContext
 from ...services.rag_service import RAGService
+from ...storage.chat_storage import ChatStorage
 from ...storage.user_file_storage import UserFileStorage
 from ...utils.token_counter import count_tokens
 
@@ -34,12 +35,14 @@ _DEFAULT_TOP_K = 4
 
 _rag_service: Optional[RAGService] = None
 _user_file_storage: Optional[UserFileStorage] = None
+_chat_storage: Optional[ChatStorage] = None
 
-def init_rag_service(service: RAGService, file_storage: Optional[UserFileStorage] = None) -> None:
+def init_rag_service(service: RAGService, file_storage: Optional[UserFileStorage] = None, chat_storage: Optional[ChatStorage] = None) -> None:
     """Set the shared RAGService instance for all RAG tool calls."""
-    global _rag_service, _user_file_storage
+    global _rag_service, _user_file_storage, _chat_storage
     _rag_service = service
     _user_file_storage = file_storage
+    _chat_storage = chat_storage
     logger.info("RAG tool service initialized")
 
 
@@ -58,10 +61,12 @@ async def _can_access_file(
     owner_user_id: str,
     public_only_owner: bool,
     is_admin: bool = False,
+    chat_id: Optional[str] = None,
 ) -> bool:
     """Return True when the caller can see file_id in their org.
 
     When another user calls an owner by mention, that owner's private docs stay hidden.
+    Files attached to the originating chat are always accessible.
     """
     if _user_file_storage is None:
         logger.error("rag_search: file storage not initialized for access check")
@@ -73,6 +78,15 @@ async def _can_access_file(
         file_uuid = UUID(file_id)
     except ValueError:
         return False
+
+    if chat_id and _chat_storage is not None:
+        try:
+            chat_uuid = UUID(chat_id)
+            attachment_ids = await _chat_storage.get_attachments(chat_uuid)
+            if file_uuid in attachment_ids:
+                return True
+        except (ValueError, Exception):
+            pass
 
     all_files = await _user_file_storage.list_by_org(org_uuid)
     for f in all_files:
@@ -106,10 +120,11 @@ async def _rag_search(
         configurable = config.get("configurable", {})
         user_id, org_id, public_only_owner = _resolve_tool_identity(configurable)
         is_admin = bool(configurable.get("is_admin", False))
+        chat_id = configurable.get("chat_id")
 
         logger.info(
-            "rag_search start: file_id=%s query=%r org_id=%s user_id=%s public_only_owner=%s is_admin=%s",
-            file_id, query, org_id, user_id, public_only_owner, is_admin,
+            "rag_search start: file_id=%s query=%r org_id=%s user_id=%s public_only_owner=%s is_admin=%s chat_id=%s",
+            file_id, query, org_id, user_id, public_only_owner, is_admin, chat_id,
         )
 
         if not org_id or not user_id:
@@ -120,10 +135,10 @@ async def _rag_search(
             logger.error("rag_search: service not initialized, call init_rag_service() at startup")
             return "RAG search unavailable: service not initialized."
 
-        can_access = await _can_access_file(file_id, org_id, user_id, public_only_owner, is_admin)
+        can_access = await _can_access_file(file_id, org_id, user_id, public_only_owner, is_admin, chat_id)
         logger.info(
-            "rag_search access: file_id=%s allowed=%s user_id=%s public_only_owner=%s is_admin=%s",
-            file_id, can_access, user_id, public_only_owner, is_admin,
+            "rag_search access: file_id=%s allowed=%s user_id=%s public_only_owner=%s is_admin=%s chat_id=%s",
+            file_id, can_access, user_id, public_only_owner, is_admin, chat_id,
         )
         if not can_access:
             return "You don't have access to that document."

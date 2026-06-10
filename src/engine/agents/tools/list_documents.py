@@ -47,6 +47,7 @@ from ...models.rag import RelatedDoc
 from ...models.user_file import UserFile
 from ..runtime import RuntimeContext
 from ...services.rag_service import RAGService
+from ...storage.chat_storage import ChatStorage
 from ...storage.user_file_storage import UserFileStorage
 from ...storage.user_storage import UserStorage
 from ...utils.token_counter import count_tokens
@@ -69,6 +70,7 @@ _SUMMARY_TOKENS_BUDGET = 2000
 _user_file_storage: Optional[UserFileStorage] = None
 _user_storage: Optional[UserStorage] = None
 _rag_service: Optional[RAGService] = None
+_chat_storage: Optional[ChatStorage] = None
 
 
 # =================================================================
@@ -89,6 +91,7 @@ class DocumentToolScope:
     own_only: bool
     # Explicit owner filter: callee for own_only, LLM-supplied user_id for list_documents.
     owner_filter_user_id: Optional[UUID]
+    chat_id: Optional[UUID] = None
 
 
 class BaseListDocumentsInput(BaseModel):
@@ -140,12 +143,14 @@ def init_document_service(
     storage: UserFileStorage,
     rag_service: Optional[RAGService] = None,
     user_storage: Optional[UserStorage] = None,
+    chat_storage: Optional[ChatStorage] = None,
 ) -> None:
     """Set the shared storage instances for all document tool calls."""
-    global _user_file_storage, _rag_service, _user_storage
+    global _user_file_storage, _rag_service, _user_storage, _chat_storage
     _user_file_storage = storage
     _rag_service = rag_service
     _user_storage = user_storage
+    _chat_storage = chat_storage
     logger.info("Document tool storage initialized")
 
 
@@ -156,6 +161,7 @@ def _is_image_file(f: UserFile) -> bool:
         return True
     filename = (f.original_filename or "").lower()
     return any(filename.endswith(f".{ext}") for ext in IMAGE_TYPES)
+
 
 
 def _resolve_tool_identity(configurable: dict) -> tuple[str, str, bool]:
@@ -196,6 +202,13 @@ def _build_scope(
         owner_filter_user_id: Optional[UUID] = callee_uuid
     else:
         owner_filter_user_id = _parse_scope_uuid(user_id.strip(), "user_id") if user_id and user_id.strip() else None
+    chat_id_str = configurable.get("chat_id")
+    chat_uuid: Optional[UUID] = None
+    if chat_id_str:
+        try:
+            chat_uuid = UUID(chat_id_str)
+        except ValueError:
+            pass
     return DocumentToolScope(
         tool_name="list_own_documents" if own_only else "list_documents",
         caller_user_id=_parse_scope_uuid(caller_user_id_str, "caller_user_id"),
@@ -206,6 +219,7 @@ def _build_scope(
         is_admin=bool(configurable.get("is_admin", False)),
         own_only=own_only,
         owner_filter_user_id=owner_filter_user_id,
+        chat_id=chat_uuid,
     )
 
 
@@ -214,12 +228,24 @@ def _build_scope(
 # =================================================================
 
 
-async def _get_single_document(file_id: str, scope: DocumentToolScope) -> str:
+async def _get_chat_attachment_ids(chat_id: Optional[UUID]) -> frozenset[UUID]:
+    """Return the set of file IDs attached to the given chat, or empty set."""
+    if chat_id is None or _chat_storage is None:
+        return frozenset()
+    try:
+        return frozenset(await _chat_storage.get_attachments(chat_id))
+    except Exception:
+        return frozenset()
+
+
+async def _get_single_document(file_id: str, scope: DocumentToolScope, chat_attachment_ids: frozenset[UUID]) -> str:
     """Fetch one file directly and enforce single-document visibility locally."""
     f = await _user_file_storage.get_by_id(UUID(file_id.strip()))
     if f is None:
         return f"Document {file_id} not found."
-    if scope.own_only:
+    if f.id in chat_attachment_ids:
+        visible = True
+    elif scope.own_only:
         visible = (
             f.user_id == scope.owner_user_id
             and (not scope.public_only_owner or f.is_public)
@@ -291,23 +317,26 @@ async def _search_scoped(
 def _filter_listed_files(
     files: list[UserFile],
     scope: DocumentToolScope,
+    chat_attachment_ids: frozenset[UUID] = frozenset(),
 ) -> tuple[list[UserFile], int, int]:
     """Apply no-search listing visibility rules to storage-loaded file rows.
 
     Returns (visible_files, hidden_private_count, not_indexed_count) where
     hidden_private_count is the number of files hidden due to private visibility
     and not_indexed_count is the number of files excluded because rag_status='not_indexed'.
+    Files attached to the originating chat are always visible.
     """
     if scope.own_only:
         owner_matched = [
             f for f in files
-            if f.user_id == scope.owner_user_id and not _is_image_file(f)
+            if (f.user_id == scope.owner_user_id or f.id in chat_attachment_ids)
+            and not _is_image_file(f)
         ]
         not_indexed_count = sum(1 for f in owner_matched if f.rag_status == "not_indexed")
         indexed = [f for f in owner_matched if f.rag_status != "not_indexed"]
         visible = [
             f for f in indexed
-            if not scope.public_only_owner or f.is_public or scope.is_admin
+            if f.id in chat_attachment_ids or not scope.public_only_owner or f.is_public or scope.is_admin
         ]
         hidden = len(indexed) - len(visible)
         return visible, hidden, not_indexed_count
@@ -315,14 +344,14 @@ def _filter_listed_files(
     # Organization mode includes public docs, caller-owned private docs, and admin-visible private docs.
     owner_matched = [
         f for f in files
-        if (scope.owner_filter_user_id is None or f.user_id == scope.owner_filter_user_id)
+        if (scope.owner_filter_user_id is None or f.user_id == scope.owner_filter_user_id or f.id in chat_attachment_ids)
         and not _is_image_file(f)
     ]
     not_indexed_count = sum(1 for f in owner_matched if f.rag_status == "not_indexed")
     indexed = [f for f in owner_matched if f.rag_status != "not_indexed"]
     visible = [
         f for f in indexed
-        if f.is_public or f.user_id == scope.caller_user_id or scope.is_admin
+        if f.id in chat_attachment_ids or f.is_public or f.user_id == scope.caller_user_id or scope.is_admin
     ]
     hidden = len(indexed) - len(visible)
     return visible, hidden, not_indexed_count
@@ -357,6 +386,17 @@ async def _list_documents_impl(
 
     try:
         scope = _build_scope(config, own_only, user_id)
+        logger.info(
+            "%s access: caller=%s callee=%s org=%s public_only_owner=%s is_admin=%s chat_id=%s",
+            tool_name,
+            scope.caller_user_id,
+            scope.callee_user_id,
+            scope.org_id,
+            scope.public_only_owner,
+            scope.is_admin,
+            scope.chat_id,
+        )
+        chat_attachment_ids = await _get_chat_attachment_ids(scope.chat_id)
         name_query = name_query.strip()
         summary_query = summary_query.strip()
 
@@ -386,7 +426,7 @@ async def _list_documents_impl(
 
         # --- Single-document lookup: bypasses pagination, deduplication, and budgets ---
         if file_id and file_id.strip():
-            result = await _get_single_document(file_id, scope)
+            result = await _get_single_document(file_id, scope, chat_attachment_ids)
             logger.info(
                 "%s done: path=single file_id=%s output_tokens=%d",
                 tool_name, file_id, count_tokens(result),
@@ -411,7 +451,7 @@ async def _list_documents_impl(
         else:
             # --- Or list all files without queries ---
             all_files = await _user_file_storage.list_by_org(scope.org_id)
-            files, hidden_count, not_indexed_count = _filter_listed_files(all_files, scope)
+            files, hidden_count, not_indexed_count = _filter_listed_files(all_files, scope, chat_attachment_ids)
             empty_message = "No documents in your scope."
             compact_on_budget_exhausted = True
             raw_count = len(all_files)

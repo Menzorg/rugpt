@@ -10,6 +10,7 @@ from src.engine.models.task_poll import TaskPoll
 from src.engine.unified_logger import get_logger
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from uuid import UUID
+from ..config import Config
 
 from langchain.agents.middleware import ToolCallLimitMiddleware
 from langchain_core.runnables import RunnableConfig
@@ -491,13 +492,7 @@ class AgentExecutor:
             invocation_kind = "system"
         elif invocation_kind != "mention" or callee_user_id is None:
             invocation_kind = "direct"
-            
-        # In direct calls callee == caller so tools always have a valid target without None checks.
-        effective_callee_user_id = callee_user_id if invocation_kind == "mention" else caller_user_id
-        callee = None
-        if invocation_kind == "mention":
-            callee = await engine.user_storage.get_by_id(effective_callee_user_id)
-            
+
         # Resolve the CALLER's org — that's the scope tools should operate in.
         # so tools don't try to run in system org scope because role_org for system roles is 00000000-0000-0000-0000-000000000000.
         scope_org_id = role.org_id
@@ -505,11 +500,17 @@ class AgentExecutor:
         if caller and caller.org_id:
             scope_org_id = caller.org_id
 
-        # When callee is a system-org user, replace it with caller so that tool access
-        # rules (file access, etc.) operate under the caller's privileges.
-        from ..config import Config
-        if callee is not None and callee.org_id == Config.SYSTEM_ORG_ID:
+        callee = None
+        if invocation_kind == "mention" and callee_user_id is not None:
+            callee = await engine.user_storage.get_by_id(callee_user_id)
+
+        # In direct AI chat (when callee is None) or system roles mentions tools should have caller's priveleges. 
+        callee_is_system = callee is not None and callee.org_id == Config.SYSTEM_ORG_ID
+        if callee is None or callee_is_system:
             callee = caller
+
+        logger.info(f"Resolved callee id={callee.id} (username={callee.username}) for invocation_kind={invocation_kind}. Original callee_user_id={callee_user_id}."
+                    f"Caller id={caller.id} (username={caller.username}) org_id={caller.org_id if caller.org_id else 'None'}")
 
         org = await engine.org_storage.get_by_id(scope_org_id)
         
@@ -537,8 +538,8 @@ class AgentExecutor:
             max_concurrency=2,
             configurable={
                 "org_id": str(scope_org_id) if scope_org_id else role.org_id,
-                "caller_user_id": str(caller_user_id),
-                "callee_user_id": str(effective_callee_user_id),
+                "caller_user_id": str(caller.id),
+                "callee_user_id": str(callee.id),
                 "invocation_kind": invocation_kind,
                 "is_admin": bool(caller.is_admin) if caller else False,
                 "timezone": org.timezone if org else "Europe/Moscow",
