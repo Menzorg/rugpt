@@ -234,7 +234,10 @@ class WebSignatureMiddleware(BaseHTTPMiddleware):
         request.scope["raw_path"] = request.scope["path"].encode("ascii")
 
         if had_body:
-            clean = {k: v for k, v in body_data.items() if k not in SIGNATURE_FIELDS}
+            clean = {
+                k: v for k, v in body_data.items()
+                if k not in SIGNATURE_FIELDS and k != "user_id"
+            }
             request._body = json.dumps(clean).encode("utf-8")
 
         if request.query_params:
@@ -242,6 +245,7 @@ class WebSignatureMiddleware(BaseHTTPMiddleware):
             if any(f in qp for f in SIGNATURE_FIELDS) or "user_id" in qp:
                 for f in SIGNATURE_FIELDS:
                     qp.pop(f, None)
+                qp.pop("user_id", None)
                 request.scope["query_string"] = urlencode(qp).encode("ascii")
 
         return await call_next(request)
