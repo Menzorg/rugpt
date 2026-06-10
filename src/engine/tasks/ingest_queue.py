@@ -30,6 +30,7 @@ def _run_ingest_sync(
     user_id: str,
     filename: str,
     data: bytes,
+    is_invoice: bool = False,
 ) -> None:
     """Run ingest in a worker thread with its own event loop and asyncpg pool.
 
@@ -71,6 +72,7 @@ def _run_ingest_sync(
                 filename=filename,
                 data=data,
                 file_id=file_id,
+                is_invoice=is_invoice,
             )
         finally:
             # Always release — executor reuses threads across jobs
@@ -101,11 +103,15 @@ class IngestQueue:
         user_id: str,
         filename: str,
         data: bytes,
+        is_invoice: bool = False,
     ) -> asyncio.Future:
         """Enqueue an ingest job. Returns immediately — waiting is optional.
 
         The done-callback ensures exceptions are logged even though the
         Future is intentionally not awaited by callers.
+
+        `is_invoice` flags invoice uploads so image invoices get a vision
+        summary during ingest (non-invoice images are skipped).
 
         When migrating to Kafka: replace body with producer.produce(topic, payload).
         """
@@ -118,6 +124,7 @@ class IngestQueue:
             user_id,
             filename,
             data,
+            is_invoice,
         )
         future.add_done_callback(self._on_done)
         return future

@@ -13,7 +13,12 @@ from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import ToolRuntime
 
 from src.engine.agents.runtime import RuntimeContext
+from src.engine.config import Config
+from src.engine.constants import IMAGE_TYPES
 from src.engine.utils.token_counter import count_tokens
+from src.engine.unified_logger import get_logger
+
+logger = get_logger("agents")
 
 
 class GetInvoiceInput(BaseModel):
@@ -25,7 +30,7 @@ def create_get_invoice_tool(engine):
         invoice_id: str,
         config: RunnableConfig,
         runtime: ToolRuntime[RuntimeContext],
-    ) -> str:
+    ):
         cfg = (config or {}).get("configurable", {}) or {}
         caller_raw = cfg.get("caller_user_id")
         async def _count_and_return(s: str) -> str:
@@ -65,17 +70,25 @@ def create_get_invoice_tool(engine):
         lines = [
             f"id: {inv.id}",
             f"file: {f.original_filename if f else inv.file_id}",
+            f"file_id: {inv.file_id}",
             f"status: {inv.status.value}",
             f"due_date: {inv.due_date or '—'}",
             f"uploader: {uploader.name if uploader else inv.uploaded_by_user_id}",
         ]
+        is_image = bool(f and (f.file_type or "").lower() in IMAGE_TYPES)
+        lines.append(f"is_image: {'true' if is_image else 'false'}")
+        if f and f.is_table:
+            lines.append("is_table: true")
         if f and f.summary:
             lines.append(f"summary: {f.summary}")
         if inv.status.value == "rejected" and inv.rejection_reason:
             lines.append(f"rejection_reason: {inv.rejection_reason}")
         result = "\n".join(lines)
 
+        # Text-only: attaching the invoice image via a tool message proved not
+        # to work at the vLLM level, so we no longer return the binary.
         return await _count_and_return(result)
+
 
     return StructuredTool.from_function(
         coroutine=_get,

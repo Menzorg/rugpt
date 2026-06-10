@@ -4,7 +4,7 @@ async agent runs with idempotency guarantees.
 """
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -92,6 +92,45 @@ def test_message_reply_forwards_invocation_kind_override():
 
         call = ai_service.generate_response.call_args
         assert call.kwargs["invocation_kind_override"] == "mention"
+
+    asyncio.run(go())
+
+
+def test_message_reply_records_support_first_response():
+    """Regression guard: the async handler must stamp support-ticket SLA after a
+    successful message_reply (this used to live only in the now-removed sync path,
+    so prod silently never stamped ai_first_response_at)."""
+    async def go():
+        ai_msg = MagicMock()
+        ai_msg.id = uuid4()
+        ai_msg.to_dict = MagicMock(return_value={"id": str(ai_msg.id), "content": "reply"})
+
+        handler, ai_service, _, _, _ = make_handler(
+            mark_running_result=True, generate_result=ai_msg,
+        )
+
+        payload = _payload()
+        await handler(payload)
+
+        ai_service.record_support_first_response.assert_awaited_once()
+        args = ai_service.record_support_first_response.call_args.args
+        assert args[0] == UUID(payload["chat_id"])
+        assert args[1] == UUID(payload["responder_id"])
+        assert args[2] == ai_msg.id
+
+    asyncio.run(go())
+
+
+def test_no_support_stamp_when_generate_returns_none():
+    """If no AI message was produced, the handler must not attempt the SLA stamp."""
+    async def go():
+        handler, ai_service, _, _, _ = make_handler(
+            mark_running_result=True, generate_result=None,
+        )
+
+        await handler(_payload())
+
+        ai_service.record_support_first_response.assert_not_called()
 
     asyncio.run(go())
 

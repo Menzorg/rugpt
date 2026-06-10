@@ -10,7 +10,7 @@
 - **PostgreSQL + asyncpg** — пул соединений (2–10)
 - **pgvector** — векторный поиск (RAG)
 - **Redis** — nonce-store движка (replay-protection, fail-closed); `REDIS_URL`
-- **Kafka** (опционально) — события (`chat.events`)
+- **Kafka** (обязательна) — события (`chat.events`), очередь агентных вызовов (`agent.requests`)
 - **JWT (ECDSA)** — подпись запросов от вебклиента (Zero Trust)
 
 ## Структура проекта
@@ -89,7 +89,7 @@ src/engine/
 - Движок: `127.0.0.1:8100` (только localhost; перед ним Nginx)
 - PostgreSQL: `localhost:5432`, БД `rugpt`
 - Redis: `REDIS_URL` (по умолч. `redis://localhost:6379/0`) — nonce-store, обязателен (fail-closed)
-- Kafka: (опционально, `KAFKA_ENABLED`) — топики `agent.requests`, `chat.events`
+- Kafka: обязательна — топики `agent.requests`, `chat.events`; Engine не стартует, если брокер недоступен (fail-fast)
 
 ## Архитектура / Агентная система
 
@@ -113,7 +113,7 @@ src/engine/
 - **InAppNotificationService** — колокольчик (типы: new_task / mention / status_change / system и т.п.)
 - **SupportNotificationService** — уведомления по тикетам поддержки
 - **NotificationService** — внешние каналы (Telegram/Email): код есть, в проде НЕ активирован
-- **Kafka** `chat.events` — доставка сообщений/агентных ответов в WS через NestJS (если `KAFKA_ENABLED`)
+- **Kafka** `chat.events` — доставка сообщений/агентных ответов в WS через NestJS
 
 ## БД
 

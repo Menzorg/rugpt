@@ -17,10 +17,16 @@ from ..storage.storage_adapter import StorageAdapter
 from ..constants import (
     ALLOWED_FILE_TYPES,
     CONTENT_TYPES,
+    IMAGE_TYPES,
     MAX_FILE_SIZE,
     RAG_COMPATIBLE_TYPES,
     TABLE_EXTENSIONS,
 )
+
+# Types that index_for_rag accepts. Images are allowed so invoice images can be
+# summarized by the vision LLM during ingest (only when is_invoice=True); other
+# RAG-compatible types are chunked/embedded as usual.
+RAG_INDEXABLE_TYPES = RAG_COMPATIBLE_TYPES | IMAGE_TYPES
 
 logger = get_logger("services")
 
@@ -138,6 +144,7 @@ class FileService:
         requesting_user_id: UUID,
         requesting_org_id: UUID | None = None,
         requesting_is_admin: bool = False,
+        is_invoice: bool = False,
     ) -> tuple[UserFile, "asyncio.Future | None"]:
         """Owner/admin-initiated: enqueue file for RAG indexing.
 
@@ -149,11 +156,14 @@ class FileService:
             requesting_user_id: file owner, or an org admin when indexing another user's file.
             requesting_org_id: required for admin cross-owner indexing; must match the file org.
             requesting_is_admin: whether the requesting user is an org admin.
+            is_invoice: when True, an image file is summarized by the vision LLM during
+                ingest (invoice images only). Non-invoice images are accepted but skip the
+                summary to avoid wasting an LLM call.
 
         Raises:
             FileNotFoundError: file does not exist or is inactive.
             PermissionError: requester is neither the owner nor a same-org admin.
-            ValueError: file type is not RAG-compatible (e.g. image).
+            ValueError: file type is not indexable.
         """
         file = await self.file_storage.get_by_id(file_id)
         if file is None or not file.is_active:
@@ -168,7 +178,7 @@ class FileService:
         if not (is_owner or is_same_org_admin):
             raise PermissionError("Only the file owner or an organization admin can index it for RAG")
 
-        if file.file_type not in RAG_COMPATIBLE_TYPES:
+        if file.file_type not in RAG_INDEXABLE_TYPES:
             raise ValueError(f"File type '{file.file_type}' is not supported by RAG")
         if file.rag_status == "indexed":
             logger.info(
@@ -205,6 +215,7 @@ class FileService:
                 user_id=str(file.user_id),
                 filename=file.original_filename,
                 data=data,
+                is_invoice=is_invoice,
             )
         except Exception as e:
             logger.error(

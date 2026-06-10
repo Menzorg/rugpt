@@ -89,6 +89,18 @@ async def get_system_users(current_user: dict = Depends(get_current_user)):
     engine = get_engine_service()
 
     system_users = await engine.user_storage.get_system_users()
+    logger.info(
+        "get_system_users result",
+        operation="users_system",
+        requester=str(current_user.get("user_id")),
+        count=len(system_users),
+        users=[
+            {"id": str(u.id), "username": u.username,
+             "role_id": str(u.role_id) if u.role_id else None,
+             "is_active": getattr(u, "is_active", None)}
+            for u in system_users
+        ],
+    )
     if not system_users:
         return []
 

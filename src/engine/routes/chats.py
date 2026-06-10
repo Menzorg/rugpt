@@ -446,6 +446,20 @@ async def send_message(
         file_ids=request.file_ids,
     )
 
+    # Publish to chat.events for real-time WS delivery via NestJS consumer.
+    # Same pattern as reply-to-mention / agent_handler — engine является
+    # единственным источником истины для broadcast'а пользовательского сообщения.
+    if engine.kafka_producer is not None:
+        try:
+            from ..config import Config
+            await engine.kafka_producer.send(
+                Config.KAFKA_TOPIC_CHAT_EVENTS,
+                {"chat_id": str(chat_id), "message": message.to_dict()},
+                key=str(chat_id),
+            )
+        except Exception as e:
+            logger.error(f"Failed to publish user message to Kafka: {e}")
+
     # In-app notifications для @user-упоминаний (без self-mention).
     # @@-mentions идут отдельным путём ниже через process_ai_mentions.
     sender = await engine.user_storage.get_by_id(user_id)
@@ -462,35 +476,26 @@ async def send_message(
                 reference_id=message.id,
             )
 
-    # Process @@ mentions -> AI responses (sync path) OR enqueue (async path)
+    # Enqueue AI work — always async via Kafka. Reply arrives later via chat.events;
+    # set agent_pending so the client shows the pending indicator.
     ai_responses = []
     ai_mentions = [m for m in mentions if m.type.value == "ai_role"]
     agent_pending = False
 
     if ai_mentions:
-        ai_messages = await engine.ai_service.process_ai_mentions(message, org_id)
-        # Async mode: process_ai_mentions returns empty list, enqueue happened internally
-        if not ai_messages and engine.ai_service._is_async_mode():
-            agent_pending = True
-        ai_responses = [MessageResponse(**msg.to_dict()) for msg in ai_messages]
+        await engine.ai_service.process_ai_mentions(message, org_id)
+        agent_pending = True
     else:
-        ai_msg = await engine.ai_service.try_auto_respond(message, chat_id, user_id)
-        if ai_msg:
-            ai_responses = [MessageResponse(**ai_msg.to_dict())]
-        elif engine.ai_service._is_async_mode():
-            # Auto-respond path may have enqueued if there's a system user in the chat.
-            # We can't cheaply tell if enqueue happened without extra DB lookup; err
-            # on the side of showing the pending indicator when async mode is on and
-            # the chat has at least one system participant.
-            chat = await engine.chat_service.get_chat(chat_id)
-            if chat:
-                for pid in chat.participants:
-                    if pid == user_id:
-                        continue
-                    u = await engine.user_storage.get_by_id(pid)
-                    if u and u.is_system:
-                        agent_pending = True
-                        break
+        await engine.ai_service.try_auto_respond(message, chat_id, user_id)
+        chat = await engine.chat_service.get_chat(chat_id)
+        if chat:
+            for pid in chat.participants:
+                if pid == user_id:
+                    continue
+                u = await engine.user_storage.get_by_id(pid)
+                if u and u.is_system:
+                    agent_pending = True
+                    break
 
     return SendMessageResponse(
         user_message=MessageResponse(**message.to_dict()),
@@ -516,6 +521,26 @@ async def mark_chat_read(
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+    # Publish to chat.events for multi-device sync via NestJS consumer.
+    # Старый WS-обработчик слал chat:unread-cleared в комнату user:{reader}
+    # (только свои вкладки/устройства, не другим участникам). Consumer
+    # ребродкастит то же по user_id читателя.
+    if engine.kafka_producer is not None:
+        try:
+            from ..config import Config
+            await engine.kafka_producer.send(
+                Config.KAFKA_TOPIC_CHAT_EVENTS,
+                {
+                    "kind": "unread_cleared",
+                    "user_id": str(user_id),
+                    "chat_id": str(chat_id),
+                },
+                key=str(chat_id),
+            )
+        except Exception as e:
+            logger.error(f"Failed to publish unread_cleared to Kafka: {e}")
+
     return None
 
 
@@ -562,6 +587,26 @@ async def validate_message(
     )
     if not message:
         raise HTTPException(status_code=404, detail="Message not found or not AI message")
+
+    # Publish to chat.events for real-time WS delivery via NestJS consumer.
+    # Same pattern as send_message — engine является единственным источником
+    # истины для broadcast'а. `kind` маршрутизирует событие в consumer'е
+    # (message:validated в комнату чата).
+    if engine.kafka_producer is not None:
+        try:
+            from ..config import Config
+            await engine.kafka_producer.send(
+                Config.KAFKA_TOPIC_CHAT_EVENTS,
+                {
+                    "kind": "message_validated",
+                    "chat_id": str(message.chat_id),
+                    "message": message.to_dict(),
+                },
+                key=str(message.chat_id),
+            )
+        except Exception as e:
+            logger.error(f"Failed to publish message_validated to Kafka: {e}")
+
     return MessageResponse(**message.to_dict())
 
 
@@ -626,6 +671,26 @@ async def reject_message(
         user_id=user_id,
         correction_text=request.correction_text,
     )
+
+    # Publish to chat.events for real-time WS delivery via NestJS consumer.
+    # chat_id берём из отклонённого сообщения; consumer ребродкастит
+    # message:rejected {messageId, rule} в комнату чата.
+    if engine.kafka_producer is not None:
+        try:
+            from ..config import Config
+            await engine.kafka_producer.send(
+                Config.KAFKA_TOPIC_CHAT_EVENTS,
+                {
+                    "kind": "message_rejected",
+                    "chat_id": str(target.chat_id),
+                    "message_id": str(message_id),
+                    "rule": rule.to_dict(),
+                },
+                key=str(target.chat_id),
+            )
+        except Exception as e:
+            logger.error(f"Failed to publish message_rejected to Kafka: {e}")
+
     return CorrectionRuleResponse(**rule.to_dict())
 
 

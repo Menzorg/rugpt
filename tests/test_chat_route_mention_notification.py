@@ -39,7 +39,7 @@ async def test_user_mention_creates_notification():
 
     fake_engine = MagicMock()
     fake_engine.support_ticket_service = None
-    fake_engine.chat_service.get_chat = AsyncMock(return_value=MagicMock(id=chat_id))
+    fake_engine.chat_service.get_chat = AsyncMock(return_value=MagicMock(id=chat_id, participants=[]))
     fake_engine.mention_service.resolve_mentions = AsyncMock(
         return_value=[Mention(type=MentionType.USER, user_id=anna_id, username="anna", position=0)]
     )
@@ -51,7 +51,6 @@ async def test_user_mention_creates_notification():
     )
     fake_engine.in_app_notification_service.create = AsyncMock()
     fake_engine.ai_service.process_ai_mentions = AsyncMock(return_value=[])
-    fake_engine.ai_service._is_async_mode = lambda: False
     fake_engine.ai_service.try_auto_respond = AsyncMock(return_value=None)
     fake_engine.chat_storage.is_ai_direct_chat = AsyncMock(return_value=False)
 
@@ -83,7 +82,7 @@ async def test_self_mention_skipped():
 
     fake_engine = MagicMock()
     fake_engine.support_ticket_service = None
-    fake_engine.chat_service.get_chat = AsyncMock(return_value=MagicMock(id=chat_id))
+    fake_engine.chat_service.get_chat = AsyncMock(return_value=MagicMock(id=chat_id, participants=[]))
     fake_engine.mention_service.resolve_mentions = AsyncMock(
         return_value=[Mention(type=MentionType.USER, user_id=bob_id, username="bob", position=0)]
     )
@@ -94,7 +93,6 @@ async def test_self_mention_skipped():
     fake_engine.user_storage.get_by_id = AsyncMock(return_value=MagicMock(username="bob", id=bob_id))
     fake_engine.in_app_notification_service.create = AsyncMock()
     fake_engine.ai_service.process_ai_mentions = AsyncMock(return_value=[])
-    fake_engine.ai_service._is_async_mode = lambda: False
     fake_engine.ai_service.try_auto_respond = AsyncMock(return_value=None)
     fake_engine.chat_storage.is_ai_direct_chat = AsyncMock(return_value=False)
 
@@ -117,7 +115,7 @@ async def test_ai_role_mention_does_not_create_notification():
 
     fake_engine = MagicMock()
     fake_engine.support_ticket_service = None
-    fake_engine.chat_service.get_chat = AsyncMock(return_value=MagicMock(id=chat_id))
+    fake_engine.chat_service.get_chat = AsyncMock(return_value=MagicMock(id=chat_id, participants=[]))
     fake_engine.mention_service.resolve_mentions = AsyncMock(
         return_value=[Mention(type=MentionType.AI_ROLE, user_id=anna_id, username="anna", position=0)]
     )
@@ -128,7 +126,6 @@ async def test_ai_role_mention_does_not_create_notification():
     fake_engine.user_storage.get_by_id = AsyncMock(return_value=MagicMock(username="bob", id=bob_id))
     fake_engine.in_app_notification_service.create = AsyncMock()
     fake_engine.ai_service.process_ai_mentions = AsyncMock(return_value=[])
-    fake_engine.ai_service._is_async_mode = lambda: False
     fake_engine.ai_service.try_auto_respond = AsyncMock(return_value=None)
     fake_engine.chat_storage.is_ai_direct_chat = AsyncMock(return_value=False)
 

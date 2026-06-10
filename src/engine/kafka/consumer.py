@@ -29,20 +29,15 @@ class KafkaConsumerLoop:
         group_id: str,
         handler: MessageHandler,
         bootstrap_servers: Optional[str] = None,
-        enabled: Optional[bool] = None,
     ):
         self.topic = topic
         self.group_id = group_id
         self.handler = handler
         self.bootstrap_servers = bootstrap_servers or Config.KAFKA_BOOTSTRAP_SERVERS
-        self.enabled = Config.KAFKA_ENABLED if enabled is None else enabled
         self._task: Optional[asyncio.Task] = None
         self._stopping = False
 
     async def start(self) -> None:
-        if not self.enabled:
-            logger.info(f"Kafka consumer disabled for topic={self.topic}")
-            return
         self._stopping = False
         self._task = asyncio.create_task(self._run(), name=f"kafka-consumer-{self.topic}")
 

@@ -591,8 +591,8 @@ class SchedulerService:
         from ..services.ai_service import POLL_INTERVIEWER_ROLE_CODE
         from ..models.message import Message, SenderType
 
-        # Graceful degradation: if any dep is missing (tests, partial wiring,
-        # KAFKA_ENABLED=false-style bare engines), just bail without raising.
+        # Graceful degradation: if any dep is missing (tests, partial wiring),
+        # just bail without raising.
         if not (
             self.task_poll_service
             and getattr(self.task_poll_service, "storage", None)

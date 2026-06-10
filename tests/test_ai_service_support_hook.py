@@ -1,10 +1,15 @@
-"""Tests for AIService support-ticket hook in try_auto_respond.
+"""Tests for the support-ticket SLA hook.
 
-Four scenarios:
-1. how_to + ai_handoff_at IS NULL -> AI responds, ai_first_response_at stamped, AI_RESPONDED event recorded.
-2. how_to + ai_handoff_at SET -> AI does NOT respond (escalated).
-3. Non-support chat with system user -> existing behavior, AI responds, NO support-side effects.
-4. Support chat without support deps wired -> graceful fallback, AI still responds.
+Since Kafka became mandatory, the AI reply is generated asynchronously by
+AgentRequestHandler, which calls AIService.record_support_first_response after
+a successful reply. These tests cover that method directly + the handoff
+pre-check that still lives in try_auto_respond.
+
+Scenarios:
+1. SUPPORT chat with a ticket -> ai_first_response_at stamped + AI_RESPONDED event.
+2. how_to + ai_handoff_at SET -> try_auto_respond does NOT enqueue (escalated).
+3. Non-support chat -> record_support_first_response is a no-op (no side effects).
+4. Support deps not wired -> record_support_first_response degrades silently (no crash).
 """
 import asyncio
 from datetime import datetime
@@ -123,9 +128,9 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-# ---------- Scenario 1: AI responds + side effects ----------
+# ---------- Scenario 1: record_support_first_response stamps + audits ----------
 
-def test_support_chat_how_to_no_handoff_ai_responds_and_stamps_and_audits():
+def test_record_support_first_response_stamps_and_audits():
     sender = _user()
     support_ai = _user(is_system=True)
     ticket = _ticket(category=SupportTicketCategory.HOW_TO, ai_handoff_at=None)
@@ -134,7 +139,6 @@ def test_support_chat_how_to_no_handoff_ai_responds_and_stamps_and_audits():
         participants=[sender.id, support_ai.id],
         support_ticket_id=ticket.id,
     )
-    msg = _msg(chat.id, sender.id)
     fake_ai_msg = _msg(chat.id, support_ai.id, content="ai reply")
 
     svc, ticket_storage, event_storage = _make_service(
@@ -145,20 +149,21 @@ def test_support_chat_how_to_no_handoff_ai_responds_and_stamps_and_audits():
         ai_response=fake_ai_msg,
     )
 
-    result = _run(svc.try_auto_respond(msg, chat.id, sender.id))
+    _run(svc.record_support_first_response(
+        chat_id=chat.id,
+        ai_user_id=support_ai.id,
+        response_message_id=fake_ai_msg.id,
+    ))
 
-    # AI replied
-    svc.generate_response.assert_called_once()
-    assert result is fake_ai_msg or (result is not None and result.id == fake_ai_msg.id)
-    # ai_first_response_at stamped
-    ticket_storage.set_ai_first_response.assert_called_once_with(ticket.id)
+    # ai_first_response_at stamped with the chat's ticket id
+    ticket_storage.set_ai_first_response.assert_called_once_with(chat.support_ticket_id)
     # AI_RESPONDED event recorded
     event_storage.insert.assert_called_once()
     inserted_event = event_storage.insert.call_args.args[0]
     assert inserted_event.event_type == SupportTicketEventType.AI_RESPONDED
     assert inserted_event.actor_role == SupportTicketActorRole.AI
     assert inserted_event.actor_user_id == support_ai.id
-    assert inserted_event.ticket_id == ticket.id
+    assert inserted_event.ticket_id == chat.support_ticket_id
 
 
 # ---------- Scenario 2: handoff already done, AI must not respond ----------
@@ -192,9 +197,9 @@ def test_support_chat_after_handoff_ai_does_not_respond():
     event_storage.insert.assert_not_called()
 
 
-# ---------- Scenario 3: non-support chat — existing behavior preserved ----------
+# ---------- Scenario 3: non-support chat — record hook is a no-op ----------
 
-def test_non_support_chat_with_system_user_unaffected_by_support_hook():
+def test_record_support_first_response_noop_for_non_support_chat():
     sender = _user()
     system_user = _user(is_system=True)
     chat = _chat(
@@ -202,33 +207,33 @@ def test_non_support_chat_with_system_user_unaffected_by_support_hook():
         participants=[sender.id, system_user.id],
         support_ticket_id=None,
     )
-    msg = _msg(chat.id, sender.id)
     fake_ai_msg = _msg(chat.id, system_user.id, content="reply")
 
+    # support deps ARE wired, but the chat is not a SUPPORT chat -> must be a no-op
     svc, ticket_storage, event_storage = _make_service(
         chat=chat,
         sender=sender,
         system_responder=system_user,
-        ticket=None,  # no support deps wired
+        ticket=_ticket(),
         ai_response=fake_ai_msg,
     )
 
-    result = _run(svc.try_auto_respond(msg, chat.id, sender.id))
+    _run(svc.record_support_first_response(
+        chat_id=chat.id,
+        ai_user_id=system_user.id,
+        response_message_id=fake_ai_msg.id,
+    ))
 
-    # Existing behavior: AI replied
-    svc.generate_response.assert_called_once()
-    assert result is fake_ai_msg or (result is not None and result.id == fake_ai_msg.id)
-    # ticket_storage / event_storage not wired — confirm no support-side effects attempted
-    assert ticket_storage is None
-    assert event_storage is None
+    ticket_storage.set_ai_first_response.assert_not_called()
+    event_storage.insert.assert_not_called()
 
 
-# ---------- Scenario 4: support chat but support deps NOT wired — graceful degrade ----------
+# ---------- Scenario 4: support deps NOT wired — graceful degrade ----------
 
-def test_support_chat_without_support_deps_wired_falls_back_to_existing_behavior():
+def test_record_support_first_response_noop_when_support_deps_not_wired():
     """If AIService is constructed without support_ticket_storage/event_storage
-    (e.g. in legacy environments or partial bootstrap), the support hook must
-    silently fall back to existing behavior — no crash, AI still responds.
+    (legacy environments or partial bootstrap), record_support_first_response
+    must degrade silently — no crash.
     """
     sender = _user()
     support_ai = _user(is_system=True)
@@ -237,7 +242,6 @@ def test_support_chat_without_support_deps_wired_falls_back_to_existing_behavior
         participants=[sender.id, support_ai.id],
         support_ticket_id=uuid4(),
     )
-    msg = _msg(chat.id, sender.id)
     fake_ai_msg = _msg(chat.id, support_ai.id, content="reply")
 
     svc, _, _ = _make_service(
@@ -248,8 +252,9 @@ def test_support_chat_without_support_deps_wired_falls_back_to_existing_behavior
         ai_response=fake_ai_msg,
     )
 
-    result = _run(svc.try_auto_respond(msg, chat.id, sender.id))
-
-    # Should still respond gracefully
-    svc.generate_response.assert_called_once()
-    assert result is fake_ai_msg or (result is not None and result.id == fake_ai_msg.id)
+    # Must not raise.
+    _run(svc.record_support_first_response(
+        chat_id=chat.id,
+        ai_user_id=support_ai.id,
+        response_message_id=fake_ai_msg.id,
+    ))
