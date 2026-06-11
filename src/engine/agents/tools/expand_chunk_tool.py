@@ -14,11 +14,14 @@ from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
+from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field
 
+from ..runtime import RuntimeContext
 from ...services.rag_service import RAGService
 from ...storage.chat_storage import ChatStorage
 from ...storage.user_file_storage import UserFileStorage
+from ...utils.token_counter import count_tokens
 
 logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
@@ -58,6 +61,7 @@ def create_expand_chunk_tool(
         file_id: str,
         chunk_index: int,
         config: RunnableConfig = None,
+        runtime: ToolRuntime[RuntimeContext] = None,
     ) -> str:
         """Fetch one chunk and its immediate neighbors by file_id and chunk_index.
         Args:
@@ -71,8 +75,16 @@ def create_expand_chunk_tool(
             chat_id = configurable.get("chat_id")
 
             logger.info(
-                "expand_chunk called: file_id=%s, chunk_index=%d, org_id=%s, user_id=%s, chat_id=%s",
-                file_id, chunk_index, org_id, user_id, chat_id,
+                "tool expand_chunk: file_id=%s chunk_index=%d",
+                file_id, chunk_index,
+            )
+            logger.info(
+                "expand_chunk identity: caller_user_id=%s callee_user_id=%s org_id=%s is_admin=%s invocation=%s",
+                configurable.get("caller_user_id", ""),
+                configurable.get("callee_user_id", ""),
+                configurable.get("org_id", ""),
+                bool(configurable.get("is_admin", False)),
+                configurable.get("invocation_kind", ""),
             )
 
             if not await _can_access_file(file_id, org_id, user_id, chat_id):
@@ -96,7 +108,11 @@ def create_expand_chunk_tool(
                 idx = chunk.chunk_index if chunk.chunk_index is not None else "?"
                 lines.append(f"\n[chunk {idx}] {chunk.chunk_text}")
 
-            return "\n".join(lines)
+            result = "\n".join(lines)
+            if runtime is not None:
+                async with runtime.context.lock:
+                    runtime.context.total_tokens_spent += count_tokens(result)
+            return result
         except Exception as e:
             logger.error(f"expand_chunk failed: {e}", exc_info=True)
             return _TOOL_ERROR_RESULT

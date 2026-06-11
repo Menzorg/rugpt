@@ -17,10 +17,13 @@ from uuid import UUID
 
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
+from langgraph.prebuilt import ToolRuntime
 
+from ..runtime import RuntimeContext
 from ...services.rag_service import RAGService
 from ...storage.chat_storage import ChatStorage
 from ...storage.user_file_storage import UserFileStorage
+from ...utils.token_counter import count_tokens
 
 logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
@@ -70,6 +73,7 @@ async def table_rows_search(
     row_start: int,
     row_end: int,
     config: RunnableConfig,
+    runtime: ToolRuntime[RuntimeContext] = None,
 ) -> str:
     """Fetch rows from a table document by row index range. Maximum 50 rows returned per call.
     Args:
@@ -88,8 +92,16 @@ async def table_rows_search(
         row_end = min(row_end, row_start + _MAX_ROWS - 1)
 
         logger.info(
-            "table_rows_search called: file_id=%s, row_start=%d, row_end=%d, org_id=%s, user_id=%s, chat_id=%s",
-            file_id, row_start, row_end, org_id, user_id, chat_id,
+            "tool table_rows_search: file_id=%s row_start=%d row_end=%d",
+            file_id, row_start, row_end,
+        )
+        logger.info(
+            "table_rows_search identity: caller_user_id=%s callee_user_id=%s org_id=%s is_admin=%s invocation=%s",
+            configurable.get("caller_user_id", ""),
+            configurable.get("callee_user_id", ""),
+            configurable.get("org_id", ""),
+            bool(configurable.get("is_admin", False)),
+            configurable.get("invocation_kind", ""),
         )
 
         if _rag_service is None:
@@ -98,6 +110,27 @@ async def table_rows_search(
 
         if not await _can_access_file(file_id, org_id, user_id, chat_id):
             return "You don't have access to that document."
+
+        if _user_file_storage is not None:
+            doc = await _user_file_storage.get_by_id(UUID(file_id))
+        else:
+            doc = None
+        doc_name = (doc.original_filename if doc else None) or file_id
+
+        if runtime is not None:
+            async with runtime.context.lock:
+                tokens_before = runtime.context.total_tokens_spent
+                critical_cap = runtime.context.critical_tokens_cap
+
+            if tokens_before >= critical_cap:
+                logger.info(
+                    "table_rows_search: blocked for file_id=%s — total_tokens_spent=%d >= %d",
+                    file_id, tokens_before, critical_cap,
+                )
+                return (
+                    f"[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+                    f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]"
+                )
 
         rows = await _rag_service.get_table_rows_by_range(
             file_id=file_id,
@@ -110,7 +143,26 @@ async def table_rows_search(
 
         lines = [f"Rows returned: {len(rows)}"]
         lines += [f"[row {row_start + i}] {r.chunk_text}" for i, r in enumerate(rows)]
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        spent = count_tokens(result)
+
+        if runtime is not None:
+            async with runtime.context.lock:
+                if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
+                    logger.info(
+                        "table_rows_search: blocked after fetch for file_id=%s — total_tokens_spent=%d >= %d",
+                        file_id, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
+                    )
+                    return (
+                        f"[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+                        f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]"
+                    )
+                runtime.context.total_tokens_spent += spent
+                logger.info(
+                    "table_rows_search done: file_id=%s rows=%d output_tokens=%d tokens_after=%d",
+                    file_id, len(rows), spent, runtime.context.total_tokens_spent,
+                )
+        return result
     except Exception as e:
         logger.error(f"table_rows_search failed: {e}", exc_info=True)
         return _TOOL_ERROR_RESULT

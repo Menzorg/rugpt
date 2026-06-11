@@ -65,7 +65,7 @@ _PAGE_SIZE = 30
 _MAX_RESULTS = 180
 
 # Total token budget for document summaries across the whole agent run.
-_SUMMARY_TOKENS_BUDGET = 2000
+_SUMMARY_TOKENS_BUDGET = 4000
 
 _user_file_storage: Optional[UserFileStorage] = None
 _user_storage: Optional[UserStorage] = None
@@ -386,6 +386,16 @@ async def _list_documents_impl(
 
     try:
         scope = _build_scope(config, own_only, user_id)
+        configurable = (config or {}).get("configurable", {})
+        logger.info(
+            "%s identity: caller_user_id=%s callee_user_id=%s org_id=%s is_admin=%s invocation=%s",
+            tool_name,
+            configurable.get("caller_user_id", ""),
+            configurable.get("callee_user_id", ""),
+            configurable.get("org_id", ""),
+            bool(configurable.get("is_admin", False)),
+            configurable.get("invocation_kind", ""),
+        )
         logger.info(
             "%s access: caller=%s callee=%s org=%s public_only_owner=%s is_admin=%s chat_id=%s",
             tool_name,
@@ -507,6 +517,7 @@ async def _list_documents_impl(
         if hidden_count:
             result = f"Some document(s) are private and not accessible to caller.\n" + result
         async with runtime.context.lock:
+            runtime.context.total_tokens_spent += count_tokens(result)
             summary_after = runtime.context.list_documents_runtime_data.spent_summary_tokens
             tokens_after = runtime.context.total_tokens_spent
         logger.info(

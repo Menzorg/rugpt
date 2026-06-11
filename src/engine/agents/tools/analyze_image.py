@@ -9,15 +9,19 @@ from typing import Optional
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field
 
+from ..runtime import RuntimeContext
 from ...config import Config
 from ...constants import IMAGE_TYPES
 from ...storage.storage_adapter import StorageAdapter
 from ...storage.user_file_storage import UserFileStorage
 from ...utils.image_parser import image_bytes_to_data_url
+from ...utils.token_counter import count_tokens
 
 logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
@@ -66,7 +70,11 @@ def create_analyze_image_tool(
         }
 
     async def _analyze_image_async(
-        query: str, file_id: str, accent_proposal: Optional[str] = None
+        query: str,
+        file_id: str,
+        accent_proposal: Optional[str] = None,
+        config: RunnableConfig = None,
+        runtime: ToolRuntime[RuntimeContext] = None,
     ) -> str:
         """Analyze an uploaded image with an LLM.
 
@@ -82,6 +90,15 @@ def create_analyze_image_tool(
             accent_proposal,
         )
         try:
+            configurable = (config or {}).get("configurable", {})
+            logger.info(
+                "analyze_image identity: caller_user_id=%s callee_user_id=%s org_id=%s is_admin=%s invocation=%s",
+                configurable.get("caller_user_id", ""),
+                configurable.get("callee_user_id", ""),
+                configurable.get("org_id", ""),
+                bool(configurable.get("is_admin", False)),
+                configurable.get("invocation_kind", ""),
+            )
             media_payload = await _read_image_payload(file_id)
             if isinstance(media_payload, str):
                 return media_payload
@@ -97,13 +114,17 @@ def create_analyze_image_tool(
                 temperature=0.2,
                 timeout=120,
             )
-            result = await llm.ainvoke([
+            llm_result = await llm.ainvoke([
                 HumanMessage(content=[
                     {"type": "text", "text": prompt},
                     media_payload,
                 ])
             ])
-            return str(result.content).strip()
+            result = str(llm_result.content).strip()
+            if runtime is not None:
+                async with runtime.context.lock:
+                    runtime.context.total_tokens_spent += count_tokens(result)
+            return result
         except Exception as e:
             logger.error("analyze_image failed: %s", e, exc_info=True)
             return _TOOL_ERROR_RESULT
