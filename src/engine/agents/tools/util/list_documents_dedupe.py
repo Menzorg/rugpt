@@ -122,7 +122,7 @@ async def dedupe_and_page(
                 with_dedup_header(dedupe_state.deduplicated_across_runs, empty_message),
             )
 
-        if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
+        if runtime.context.is_budget_exhausted():
             logger.info(
                 "%s blocked: total_tokens_spent=%d cap=%d candidates=%d",
                 tool_name,

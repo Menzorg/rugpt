@@ -41,3 +41,20 @@ class RuntimeContext:
     # Critical token budget cap for this run. Once reached, RAG tools are blocked
     # and summarization middleware starts compacting conversation state.
     critical_tokens_cap: int = 60000
+
+    def is_budget_exhausted(self) -> bool:
+        """Return True if the token cap has been reached. Call inside self.lock."""
+        return self.total_tokens_spent >= self.critical_tokens_cap
+
+    async def try_commit(self, spent: int, blocked_msg: str) -> str | None:
+        """Atomically commit *spent* tokens if the budget allows.
+
+        Acquires self.lock, re-checks the cap (parallel tools may have spent
+        tokens since the last check), and either increments total_tokens_spent
+        and returns None, or returns *blocked_msg* without committing.
+        """
+        async with self.lock:
+            if self.is_budget_exhausted():
+                return blocked_msg
+            self.total_tokens_spent += spent
+            return None

@@ -51,7 +51,7 @@ from ...storage.chat_storage import ChatStorage
 from ...storage.user_file_storage import UserFileStorage
 from ...storage.user_storage import UserStorage
 from ...utils.token_counter import count_tokens
-from .util.list_documents_dedupe import dedupe_and_page
+from .util.list_documents_dedupe import blocked_listing_message, dedupe_and_page
 from .util.list_documents_formatters import (
     format_and_commit_page,
     format_single_doc,
@@ -375,75 +375,59 @@ async def _list_documents_impl(
     tool_name = "list_own_documents" if own_only else "list_documents"
     raw_name_query = name_query
     raw_summary_query = summary_query
-    logger.info(
-        "tool %s: name_query=%r, summary_query=%r, file_id=%r, page=%d, user_id=%r",
-        tool_name, name_query, summary_query, file_id, page, user_id,
-    )
+    logger.info("tool %s: name_query=%r, summary_query=%r, file_id=%r, page=%d, user_id=%r",
+                tool_name, name_query, summary_query, file_id, page, user_id)
 
     if _user_file_storage is None:
         logger.error("%s: storage not initialized, call init_document_service() at startup", tool_name)
         return f"{tool_name} unavailable: storage not initialized."
 
     try:
+        # --- Stage 1: Build scope ---
+        # Resolve caller/callee identity and visibility rules from injected config.
         scope = _build_scope(config, own_only, user_id)
         configurable = (config or {}).get("configurable", {})
+
         logger.info(
             "%s identity: caller_user_id=%s callee_user_id=%s org_id=%s is_admin=%s invocation=%s",
-            tool_name,
-            configurable.get("caller_user_id", ""),
-            configurable.get("callee_user_id", ""),
-            configurable.get("org_id", ""),
-            bool(configurable.get("is_admin", False)),
-            configurable.get("invocation_kind", ""),
-        )
+            tool_name, configurable.get("caller_user_id", ""), configurable.get("callee_user_id", ""),
+            configurable.get("org_id", ""), bool(configurable.get("is_admin", False)), configurable.get("invocation_kind", ""))
         logger.info(
             "%s access: caller=%s callee=%s org=%s public_only_owner=%s is_admin=%s chat_id=%s",
-            tool_name,
-            scope.caller_user_id,
-            scope.callee_user_id,
-            scope.org_id,
-            scope.public_only_owner,
-            scope.is_admin,
-            scope.chat_id,
-        )
+            tool_name, scope.caller_user_id, scope.callee_user_id, scope.org_id,
+            scope.public_only_owner, scope.is_admin, scope.chat_id)
+
+        # Chat attachments are always visible regardless of ownership/public flag.
         chat_attachment_ids = await _get_chat_attachment_ids(scope.chat_id)
         name_query = name_query.strip()
         summary_query = summary_query.strip()
 
+        # --- Stage 2: Snapshot token budget ---
+        # Capture current budget state before doing any work so we can log the delta at the end.
         path = "single" if file_id and file_id.strip() else ("search" if name_query or summary_query else "list")
         async with runtime.context.lock:
             summary_before = runtime.context.list_documents_runtime_data.spent_summary_tokens
             tokens_before = runtime.context.total_tokens_spent
             token_cap = runtime.context.critical_tokens_cap
+
         logger.info(
             "%s start: path=%s name_query=%r summary_query=%r file_id=%r page=%d owner_filter=%s caller=%s owner=%s public_only_owner=%s is_admin=%s summary_tokens=%d/%d total_tokens=%d/%d",
-            tool_name,
-            path,
-            raw_name_query,
-            raw_summary_query,
-            file_id,
-            page,
-            scope.owner_filter_user_id,
-            scope.caller_user_id,
-            scope.owner_user_id,
-            scope.public_only_owner,
-            scope.is_admin,
-            summary_before,
-            _SUMMARY_TOKENS_BUDGET,
-            tokens_before,
-            token_cap,
-        )
+            tool_name, path, raw_name_query, raw_summary_query, file_id, page,
+            scope.owner_filter_user_id, scope.caller_user_id, scope.owner_user_id,
+            scope.public_only_owner, scope.is_admin, summary_before, _SUMMARY_TOKENS_BUDGET, tokens_before, token_cap)
 
-        # --- Single-document lookup: bypasses pagination, deduplication, and budgets ---
+        # --- Stage 3: Single-document fast path ---
+        # Bypasses pagination, deduplication, and summary budgets entirely.
         if file_id and file_id.strip():
             result = await _get_single_document(file_id, scope, chat_attachment_ids)
             logger.info(
                 "%s done: path=single file_id=%s output_tokens=%d",
-                tool_name, file_id, count_tokens(result),
-            )
+                tool_name, file_id, count_tokens(result))
             return result
 
-        # --- Search by queries ---
+        # --- Stage 4: Fetch candidates (search or list) ---
+        # Search path: name_query hits SQL full-text, summary_query hits pgvector.
+        # List path: loads all org files then filters by visibility rules locally.
         hidden_count = 0
         not_indexed_count = 0
         if name_query or summary_query:
@@ -455,23 +439,27 @@ async def _list_documents_impl(
             if error:
                 return error
             empty_message = "No documents matched your query."
+            # Search results are already ranked; no need to downgrade to compact on budget exhaustion.
             compact_on_budget_exhausted = False
             raw_count = len(files)
             visible_count = len(files)
         else:
-            # --- Or list all files without queries ---
+            # List all files, then apply visibility + indexed-only filter.
             all_files = await _user_file_storage.list_by_org(scope.org_id)
             files, hidden_count, not_indexed_count = _filter_listed_files(all_files, scope, chat_attachment_ids)
             empty_message = "No documents in your scope."
+            # Full listing can be large; switch to compact format when summary budget runs out.
             compact_on_budget_exhausted = True
             raw_count = len(all_files)
             visible_count = len(files)
 
         logger.info(
             "%s candidates: path=%s raw=%d visible=%d compact_on_budget=%s",
-            tool_name, path, raw_count, visible_count, compact_on_budget_exhausted,
-        )
+            tool_name, path, raw_count, visible_count, compact_on_budget_exhausted)
 
+        # --- Stage 5: Deduplicate and paginate ---
+        # Skip items the model already received in earlier tool calls this run,
+        # then slice the requested page from what remains.
         dedupe_state, page_slice, shortcut_result = await dedupe_and_page(
             runtime,
             files,
@@ -480,8 +468,8 @@ async def _list_documents_impl(
             scope.tool_name,
             empty_message,
         )
-        # shortcut_result is set when dedupe_and_page can answer without full formatting
-        # (empty list, budget exhausted, or all items already seen in a previous call).
+        # shortcut_result is non-None when dedupe_and_page can answer without full formatting
+        # (empty list, global token budget exhausted, or all items already seen).
         if shortcut_result is not None:
             if not_indexed_count:
                 shortcut_result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + shortcut_result
@@ -489,21 +477,17 @@ async def _list_documents_impl(
                 shortcut_result = f"Some document(s) are private and not accessible to caller.\n" + shortcut_result
             logger.info(
                 "%s done: path=%s result=shortcut hidden=%d output_tokens=%d deduped=%s",
-                tool_name, path, hidden_count, count_tokens(shortcut_result), dedupe_state.deduplicated_across_runs,
-            )
+                tool_name, path, hidden_count, count_tokens(shortcut_result), dedupe_state.deduplicated_across_runs)
             return shortcut_result
 
         logger.info(
             "%s page: page=%d/%d span=%d-%d total=%d page_items=%d deduped=%s",
-            tool_name,
-            page_slice.page,
-            page_slice.total_pages,
-            page_slice.start + 1,
-            page_slice.end,
-            page_slice.total,
-            len(page_slice.items),
-            dedupe_state.deduplicated_across_runs,
-        )
+            tool_name, page_slice.page, page_slice.total_pages, page_slice.start + 1,
+            page_slice.end, page_slice.total, len(page_slice.items), dedupe_state.deduplicated_across_runs)
+
+        # --- Stage 6: Format page and enforce summary budget ---
+        # Renders each document; summaries are capped per-document by the remaining
+        # summary token budget and replaced with [BUDGET EXHAUSTED] once spent.
         result = await format_and_commit_page(
             runtime,
             page_slice,
@@ -516,21 +500,23 @@ async def _list_documents_impl(
             result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + result
         if hidden_count:
             result = f"Some document(s) are private and not accessible to caller.\n" + result
+
+        # --- Stage 7: Commit output tokens to global budget ---
+        # If the formatted result would exceed the agent's critical token cap,
+        # discard it and return a compact blocked message instead.
+        spent = count_tokens(result)
+        blocked = await runtime.context.try_commit(spent, blocked_listing_message())
+        if blocked:
+            logger.info(
+                "%s blocked after format: total_tokens_spent=%d >= %d",
+                tool_name, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,)
+            return blocked
         async with runtime.context.lock:
-            runtime.context.total_tokens_spent += count_tokens(result)
             summary_after = runtime.context.list_documents_runtime_data.spent_summary_tokens
             tokens_after = runtime.context.total_tokens_spent
         logger.info(
             "%s done: path=%s hidden=%d output_tokens=%d summary_tokens=%d->%d total_tokens=%d->%d",
-            tool_name,
-            path,
-            hidden_count,
-            count_tokens(result),
-            summary_before,
-            summary_after,
-            tokens_before,
-            tokens_after,
-        )
+            tool_name, path, hidden_count, spent, summary_before, summary_after, tokens_before, tokens_after)
         return result
 
     except Exception as e:

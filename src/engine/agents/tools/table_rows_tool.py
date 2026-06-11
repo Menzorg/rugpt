@@ -117,20 +117,15 @@ async def table_rows_search(
             doc = None
         doc_name = (doc.original_filename if doc else None) or file_id
 
-        if runtime is not None:
-            async with runtime.context.lock:
-                tokens_before = runtime.context.total_tokens_spent
-                critical_cap = runtime.context.critical_tokens_cap
-
-            if tokens_before >= critical_cap:
-                logger.info(
-                    "table_rows_search: blocked for file_id=%s — total_tokens_spent=%d >= %d",
-                    file_id, tokens_before, critical_cap,
-                )
-                return (
-                    f"[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
-                    f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]"
-                )
+        if runtime is not None and runtime.context.is_budget_exhausted():
+            logger.info(
+                "table_rows_search: blocked for file_id=%s — total_tokens_spent=%d >= %d",
+                file_id, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
+            )
+            return (
+                f"[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+                f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]"
+            )
 
         rows = await _rag_service.get_table_rows_by_range(
             file_id=file_id,
@@ -147,21 +142,21 @@ async def table_rows_search(
         spent = count_tokens(result)
 
         if runtime is not None:
-            async with runtime.context.lock:
-                if runtime.context.total_tokens_spent >= runtime.context.critical_tokens_cap:
-                    logger.info(
-                        "table_rows_search: blocked after fetch for file_id=%s — total_tokens_spent=%d >= %d",
-                        file_id, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
-                    )
-                    return (
-                        f"[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
-                        f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]"
-                    )
-                runtime.context.total_tokens_spent += spent
+            blocked = await runtime.context.try_commit(
+                spent,
+                f"[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+                f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]",
+            )
+            if blocked:
                 logger.info(
-                    "table_rows_search done: file_id=%s rows=%d output_tokens=%d tokens_after=%d",
-                    file_id, len(rows), spent, runtime.context.total_tokens_spent,
+                    "table_rows_search: blocked after fetch for file_id=%s — total_tokens_spent=%d >= %d",
+                    file_id, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
                 )
+                return blocked
+            logger.info(
+                "table_rows_search done: file_id=%s rows=%d output_tokens=%d tokens_after=%d",
+                file_id, len(rows), spent, runtime.context.total_tokens_spent,
+            )
         return result
     except Exception as e:
         logger.error(f"table_rows_search failed: {e}", exc_info=True)

@@ -17,6 +17,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI as _ChatOpenAI
 from langchain_core.language_models import LanguageModelInput
 
+MAX_CONCURRENCY = 2  # imported by tests; mirrors RunnableConfig(max_concurrency=...)
+
 
 class ChatOpenAI(_ChatOpenAI):
     """ChatOpenAI with a workaround for vLLM chat templates that can't handle
@@ -534,7 +536,7 @@ class AgentExecutor:
 
         # RunnableConfig carries initiator/called identity for tools.
         config = RunnableConfig(
-            max_concurrency=2,
+            max_concurrency=MAX_CONCURRENCY,
             configurable={
                 "org_id": str(scope_org_id) if scope_org_id else role.org_id,
                 "caller_user_id": str(caller.id),

@@ -45,6 +45,7 @@ _DOWNLOAD_IGNORE = [
 ]
 
 _tiktoken_enc: tiktoken.Encoding | None = None
+_LATIN_RE = re.compile(r'[a-zA-Z]')
 
 
 def _get_tiktoken() -> tiktoken.Encoding:
@@ -124,13 +125,27 @@ def init_token_counter() -> None:
 
 def _encode(text: str) -> int:
     """Count tokens using tiktoken (generic fallback, no model context)."""
-    return len(_get_tiktoken().encode(text))
+    if not text:
+        return 0
+    enc = _get_tiktoken()
+    if not _LATIN_RE.search(text):
+        return int(len(enc.encode(text)) * 0.4) # short circuit on 100% non-latin text
+    
+    # 2 and 0.4 are rough empirical coefficients to account for tiktoken's inefficiency on cyrillic text, 
+    # based on testing with mixed Cyrillic/Latin text and gemma-4-31B-it tokenizer vs tiktoken. 
+    # The actual ratio varies by text and tokenizer but this is a reasonable average.
+    cyrillic = sum(1 for c in text if 'Ѐ' <= c <= 'ӏ') * 2
+    latin = sum(1 for c in text if 'a' <= c <= 'z' or 'A' <= c <= 'Z')
+    total_script = cyrillic + latin
+    ratio = cyrillic / total_script if total_script else 1.0
+    coef = ratio * 0.4 + (1 - ratio) * 1.0
+    return int(len(enc.encode(text)) * coef)
 
 
 def count_tokens(text: str, tool_count: int = 0) -> int:
     """Return the token count for *text* plus an estimate for tool schemas.
 
-    Each tool schema adds ~150 tokens of overhead to the context window.
+    Each tool schema adds 200 tokens of overhead to the context window.
     Pass tool_count to include that overhead in the estimate.
     """
     return _encode(text) + tool_count * 200
