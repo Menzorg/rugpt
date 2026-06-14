@@ -36,9 +36,19 @@ class _FakeChatService:
         self.archived = False
         self.removed = None
         self.added = None
+        self.listed = False
+        self.sent = None
 
     async def get_chat(self, chat_id):
         return self._chat if (self._chat and self._chat.id == chat_id) else None
+
+    async def list_messages(self, chat_id, limit, before_id):
+        self.listed = True
+        return []
+
+    async def send_message(self, **kwargs):
+        self.sent = kwargs
+        return None
 
     async def can_user_access_chat(self, user, chat):
         # Та же семантика, что в сервисе: orgship + participant (без SUPPORT-веток).
@@ -198,3 +208,55 @@ async def test_add_participant_creator_ok(world):
             f"/api/v1/chats/{world['chat'].id}/participants/{world['admin'].id}")
     assert r.status_code == 200
     assert world["engine"].chat_service.added is not None
+
+
+# ── list_messages (IDOR — read) ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_list_messages_participant_ok(world):
+    _as(world, "member")
+    async with _client() as c:
+        r = await c.get(f"/api/v1/chats/{world['chat'].id}/messages")
+    assert r.status_code == 200
+    assert world["engine"].chat_service.listed is True
+
+
+@pytest.mark.asyncio
+async def test_list_messages_outsider_403(world):
+    _as(world, "outsider")
+    async with _client() as c:
+        r = await c.get(f"/api/v1/chats/{world['chat'].id}/messages")
+    assert r.status_code == 403
+    # Gate trips before any message read — no data leaks to the outsider.
+    assert world["engine"].chat_service.listed is False
+
+
+@pytest.mark.asyncio
+async def test_list_messages_missing_404(world):
+    _as(world, "member")
+    async with _client() as c:
+        r = await c.get(f"/api/v1/chats/{uuid4()}/messages")
+    assert r.status_code == 404
+
+
+# ── send_message (IDOR — write) ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_send_message_outsider_403(world):
+    _as(world, "outsider")
+    async with _client() as c:
+        r = await c.post(
+            f"/api/v1/chats/{world['chat'].id}/messages", json={"content": "hi"})
+    assert r.status_code == 403
+    # Gate trips before persistence — no write into someone else's chat.
+    assert world["engine"].chat_service.sent is None
+
+
+@pytest.mark.asyncio
+async def test_send_message_missing_404(world):
+    _as(world, "member")
+    async with _client() as c:
+        r = await c.post(
+            f"/api/v1/chats/{uuid4()}/messages", json={"content": "hi"})
+    assert r.status_code == 404
+    assert world["engine"].chat_service.sent is None

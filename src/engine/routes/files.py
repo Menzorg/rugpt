@@ -121,6 +121,27 @@ async def list_files(
         files = await engine.file_service.list_by_user(current_user["user_id"])
     return [FileResponse(**f.to_dict()) for f in files]
 
+async def _resolve_readable_file(engine, file_uuid: UUID, current_user: dict):
+    """Load a file the caller is allowed to READ, or raise 404/403.
+
+    Same-org callers pass on orgship. A cross-org caller is allowed only when
+    they participate in a chat where this file is attached — e.g. a RuGPT
+    Support operator viewing a screenshot in a ticket from another org. Mirrors
+    the permission used by POST /files/{id}/clone.
+    """
+    file_record = await engine.file_service.get(file_uuid)
+    if not file_record:
+        raise HTTPException(status_code=404, detail="File not found")
+    if file_record.org_id != current_user["org_id"]:
+        can_access = await engine.chat_service.user_can_access_attached_file(
+            user_id=current_user["user_id"],
+            file_id=file_uuid,
+            org_id=file_record.org_id,
+        )
+        if not can_access:
+            raise HTTPException(status_code=403, detail="Access denied")
+    return file_record
+
 @router.get("/{file_id}", response_model=FileResponse)
 async def get_file(file_id: str, current_user: dict = Depends(get_current_user)):
     """Get file metadata"""
@@ -130,12 +151,7 @@ async def get_file(file_id: str, current_user: dict = Depends(get_current_user))
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
-    file_record = await engine.file_service.get(file_uuid)
-    if not file_record:
-        raise HTTPException(status_code=404, detail="File not found")
-    if file_record.org_id != current_user["org_id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
-
+    file_record = await _resolve_readable_file(engine, file_uuid, current_user)
     return FileResponse(**file_record.to_dict())
 
 @router.get("/{file_id}/download")
@@ -148,11 +164,7 @@ async def download_file(file_id: str, current_user: dict = Depends(get_current_u
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
     # Check access
-    file_record = await engine.file_service.get(file_uuid)
-    if not file_record:
-        raise HTTPException(status_code=404, detail="File not found")
-    if file_record.org_id != current_user["org_id"]:
-        raise HTTPException(status_code=403, detail="Access denied")
+    await _resolve_readable_file(engine, file_uuid, current_user)
 
     try:
         data, record = await engine.file_service.download(file_uuid)
@@ -240,13 +252,23 @@ async def clone_file(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid file ID")
 
+    source = await engine.file_service.get(src_uuid)
+    if source is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    # Scope the visibility check by the file's own org: a cross-org RuGPT Support
+    # operator is a legit chat participant but lives in a different org.
     has_access = await engine.chat_service.user_can_access_attached_file(
         user_id=current_user["user_id"],
         file_id=src_uuid,
-        org_id=current_user["org_id"],
+        org_id=source.org_id,
     )
     if not has_access:
         raise HTTPException(status_code=403, detail="No access to this file")
+    if source.org_id != current_user["org_id"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot add another organization's file to your files",
+        )
 
     try:
         cloned = await engine.file_service.clone(

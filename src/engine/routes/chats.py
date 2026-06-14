@@ -355,9 +355,14 @@ async def list_messages(
     """List messages in chat. Response includes a `references` field per message
     with per-viewer resolution of !<task_uuid> and !!<project_uuid>."""
     user_id = current_user["user_id"]  # viewer — for per-viewer reference accessibility
+    chat = await engine.chat_service.get_chat(chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    actor = await engine.user_storage.get_by_id(user_id)
+    if not actor or not await engine.chat_service.can_user_access_chat(actor, chat):
+        raise HTTPException(status_code=403, detail="Not allowed to access this chat")
     messages = await engine.chat_service.list_messages(chat_id, limit, before_id)
 
-    actor = await engine.user_storage.get_by_id(user_id)
     refs_by_msg = {}
     if actor is not None and messages:
         refs_by_msg = await engine.reference_service.resolve_batch(
@@ -404,6 +409,9 @@ async def send_message(
     chat = await engine.chat_service.get_chat(chat_id)
     if chat is None:
         raise HTTPException(status_code=404, detail="Chat not found")
+    actor = await _load_actor(engine, current_user)
+    if not await engine.chat_service.can_user_access_chat(actor, chat):
+        raise HTTPException(status_code=403, detail="Not allowed to post in this chat")
     if engine.support_ticket_service is not None:
         await engine.support_ticket_service.handle_incoming_message(chat, user_id)
 
