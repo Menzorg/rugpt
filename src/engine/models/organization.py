@@ -25,6 +25,7 @@ class Organization:
     org_context: str = ""                   # Org structure description for AI prompts
     is_active: bool = True                  # Active/inactive status
     accountant_user_id: Optional[UUID] = None  # User designated to mark invoices as processed (migration 044)
+    file_manual_comment_allowed: bool = True  # false => uploaders must pick a content type (migration 047)
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -39,6 +40,7 @@ class Organization:
             "org_context": self.org_context,
             "is_active": self.is_active,
             "accountant_user_id": str(self.accountant_user_id) if self.accountant_user_id else None,
+            "file_manual_comment_allowed": self.file_manual_comment_allowed,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
@@ -55,6 +57,7 @@ class Organization:
             org_context=data.get("org_context", ""),
             is_active=data.get("is_active", True),
             accountant_user_id=UUID(data["accountant_user_id"]) if isinstance(data.get("accountant_user_id"), str) else data.get("accountant_user_id"),
+            file_manual_comment_allowed=data.get("file_manual_comment_allowed", True),
             created_at=datetime.fromisoformat(data["created_at"]) if isinstance(data.get("created_at"), str) else data.get("created_at", datetime.utcnow()),
             updated_at=datetime.fromisoformat(data["updated_at"]) if isinstance(data.get("updated_at"), str) else data.get("updated_at", datetime.utcnow()),
         )

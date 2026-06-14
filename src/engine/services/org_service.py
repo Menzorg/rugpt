@@ -81,6 +81,7 @@ class OrgService:
         timezone: Optional[str] = None,
         org_context: Optional[str] = None,
         accountant_user_id: Optional[UUID] = None,
+        file_manual_comment_allowed: Optional[bool] = None,
     ) -> Optional[Organization]:
         """
         Update organization.
@@ -120,6 +121,9 @@ class OrgService:
 
         if accountant_user_id is not None:
             org.accountant_user_id = accountant_user_id
+
+        if file_manual_comment_allowed is not None:
+            org.file_manual_comment_allowed = file_manual_comment_allowed
 
         updated = await self.storage.update(org)
         logger.info(f"Updated organization: {updated.name}")

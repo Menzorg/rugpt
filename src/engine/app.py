@@ -44,6 +44,7 @@ from .routes import (
     folders_router,
     actions_router,
     invoices_router,
+    content_types_router,
     connect_router,
     internal_router,
 )
@@ -162,6 +163,7 @@ app.include_router(support_router, prefix="/api/v1", tags=["support"])
 app.include_router(corrections_router, prefix="/api/v1", tags=["corrections"])
 app.include_router(actions_router, prefix="/api/v1", tags=["actions"])
 app.include_router(invoices_router, prefix="/api/v1", tags=["invoices"])
+app.include_router(content_types_router, prefix="/api/v1", tags=["content-types"])
 
 
 @app.get("/")

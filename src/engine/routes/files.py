@@ -45,6 +45,22 @@ class FileResponse(BaseModel):
     updated_at: str
     cloned_from_file_id: Optional[str] = None
     folder_id: Optional[str] = None
+    comment: Optional[str] = None
+    content_type_id: Optional[str] = None
+    content_type_name: Optional[str] = None
+
+async def _enrich_content_type_names(engine, files, org_id):
+    """Fill UserFile.content_type_name from the org's content-type catalog.
+    include_inactive=True so files referencing a now-deactivated type still show its name."""
+    ids = {f.content_type_id for f in files if f.content_type_id}
+    if not ids:
+        return
+    cts = await engine.content_type_service.list(org_id, include_inactive=True)
+    name_by_id = {c.id: c.name for c in cts}
+    for f in files:
+        if f.content_type_id:
+            f.content_type_name = name_by_id.get(f.content_type_id)
+
 
 @router.post("/upload", response_model=FileResponse)
 async def upload_file(
@@ -52,6 +68,8 @@ async def upload_file(
     target_user_id: Optional[str] = Form(None, description="Employee UUID who owns this file (defaults to authenticated user). Only admins may set it to another user."),
     is_public: bool = Form(False, description="Make file visible to all org users"),
     folder_id: Optional[str] = Form(None, description="Target folder UUID (defaults to root)"),
+    comment: Optional[str] = Form(None, description="Free-text file comment. Ignored when content_type_id is set (server uses the type's description)."),
+    content_type_id: Optional[str] = Form(None, description="Chosen content type UUID. Empty/omitted = 'Вручную' (free text)."),
     current_user: dict = Depends(get_current_user),
 ):
     """Upload a file for an employee (manager action)"""
@@ -82,6 +100,13 @@ async def upload_file(
                 detail={"code": e.code, "message": e.message},
             )
 
+    ct_uuid: Optional[UUID] = None
+    if content_type_id and content_type_id != "null":
+        try:
+            ct_uuid = UUID(content_type_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid content_type_id")
+
     data = await file.read()
     logger.info("Can read file. Trying to ingest")
 
@@ -94,7 +119,10 @@ async def upload_file(
             data=data,
             is_public=is_public,
             folder_id=folder_uuid,
+            comment=comment,
+            content_type_id=ct_uuid,
         )
+        await _enrich_content_type_names(engine, [created], current_user["org_id"])
         return FileResponse(**created.to_dict())
     except ValueError as e:
         logger.error("Can't ingest file", exc_info=e)
@@ -119,6 +147,7 @@ async def list_files(
         files = await engine.file_service.list_by_org(current_user["org_id"])
     else:
         files = await engine.file_service.list_by_user(current_user["user_id"])
+    await _enrich_content_type_names(engine, files, current_user["org_id"])
     return [FileResponse(**f.to_dict()) for f in files]
 
 async def _resolve_readable_file(engine, file_uuid: UUID, current_user: dict):

@@ -38,11 +38,49 @@ class FileService:
         storage_adapter: StorageAdapter,
         max_file_size: int = MAX_FILE_SIZE,
         allowed_types: set = None,
+        content_type_storage=None,
+        org_storage=None,
     ):
         self.file_storage = file_storage
         self.adapter = storage_adapter
         self.max_file_size = max_file_size
         self.allowed_types = ALLOWED_FILE_TYPES or allowed_types
+        # Optional: content-type catalog + org policy for the upload comment field (migration 047).
+        self.content_type_storage = content_type_storage
+        self.org_storage = org_storage
+
+    async def _resolve_comment(
+        self,
+        org_id: UUID,
+        comment: Optional[str],
+        content_type_id: Optional[UUID],
+    ) -> "tuple[Optional[str], Optional[UUID]]":
+        """Apply the org content-type policy at upload time.
+
+        - content_type_id set -> must be an active type of this org; the comment is
+          forced to the type's description (server-canonical invariant).
+        - content_type_id None -> "Вручную" (free text), allowed only when the org
+          permits manual comments (organizations.file_manual_comment_allowed).
+        Returns (comment, content_type_id) to persist. Raises ValueError on violation.
+        """
+        if content_type_id is not None:
+            if self.content_type_storage is None:
+                raise ValueError("Content types are not available")
+            ct = await self.content_type_storage.get_by_id(content_type_id)
+            if ct is None or not ct.is_active or ct.org_id != org_id:
+                raise ValueError("Invalid or inactive content type")
+            return ct.description, content_type_id
+
+        manual_allowed = True
+        if self.org_storage is not None:
+            org = await self.org_storage.get_by_id(org_id)
+            if org is not None:
+                manual_allowed = org.file_manual_comment_allowed
+        if not manual_allowed:
+            raise ValueError(
+                "A content type must be selected (free-form comments are disabled for this organization)"
+            )
+        return (comment or None), None
 
     def _hash_bytes(self, payload: bytes) -> str:
         """
@@ -68,6 +106,8 @@ class FileService:
         data: bytes,
         is_public: bool = False,
         folder_id: Optional[UUID] = None,
+        comment: Optional[str] = None,
+        content_type_id: Optional[UUID] = None,
     ) -> UserFile:
         """
         Upload a file for an employee.
@@ -87,6 +127,11 @@ class FileService:
         # Validate file size
         if len(data) > self.max_file_size:
             raise ValueError(f"File too large: {len(data)} bytes (max {self.max_file_size})")
+
+        # Resolve comment + content type per org policy (raises ValueError on violation).
+        resolved_comment, resolved_content_type_id = await self._resolve_comment(
+            org_id, comment, content_type_id,
+        )
 
         # Вычислить SHA-256 хеш содержимого файла
         content_hash = self._hash_bytes(data)
@@ -122,6 +167,8 @@ class FileService:
             is_table=is_table,
             rag_status="not_indexed",
             folder_id=folder_id,
+            comment=resolved_comment,
+            content_type_id=resolved_content_type_id,
         )
 
         # Generate storage key: {org_id}/{user_id}/{file_id}.{ext}

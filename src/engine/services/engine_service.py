@@ -30,6 +30,7 @@ from ..storage.user_file_folder_storage import UserFileFolderStorage
 from ..storage.correction_rule_storage import CorrectionRuleStorage
 from ..storage.device_storage import DeviceStorage
 from ..storage.department_storage import DepartmentStorage
+from ..storage.content_type_storage import ContentTypeStorage
 from ..storage.project_storage import ProjectStorage
 from ..storage.task_event_storage import TaskEventStorage
 from ..storage.agent_run_storage import AgentRunStorage
@@ -61,6 +62,7 @@ from .invoice_service import InvoiceService
 from .correction_rule_service import CorrectionRuleService
 from .memory_service import MemoryService
 from .department_service import DepartmentService
+from .content_type_service import ContentTypeService
 from .rag_service import RAGService
 from .support_notification_service import SupportNotificationService
 from .support_ticket_service import SupportTicketService
@@ -122,6 +124,7 @@ class EngineService:
         self.support_ticket_event_storage = SupportTicketEventStorage(self.postgres_dsn)
         self.memory_snapshot_storage = MemorySnapshotStorage(self.postgres_dsn)
         self.invoice_storage = InvoiceStorage(self.postgres_dsn)
+        self.content_type_storage = ContentTypeStorage(self.postgres_dsn)
         from .nonce_store import NonceStore
         self.nonce_store = NonceStore(Config.REDIS_URL, Config.NONCE_TTL_SECONDS)
         from .signature_service import SignatureService
@@ -141,6 +144,7 @@ class EngineService:
 
         # Initialize department service
         self.department_service = DepartmentService(self.department_storage, self.user_storage)
+        self.content_type_service = ContentTypeService(self.content_type_storage)
 
         # Kafka producer — event bus to NestJS (chat.events) + internal queue (agent.requests).
         self.kafka_producer = KafkaProducerService()
@@ -225,6 +229,8 @@ class EngineService:
             storage_adapter=self.storage_adapter,
             max_file_size=Config.FILE_MAX_SIZE_MB * 1024 * 1024,
             allowed_types=set(Config.FILE_ALLOWED_TYPES.split(",")),
+            content_type_storage=self.content_type_storage,
+            org_storage=self.org_storage,
         )
 
         # Invoice service — depends on invoice_storage + file_service (binary
@@ -485,6 +491,7 @@ class EngineService:
         await self.support_ticket_event_storage.init()
         await self.memory_snapshot_storage.init()
         await self.invoice_storage.init()
+        await self.content_type_storage.init()
         await self.nonce_store.init()
 
         await self.rag_store.init()

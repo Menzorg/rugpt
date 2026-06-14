@@ -23,8 +23,8 @@ class UserFileStorage(BaseStorage):
                 (id, user_id, org_id, uploaded_by_user_id,
                  storage_key, original_filename, file_type,
                  file_size, content_hash, summary, is_table, is_public, rag_status,
-                 is_active, cloned_from_file_id, folder_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                 is_active, cloned_from_file_id, folder_id, comment, content_type_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
             RETURNING *
         """
         row = await self.fetchrow(
@@ -32,7 +32,8 @@ class UserFileStorage(BaseStorage):
             file.id, file.user_id, file.org_id, file.uploaded_by_user_id,
             file.storage_key, file.original_filename, file.file_type,
             file.file_size, file.content_hash, file.summary, file.is_table, file.is_public, file.rag_status,
-            file.is_active, file.cloned_from_file_id, file.folder_id, file.created_at, file.updated_at,
+            file.is_active, file.cloned_from_file_id, file.folder_id, file.comment, file.content_type_id,
+            file.created_at, file.updated_at,
         )
         return self._row_to_file(row)
 
@@ -322,6 +323,9 @@ class UserFileStorage(BaseStorage):
             is_active=row["is_active"],
             cloned_from_file_id=row["cloned_from_file_id"] if "cloned_from_file_id" in keys else None,
             folder_id=row["folder_id"] if "folder_id" in keys else None,
+            comment=row["comment"] if "comment" in keys else None,
+            content_type_id=row["content_type_id"] if "content_type_id" in keys else None,
+            content_type_name=row["content_type_name"] if "content_type_name" in keys else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

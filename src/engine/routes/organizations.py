@@ -37,6 +37,7 @@ class UpdateOrgRequest(BaseModel):
     timezone: Optional[str] = None
     org_context: Optional[str] = None
     accountant_user_id: Optional[str] = None
+    file_manual_comment_allowed: Optional[bool] = None
 
 class OrgResponse(BaseModel):
     """Organization response"""
@@ -48,6 +49,7 @@ class OrgResponse(BaseModel):
     org_context: Optional[str] = None
     is_active: bool
     accountant_user_id: Optional[str] = None
+    file_manual_comment_allowed: bool = True
     created_at: str
     updated_at: str
 
@@ -149,6 +151,7 @@ async def update_organization(
             timezone=request.timezone,
             org_context=request.org_context,
             accountant_user_id=accountant_uuid,
+            file_manual_comment_allowed=request.file_manual_comment_allowed,
         )
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")

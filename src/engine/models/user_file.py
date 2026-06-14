@@ -37,6 +37,9 @@ class UserFile:
     is_active: bool = True
     cloned_from_file_id: Optional[UUID] = None  # if non-null, metadata-only clone of source file_id
     folder_id: Optional[UUID] = None  # NULL = root level; folder.user_id must equal self.user_id
+    comment: Optional[str] = None  # human description (migration 047)
+    content_type_id: Optional[UUID] = None  # chosen content type; NULL = "Вручную"/free text (migration 047)
+    content_type_name: Optional[str] = None  # enriched via join, NOT a column
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -61,6 +64,9 @@ class UserFile:
             "is_active": self.is_active,
             "cloned_from_file_id": str(self.cloned_from_file_id) if self.cloned_from_file_id else None,
             "folder_id": str(self.folder_id) if self.folder_id else None,
+            "comment": self.comment,
+            "content_type_id": str(self.content_type_id) if self.content_type_id else None,
+            "content_type_name": self.content_type_name,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
