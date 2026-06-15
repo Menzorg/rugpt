@@ -669,10 +669,10 @@ class AgentExecutor:
             BudgetSyncMiddleware(runtime_context),
             HistoryCompactionMiddleware(
                 llm_summarizer,
-                trigger_tokens=59000,
+                trigger_tokens=55000,
                 keep_last=5,
                 max_tokens=10_000,
-                summarizer_token_cap=59_000,
+                summarizer_token_cap=55_000,
             ),
             TokenBudgetToolBlockMiddleware(
                 max_context_tokens=60_000,
