@@ -263,8 +263,9 @@ class HistoryCompactionMiddleware(AgentMiddleware):
         llm: ChatOpenAI,
         trigger_tokens: int = 20_000,
         keep_last: int = 8,
+        max_tokens: int | None = None,
     ) -> None:
-        self._llm = llm
+        self._llm = llm.bind(max_tokens=max_tokens) if max_tokens is not None else llm
         self._trigger_tokens = trigger_tokens
         self._keep_last = keep_last
 
@@ -350,29 +351,29 @@ class HistoryCompactionMiddleware(AgentMiddleware):
             return None
 
         keep = self._keep_last
-        to_summarise = loop_messages[:-keep]
+        to_summarize = loop_messages[:-keep]
         to_keep = self._prepend_latest_human_if_missing(loop_messages, loop_messages[-keep:])
 
-        if not to_summarise:
+        if not to_summarize:
             return None
 
         self._ensure_ids(messages)
 
         logger.info(
-            "compaction middleware: %d tokens [source=%s] >= %d, summarising %d messages, keeping %d",
-            token_count, token_source, self._trigger_tokens, len(to_summarise), len(to_keep),
+            "compaction middleware: %d tokens [source=%s] >= %d, summarizing %d messages, keeping %d",
+            token_count, token_source, self._trigger_tokens, len(to_summarize), len(to_keep),
         )
         try:
-            summary_text = await self._acreate_summary(to_summarise)
+            summary_text = await self._acreate_summary(to_summarize)
             
             if "qwen" in getattr(self._llm, "model", "").lower():
                 summary_msg = HumanMessage(
-                    content=f"[CONVERSATION SUMMARY]\n{summary_text}",
+                    content=f"<CONVERSATION SUMMARY>\n{summary_text}\n</CONVERSATION SUMMARY>",
                     id=str(uuid.uuid4()),
                 )
             else:
                 summary_msg = AIMessage(
-                    content=f"[CONVERSATION SUMMARY]\n{summary_text}",
+                    content=f"<CONVERSATION SUMMARY>\n{summary_text}\n</CONVERSATION SUMMARY>",
                     id=str(uuid.uuid4()),
                 )
                 
@@ -393,8 +394,9 @@ class HistoryCompactionMiddleware(AgentMiddleware):
                 "messages": [
                     RemoveMessage(id=REMOVE_ALL_MESSAGES),
                     *replacement_messages,
+                    HumanMessage(content="<system>Continue from above conversation and don't tell user about that system message</system>", id=str(uuid.uuid4())),
                 ]
             }
         except Exception:
-            logger.exception("compaction middleware: summarisation failed, skipping compaction")
+            logger.exception("compaction middleware: summarization failed, skipping compaction")
             return None

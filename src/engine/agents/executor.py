@@ -47,7 +47,7 @@ from ..models.user import User
 from ..services.prompt_cache import PromptCache
 from ..utils.token_counter import count_tokens
 from ..utils.token_logger import log_token_summary
-from .middleware import BudgetSyncMiddleware, HistoryCompactionMiddleware
+from .middleware import BudgetSyncMiddleware, HistoryCompactionMiddleware, TokenBudgetToolBlockMiddleware
 from .result import AgentResult
 from .runtime import RuntimeContext
 from .metadata import append_extra_body_key, build_initial_extra_body, resolve_litellm_session_id
@@ -671,7 +671,13 @@ class AgentExecutor:
                 llm_summarizer,
                 trigger_tokens=56000,
                 keep_last=5,
-            )
+                max_tokens=10_000,
+            ),
+            TokenBudgetToolBlockMiddleware(
+                max_context_tokens=60_000,
+                ratio=1.0,
+                runtime_context=runtime_context,
+            ),
         ]
         agent_middleware.extend(self._resolve_middleware(tools))
 
