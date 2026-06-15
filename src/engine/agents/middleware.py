@@ -317,16 +317,20 @@ class HistoryCompactionMiddleware(AgentMiddleware):
         to_keep: list[BaseMessage],
         cap: int,
     ) -> list[BaseMessage]:
-        """Drop messages from the tail of *to_summarize* until the combined
-        token estimate of (to_summarize + to_keep) fits within *cap*.
+        """Drop messages from the tail of *to_summarize* until the formatted
+        summarizer prompt fits within *cap* tokens.
+
+        Measures count_tokens(_format_for_summary(to_summarize)) — the actual
+        payload the summarizer LLM will receive — not the raw message list, which
+        would miss the compaction prompt template overhead and produce an
+        undercount that lets oversized inputs through.
 
         Immune messages (COMPACTION_IMMUNE_TOOLS tool results and the AIMessages
         that called them) are skipped when encountered at the tail — the loop
         continues looking for the next non-immune candidate to drop.
         Always keeps at least one message so the summarizer has something to work with.
         """
-        combined = to_summarize + to_keep
-        tokens, _ = _count_tokens_messages_with_api_fallback(combined)
+        tokens = count_tokens(self._format_for_summary(list(to_summarize)))
         if tokens <= cap:
             return to_summarize
 
@@ -335,7 +339,7 @@ class HistoryCompactionMiddleware(AgentMiddleware):
         while i > 0:
             if not self._is_immune(trimmed[i]):
                 trimmed.pop(i)
-                tokens, _ = _count_tokens_messages_with_api_fallback(trimmed + to_keep)
+                tokens = count_tokens(self._format_for_summary(list(trimmed)))
                 if tokens <= cap:
                     break
             i -= 1
@@ -461,5 +465,19 @@ class HistoryCompactionMiddleware(AgentMiddleware):
                 ]
             }
         except Exception:
-            logger.exception("compaction middleware: summarization failed, skipping compaction")
-            return None
+            logger.exception(
+                "compaction middleware: summarization failed, falling back to hard truncation (keeping last %d messages)",
+                len(to_keep),
+            )
+            self._ensure_ids(messages)
+            return {
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    *to_keep,
+                    HumanMessage(
+                        content=("<system>Your tools are blocked by the system. In case of RAG search: Give the best possible final answer now using only the information already present in the conversation and tool outputs.\n"
+                        "In other cases: if the task is incomplete, tell user where you've stopped, why you was forced to stop and what remains undone, ask the user if you can continue.</system>"),
+                        id=str(uuid.uuid4()),
+                    ),
+                ]
+            }
