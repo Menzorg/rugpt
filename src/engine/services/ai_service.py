@@ -525,7 +525,15 @@ class AIService:
             content = self._strip_mention(content, strip_username)
         content = self._with_attachment_ids(message, content)
         content = await self._with_image_attachments(message, content)
-        messages.append({"role": "user", "content": self._wrap_agent_content("", content, message.created_at)})
+        if isinstance(content, list):
+            # Multimodal: wrap only the text part, leave image parts untouched.
+            wrapped = [
+                {"type": "text", "text": self._wrap_agent_content("", content[0]["text"], message.created_at)},
+                *content[1:],
+            ]
+            messages.append({"role": "user", "content": wrapped})
+        else:
+            messages.append({"role": "user", "content": self._wrap_agent_content("", content, message.created_at)})
 
         return messages
 
