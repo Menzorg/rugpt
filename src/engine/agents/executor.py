@@ -671,7 +671,7 @@ class AgentExecutor:
                 llm_summarizer,
                 trigger_tokens=57000,
                 keep_last=5,
-                max_tokens=10_000,
+                max_tokens=7_500,
                 summarizer_token_cap=57_000,
             ),
             TokenBudgetToolBlockMiddleware(

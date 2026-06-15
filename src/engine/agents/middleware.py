@@ -311,10 +311,39 @@ class HistoryCompactionMiddleware(AgentMiddleware):
                     return True
         return False
 
+    def _trim_messages(
+        self,
+        messages: list[BaseMessage],
+        cap: int,
+        count_fn: Any,
+        label: str = "messages",
+    ) -> list[BaseMessage]:
+        """Drop non-immune messages from the tail of *messages* until
+        count_fn(messages) <= cap. Always keeps at least one message.
+        """
+        trimmed = list(messages)
+        if count_fn(trimmed) <= cap:
+            return trimmed
+
+        i = len(trimmed) - 1
+        while i > 0:
+            if not self._is_immune(trimmed[i]):
+                trimmed.pop(i)
+                if count_fn(trimmed) <= cap:
+                    break
+            i -= 1
+
+        dropped = len(messages) - len(trimmed)
+        if dropped:
+            logger.info(
+                "compaction middleware: trimmed %d %s to fit cap=%d (remaining=%d)",
+                dropped, label, cap, len(trimmed),
+            )
+        return trimmed
+
     def _trim_to_summarize(
         self,
         to_summarize: list[BaseMessage],
-        to_keep: list[BaseMessage],
         cap: int,
     ) -> list[BaseMessage]:
         """Drop messages from the tail of *to_summarize* until the formatted
@@ -322,35 +351,29 @@ class HistoryCompactionMiddleware(AgentMiddleware):
 
         Measures count_tokens(_format_for_summary(to_summarize)) — the actual
         payload the summarizer LLM will receive — not the raw message list, which
-        would miss the compaction prompt template overhead and produce an
-        undercount that lets oversized inputs through.
-
-        Immune messages (COMPACTION_IMMUNE_TOOLS tool results and the AIMessages
-        that called them) are skipped when encountered at the tail — the loop
-        continues looking for the next non-immune candidate to drop.
-        Always keeps at least one message so the summarizer has something to work with.
+        would miss the compaction prompt template overhead.
         """
-        tokens = count_tokens(self._format_for_summary(list(to_summarize)))
-        if tokens <= cap:
-            return to_summarize
+        return self._trim_messages(
+            to_summarize,
+            cap,
+            lambda msgs: count_tokens(self._format_for_summary(msgs)),
+            label="message(s) from to_summarize",
+        )
 
-        trimmed = list(to_summarize)
-        i = len(trimmed) - 1
-        while i > 0:
-            if not self._is_immune(trimmed[i]):
-                trimmed.pop(i)
-                tokens = count_tokens(self._format_for_summary(list(trimmed)))
-                if tokens <= cap:
-                    break
-            i -= 1
-
-        dropped = len(to_summarize) - len(trimmed)
-        if dropped:
-            logger.info(
-                "compaction middleware: trimmed %d message(s) from to_summarize to fit summarizer cap=%d (remaining=%d)",
-                dropped, cap, len(trimmed),
-            )
-        return trimmed
+    def _trim_loop_messages(
+        self,
+        loop_messages: list[BaseMessage],
+        cap: int,
+    ) -> list[BaseMessage]:
+        """Drop non-immune messages from the tail of *loop_messages* until their
+        token count fits within *cap*. Used as fallback when summarization fails.
+        """
+        return self._trim_messages(
+            loop_messages,
+            cap,
+            lambda msgs: _count_tokens_messages_with_api_fallback(msgs)[0],
+            label="message(s) from loop (hard truncation fallback)",
+        )
 
     async def _acreate_summary(self, messages: list[BaseMessage]) -> str:
         prompt = self._format_for_summary(messages)
@@ -424,7 +447,7 @@ class HistoryCompactionMiddleware(AgentMiddleware):
         self._ensure_ids(messages)
 
         if self._summarizer_token_cap is not None:
-            to_summarize = self._trim_to_summarize(to_summarize, to_keep, self._summarizer_token_cap)
+            to_summarize = self._trim_to_summarize(to_summarize, self._summarizer_token_cap)
 
         logger.info(
             "compaction middleware: %d tokens [source=%s] >= %d, summarizing %d messages, keeping %d",
@@ -465,15 +488,13 @@ class HistoryCompactionMiddleware(AgentMiddleware):
                 ]
             }
         except Exception:
-            logger.exception(
-                "compaction middleware: summarization failed, falling back to hard truncation (keeping last %d messages)",
-                len(to_keep),
-            )
+            logger.exception("compaction middleware: summarization failed, falling back to hard truncation")
             self._ensure_ids(messages)
+            truncated = self._trim_loop_messages(loop_messages, self._trigger_tokens)
             return {
                 "messages": [
                     RemoveMessage(id=REMOVE_ALL_MESSAGES),
-                    *to_keep,
+                    *truncated,
                     HumanMessage(
                         content=("<system>Your tools are blocked by the system. In case of RAG search: Give the best possible final answer now using only the information already present in the conversation and tool outputs.\n"
                         "In other cases: if the task is incomplete, tell user where you've stopped, why you was forced to stop and what remains undone, ask the user if you can continue.</system>"),
