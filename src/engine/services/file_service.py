@@ -45,7 +45,7 @@ class FileService:
         self.adapter = storage_adapter
         self.max_file_size = max_file_size
         self.allowed_types = ALLOWED_FILE_TYPES or allowed_types
-        # Optional: content-type catalog + org policy for the upload comment field (migration 047).
+        # Optional: content-type catalog + org policy for the upload comment field (migration 051).
         self.content_type_storage = content_type_storage
         self.org_storage = org_storage
 

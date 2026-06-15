@@ -3,7 +3,7 @@ Content Type Routes
 
 Admin-managed per-org catalog of file content types ("Отчёт", "Заказ", ...).
 The picker (GET active) is available to any authenticated user; all mutations are
-admin-only. Soft-delete via is_active. See migration 047.
+admin-only. Soft-delete via is_active. See migration 051.
 """
 
 from src.engine.unified_logger import get_logger

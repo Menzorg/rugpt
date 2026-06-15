@@ -2,7 +2,7 @@
 Content Type Service
 
 Business logic for the admin-managed per-org content-type catalog.
-Admin-only enforcement lives in routes. See migration 047.
+Admin-only enforcement lives in routes. See migration 051.
 """
 
 from src.engine.unified_logger import get_logger

@@ -3,7 +3,7 @@ Content Type Model
 
 Admin-managed per-org catalog of file business categories ("Отчёт", "Заказ", ...).
 Each type has a name + description; the description pre-fills a file's comment when
-the type is chosen at upload. See migration 047 and
+the type is chosen at upload. See migration 051 and
 docs/superpowers/specs/2026-06-14-file-content-type-comment-design.md.
 """
 from dataclasses import dataclass, field

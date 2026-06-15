@@ -1,4 +1,4 @@
--- Migration 047: content types (file business categories) + file comment/content_type
+-- Migration 051: content types (file business categories) + file comment/content_type
 -- + org-level policy whether free-form comments are allowed.
 --
 -- content_types — admin-managed per-org catalog ("Отчёт", "Заказ", ...), each with

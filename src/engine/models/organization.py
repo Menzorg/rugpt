@@ -25,7 +25,7 @@ class Organization:
     org_context: str = ""                   # Org structure description for AI prompts
     is_active: bool = True                  # Active/inactive status
     accountant_user_id: Optional[UUID] = None  # User designated to mark invoices as processed (migration 044)
-    file_manual_comment_allowed: bool = True  # false => uploaders must pick a content type (migration 047)
+    file_manual_comment_allowed: bool = True  # false => uploaders must pick a content type (migration 051)
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 

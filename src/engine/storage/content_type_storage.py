@@ -2,7 +2,7 @@
 Content Type Storage
 
 PostgreSQL CRUD for content_types (admin-managed per-org file categories).
-Soft-delete via is_active. See migration 047.
+Soft-delete via is_active. See migration 051.
 """
 
 from src.engine.unified_logger import get_logger
