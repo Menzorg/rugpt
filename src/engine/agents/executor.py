@@ -47,7 +47,7 @@ from ..models.user import User
 from ..services.prompt_cache import PromptCache
 from ..utils.token_counter import count_tokens
 from ..utils.token_logger import log_token_summary
-from .middleware import HistoryCompactionMiddleware
+from .middleware import BudgetSyncMiddleware, HistoryCompactionMiddleware
 from .result import AgentResult
 from .runtime import RuntimeContext
 from .metadata import append_extra_body_key, build_initial_extra_body, resolve_litellm_session_id
@@ -666,6 +666,7 @@ class AgentExecutor:
         )
 
         agent_middleware = [
+            BudgetSyncMiddleware(runtime_context),
             HistoryCompactionMiddleware(
                 llm_summarizer,
                 trigger_tokens=60000,

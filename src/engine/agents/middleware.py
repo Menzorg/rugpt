@@ -212,6 +212,39 @@ class TokenBudgetToolBlockMiddleware(AgentMiddleware):
         return await handler(request)
 
 
+class BudgetSyncMiddleware(AgentMiddleware):
+    """
+    Sync RuntimeContext.total_tokens_spent from API-reported usage_metadata before
+    each model call.
+
+    When the last AIMessage carries usage_metadata (source == "api+tail"), the
+    API's input_tokens is ground truth and replaces the tiktoken-based accumulator.
+    When no usage_metadata is present yet (source == "estimator"), the accumulator
+    is left untouched so the tiktoken prefill estimate still guards early turns.
+    """
+
+    def __init__(self, runtime_context: RuntimeContext) -> None:
+        self._runtime_context = runtime_context
+
+    def _sync(self, messages: Sequence[Any]) -> None:
+        for m in reversed(messages):
+            if isinstance(m, AIMessage):
+                meta = getattr(m, "usage_metadata", None) or {}
+                input_tokens = meta.get("input_tokens", 0)
+                if input_tokens:
+                    self._runtime_context.total_tokens_spent = input_tokens
+                    logger.debug("budget-sync middleware: total_tokens_spent synced to %d [usage_metadata]", input_tokens)
+                    return
+
+    def wrap_model_call(self, request, handler):
+        self._sync(request.messages)
+        return handler(request)
+
+    async def awrap_model_call(self, request, handler):
+        self._sync(request.messages)
+        return await handler(request)
+
+
 class HistoryCompactionMiddleware(AgentMiddleware):
     """
     Summarise old messages when the context grows too large.
