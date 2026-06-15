@@ -74,6 +74,16 @@ def _count_tokens_messages_with_api_fallback(messages: Sequence[Any]) -> tuple[i
 
 _COMPACTION_PROMPT = (Path(__file__).parent.parent / "prompts" / "agent_compaction_summary.md").read_text(encoding="utf-8")
 
+# Tool names whose ToolMessages must never be dropped from the summarizer prompt.
+# These are write/action tools — dropping their output would erase evidence of
+# side-effects (created tasks, calendar events, modals) from the summary.
+COMPACTION_IMMUNE_TOOLS: frozenset[str] = frozenset({
+    "task_create",
+    "task_update",
+    "calendar_create",
+    "show_modal",
+})
+
 logger = logging.getLogger("rugpt.agents.middleware")
 
 MAX_CONTEXT_TOKENS = 30_000
@@ -264,10 +274,12 @@ class HistoryCompactionMiddleware(AgentMiddleware):
         trigger_tokens: int = 20_000,
         keep_last: int = 8,
         max_tokens: int | None = None,
+        summarizer_token_cap: int | None = None,
     ) -> None:
         self._llm = llm.bind(max_tokens=max_tokens) if max_tokens is not None else llm
         self._trigger_tokens = trigger_tokens
         self._keep_last = keep_last
+        self._summarizer_token_cap = summarizer_token_cap
 
     def _ensure_ids(self, messages: list) -> None:
         for m in messages:
@@ -287,6 +299,54 @@ class HistoryCompactionMiddleware(AgentMiddleware):
             content = _content_text(m.content)
             parts.append(f"{role}: {content}")
         return _COMPACTION_PROMPT.replace("{messages}", "\n\n".join(parts))
+
+    @staticmethod
+    def _is_immune(message: BaseMessage) -> bool:
+        """Return True if *message* must not be dropped during trimming."""
+        if isinstance(message, ToolMessage):
+            return getattr(message, "name", None) in COMPACTION_IMMUNE_TOOLS
+        if isinstance(message, AIMessage):
+            for tc in getattr(message, "tool_calls", None) or []:
+                if tc.get("name") in COMPACTION_IMMUNE_TOOLS:
+                    return True
+        return False
+
+    def _trim_to_summarize(
+        self,
+        to_summarize: list[BaseMessage],
+        to_keep: list[BaseMessage],
+        cap: int,
+    ) -> list[BaseMessage]:
+        """Drop messages from the tail of *to_summarize* until the combined
+        token estimate of (to_summarize + to_keep) fits within *cap*.
+
+        Immune messages (COMPACTION_IMMUNE_TOOLS tool results and the AIMessages
+        that called them) are skipped when encountered at the tail — the loop
+        continues looking for the next non-immune candidate to drop.
+        Always keeps at least one message so the summarizer has something to work with.
+        """
+        combined = to_summarize + to_keep
+        tokens, _ = _count_tokens_messages_with_api_fallback(combined)
+        if tokens <= cap:
+            return to_summarize
+
+        trimmed = list(to_summarize)
+        i = len(trimmed) - 1
+        while i > 0:
+            if not self._is_immune(trimmed[i]):
+                trimmed.pop(i)
+                tokens, _ = _count_tokens_messages_with_api_fallback(trimmed + to_keep)
+                if tokens <= cap:
+                    break
+            i -= 1
+
+        dropped = len(to_summarize) - len(trimmed)
+        if dropped:
+            logger.info(
+                "compaction middleware: trimmed %d message(s) from to_summarize to fit summarizer cap=%d (remaining=%d)",
+                dropped, cap, len(trimmed),
+            )
+        return trimmed
 
     async def _acreate_summary(self, messages: list[BaseMessage]) -> str:
         prompt = self._format_for_summary(messages)
@@ -358,6 +418,9 @@ class HistoryCompactionMiddleware(AgentMiddleware):
             return None
 
         self._ensure_ids(messages)
+
+        if self._summarizer_token_cap is not None:
+            to_summarize = self._trim_to_summarize(to_summarize, to_keep, self._summarizer_token_cap)
 
         logger.info(
             "compaction middleware: %d tokens [source=%s] >= %d, summarizing %d messages, keeping %d",
