@@ -313,9 +313,37 @@ class HistoryCompactionMiddleware(AgentMiddleware):
 
         return to_keep
 
+    def _log_prompt_parts(self, messages: list) -> None:
+        system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
+        non_system_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
+
+        if system_msgs:
+            system_tokens = sum(count_tokens(_content_text(m.content)) for m in system_msgs)
+            logger.debug(
+                "compaction middleware: system prompt tokens=%d (%d message(s))",
+                system_tokens, len(system_msgs),
+            )
+
+        total_non_system = 0
+        for m in non_system_msgs:
+            role = getattr(m, "type", "message")
+            tokens = count_tokens(_content_text(m.content))
+            total_non_system += tokens
+            logger.debug(
+                "compaction middleware: message role=%s tokens=%d",
+                role, tokens,
+            )
+        logger.debug(
+            "compaction middleware: prompt parts total — system=%d messages=%d",
+            sum(count_tokens(_content_text(m.content)) for m in system_msgs),
+            total_non_system,
+        )
+
     async def abefore_model(self, state, runtime) -> dict[str, Any] | None:
         messages: list = state["messages"]
         loop_messages = [m for m in messages if not isinstance(m, SystemMessage)]
+
+        self._log_prompt_parts(messages)
 
         token_count, token_source = _count_tokens_messages_with_api_fallback(loop_messages)
         if token_count < self._trigger_tokens:

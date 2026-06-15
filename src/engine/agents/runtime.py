@@ -40,7 +40,7 @@ class RuntimeContext:
     total_tokens_spent: int = 0
     # Critical token budget cap for this run. Once reached, RAG tools are blocked
     # and summarization middleware starts compacting conversation state.
-    critical_tokens_cap: int = 57000
+    critical_tokens_cap: int = 55000
 
     def is_budget_exhausted(self) -> bool:
         """Return True if the token cap has been reached. Call inside self.lock."""

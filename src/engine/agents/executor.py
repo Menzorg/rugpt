@@ -669,7 +669,7 @@ class AgentExecutor:
             BudgetSyncMiddleware(runtime_context),
             HistoryCompactionMiddleware(
                 llm_summarizer,
-                trigger_tokens=60000,
+                trigger_tokens=56000,
                 keep_last=5,
             )
         ]
