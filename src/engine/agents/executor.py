@@ -17,7 +17,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI as _ChatOpenAI
 from langchain_core.language_models import LanguageModelInput
 
-MAX_CONCURRENCY = 2  # imported by tests; mirrors RunnableConfig(max_concurrency=...)
+MAX_CONCURRENCY = 1  # imported by tests; mirrors RunnableConfig(max_concurrency=...)
 
 
 class ChatOpenAI(_ChatOpenAI):
