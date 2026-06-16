@@ -526,7 +526,7 @@ class HistoryCompactionMiddleware(AgentMiddleware):
     def wrap_model_call(self, request, handler):
         if self._compaction_failed:
             self._compaction_failed = False
-            request = request.override(tools=[]})
+            request = request.override(tools=[])
         return handler(request)
 
     async def awrap_model_call(self, request, handler):
