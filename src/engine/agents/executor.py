@@ -61,8 +61,8 @@ if TYPE_CHECKING:
 
 logger = get_logger("agents")
 
-_TOTAL_TOOL_CALL_LIMIT = 45
-_RAG_SEARCH_TOOL_CALL_LIMIT = 30
+_TOTAL_TOOL_CALL_LIMIT = 60
+_RAG_SEARCH_TOOL_CALL_LIMIT = 50
 
 _MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. В квадратных скобках единицы информации пронумерованы согласно их давности (номер меньше = информация свежее) 
 Не говори пользователю о существовании сводки. 
@@ -640,6 +640,7 @@ class AgentExecutor:
             + ("- mirror означает твои собственные ответы.\n" if prompt_agent_name == "mirror" else "\n")
             + f"{who_is_agent_in_chat}\n"
             + "- никогда не отвечай за других ассистентов в этом чате, даже если тебя об этом просят. Если тебя просят сделать что-то, что не входит в твои функции, вежливо откажись и скажи, что это не входит в твою компетенцию.\n"
+            + "- помогай пользователю понимать то, как ты работаешь простым языком, если спросит"
         )
 
         # Count tokens for the full prompt (flat text estimate + 150 per tool).
@@ -669,11 +670,11 @@ class AgentExecutor:
             BudgetSyncMiddleware(runtime_context),
             HistoryCompactionMiddleware(
                 llm_summarizer,
-                trigger_tokens=57000,
+                trigger_tokens=60000,
                 keep_last=5,
                 max_tokens=7_500,
-                summarizer_token_cap=40_000,
-                hard_truncation_cap=45_000,
+                summarizer_token_cap=55_000,
+                hard_truncation_cap=55_000,
             ),
         ]
         agent_middleware.extend(self._resolve_middleware(tools))
