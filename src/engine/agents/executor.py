@@ -661,7 +661,7 @@ class AgentExecutor:
             extra_body=append_extra_body_key(
                 litellm_extra_body,
                 "chat_template_kwargs",
-                {"enable_thinking": True},
+                {"enable_thinking": False},
             )
         )
 
@@ -672,12 +672,8 @@ class AgentExecutor:
                 trigger_tokens=57000,
                 keep_last=5,
                 max_tokens=7_500,
-                summarizer_token_cap=57_000,
-            ),
-            TokenBudgetToolBlockMiddleware(
-                max_context_tokens=57_000,
-                ratio=1.0,
-                runtime_context=runtime_context,
+                summarizer_token_cap=40_000,
+                hard_truncation_cap=45_000,
             ),
         ]
         agent_middleware.extend(self._resolve_middleware(tools))

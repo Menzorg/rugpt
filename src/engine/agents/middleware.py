@@ -259,13 +259,28 @@ class HistoryCompactionMiddleware(AgentMiddleware):
     """
     Summarise old messages when the context grows too large.
 
-    When token count of state["messages"] exceeds *trigger_tokens*, keeps the
-    last *keep_last* messages intact and replaces everything before them with a
-    single HumanMessage containing a structured LLM-generated summary (user
-    intent, facts, constraints, output format, all document IDs found).
+    Normal flow (summarization succeeds):
+      When token count of state["messages"] exceeds *trigger_tokens*, keeps the
+      last *keep_last* messages intact and replaces everything before them with a
+      single HumanMessage containing an LLM-generated summary (user intent, facts,
+      constraints, output format, all document IDs found). Does not interfere with
+      the subsequent model call — the agent continues normally with a compacted history.
 
-    If total messages <= keep_last, keeps floor(keep_last / 2) so compaction
-    always has something to summarise.
+    Fallback flow (summarization fails):
+      If the summarizer LLM call raises (e.g. its own prompt exceeds the model's
+      context window), the middleware falls back to hard truncation: keeps only
+      the tail of loop messages that fits within *hard_truncation_cap* (defaults to
+      *trigger_tokens* if not set), respecting COMPACTION_IMMUNE_TOOLS, then appends
+      a system instruction telling the model to give a final answer without tools.
+      It also sets the internal flag *_compaction_failed = True*.
+
+      On the very next awrap_model_call / wrap_model_call the flag is read once,
+      reset to False, tools are stripped from the request, and max_tokens is capped
+      at 2048. Removing tool schemas saves 5–15 k tokens; capping output ensures the
+      truncated context + output stays well within the model's 70 k limit. The model
+      is forced to produce a final textual answer from the available context. Since
+      the flag is one-shot, any subsequent model call in the same agent run (there
+      should be none after a tool-less response) proceeds normally.
     """
 
     def __init__(
@@ -275,11 +290,14 @@ class HistoryCompactionMiddleware(AgentMiddleware):
         keep_last: int = 8,
         max_tokens: int | None = None,
         summarizer_token_cap: int | None = None,
+        hard_truncation_cap: int | None = None,
     ) -> None:
         self._llm = llm.bind(max_tokens=max_tokens) if max_tokens is not None else llm
         self._trigger_tokens = trigger_tokens
         self._keep_last = keep_last
         self._summarizer_token_cap = summarizer_token_cap
+        self._hard_truncation_cap = hard_truncation_cap
+        self._compaction_failed: bool = False
 
     def _ensure_ids(self, messages: list) -> None:
         for m in messages:
@@ -490,7 +508,9 @@ class HistoryCompactionMiddleware(AgentMiddleware):
         except Exception:
             logger.exception("compaction middleware: summarization failed, falling back to hard truncation")
             self._ensure_ids(messages)
-            truncated = self._trim_loop_messages(loop_messages, self._trigger_tokens)
+            cap = self._hard_truncation_cap if self._hard_truncation_cap is not None else self._trigger_tokens
+            truncated = self._trim_loop_messages(loop_messages, cap)
+            self._compaction_failed = True
             return {
                 "messages": [
                     RemoveMessage(id=REMOVE_ALL_MESSAGES),
@@ -502,3 +522,15 @@ class HistoryCompactionMiddleware(AgentMiddleware):
                     ),
                 ]
             }
+
+    def wrap_model_call(self, request, handler):
+        if self._compaction_failed:
+            self._compaction_failed = False
+            request = request.override(tools=[], model_settings={"max_tokens": 8192})
+        return handler(request)
+
+    async def awrap_model_call(self, request, handler):
+        if self._compaction_failed:
+            self._compaction_failed = False
+            request = request.override(tools=[], model_settings={"max_tokens": 8192})
+        return await handler(request)
