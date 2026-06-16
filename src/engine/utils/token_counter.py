@@ -45,7 +45,6 @@ _DOWNLOAD_IGNORE = [
 ]
 
 _tiktoken_enc: tiktoken.Encoding | None = None
-_LATIN_RE = re.compile(r'[a-zA-Z]')
 
 
 def _get_tiktoken() -> tiktoken.Encoding:
@@ -53,6 +52,16 @@ def _get_tiktoken() -> tiktoken.Encoding:
     if _tiktoken_enc is None:
         _tiktoken_enc = tiktoken.get_encoding(_TIKTOKEN_FALLBACK)
     return _tiktoken_enc
+
+
+def _get_default_tokenizer() -> Union[Tokenizer, tiktoken.Encoding]:
+    """Return the tokenizer for DEFAULT_MODEL (cached), tiktoken on failure."""
+    try:
+        from ..config import Config
+        return get_tokenizer_for_model(Config.DEFAULT_MODEL)
+    except Exception:
+        logger.warning("token_counter: failed to load default model tokenizer, using tiktoken")
+        return _get_tiktoken()
 
 
 def _model_dir_name(model_id: str) -> str:
@@ -123,17 +132,22 @@ def init_token_counter() -> None:
     get_tokenizer_for_model(model_id)
 
 
-def _encode(text: str) -> int:
-    """Count tokens using tiktoken (generic fallback, no model context)."""
+_LATIN_RE = re.compile(r'[a-zA-Z]')
+
+
+def _encode_with(enc: Union[Tokenizer, tiktoken.Encoding], text: str) -> int:
+    """Count tokens using whichever encoder is provided.
+
+    For tiktoken, applies a Cyrillic/Latin ratio heuristic to compensate for
+    tiktoken's byte-level inefficiency on non-Latin scripts.
+    """
     if not text:
         return 0
-    enc = _get_tiktoken()
+    if isinstance(enc, Tokenizer):
+        return len(enc.encode(text).ids)
+    # tiktoken fallback: heuristic correction for Cyrillic-heavy text
     if not _LATIN_RE.search(text):
-        return int(len(enc.encode(text)) * 0.4) # short circuit on 100% non-latin text
-    
-    # 2 and 0.4 are rough empirical coefficients to account for tiktoken's inefficiency on cyrillic text, 
-    # based on testing with mixed Cyrillic/Latin text and gemma-4-31B-it tokenizer vs tiktoken. 
-    # The actual ratio varies by text and tokenizer but this is a reasonable average.
+        return int(len(enc.encode(text)) * 0.4)
     cyrillic = sum(1 for c in text if 'Ѐ' <= c <= 'ӏ') * 2
     latin = sum(1 for c in text if 'a' <= c <= 'z' or 'A' <= c <= 'Z')
     total_script = cyrillic + latin
@@ -145,18 +159,34 @@ def _encode(text: str) -> int:
 def count_tokens(text: str, tool_count: int = 0) -> int:
     """Return the token count for *text* plus an estimate for tool schemas.
 
+    Primary: DEFAULT_MODEL tokenizer (tokenizers lib).
+    Fallback: tiktoken cl100k_base on any error.
     Each tool schema adds 200 tokens of overhead to the context window.
     Pass tool_count to include that overhead in the estimate.
     """
-    return _encode(text) + tool_count * 200
+    if not text:
+        return tool_count * 200
+    try:
+        enc = _get_default_tokenizer()
+        return _encode_with(enc, text) + tool_count * 200
+    except Exception:
+        logger.warning("token_counter: count_tokens fell back to tiktoken")
+        return _encode_with(_get_tiktoken(), text) + tool_count * 200
 
 
 def cut_text_by_token_count(text: str, limit: int) -> str:
     """Return *text* truncated to at most *limit* tokens."""
-    enc = _get_tiktoken()
+    try:
+        enc = _get_default_tokenizer()
+        if isinstance(enc, Tokenizer):
+            ids = enc.encode(text).ids[:limit]
+            return enc.decode(ids)
+    except Exception:
+        logger.warning("token_counter: cut_text_by_token_count fell back to tiktoken")
+    enc_tk = _get_tiktoken()
     candidate = text[: limit * 10]
-    ids = enc.encode(candidate)[:limit]
-    return enc.decode(ids)
+    ids = enc_tk.encode(candidate)[:limit]
+    return enc_tk.decode(ids)
 
 
 def count_tokens_messages(messages: Iterable[BaseMessage]) -> int:

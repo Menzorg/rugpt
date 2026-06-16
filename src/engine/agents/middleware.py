@@ -275,8 +275,8 @@ class HistoryCompactionMiddleware(AgentMiddleware):
       It also sets the internal flag *_compaction_failed = True*.
 
       On the very next awrap_model_call / wrap_model_call the flag is read once,
-      reset to False, tools are stripped from the request, and max_tokens is capped
-      at 2048. Removing tool schemas saves 5–15 k tokens; capping output ensures the
+      reset to False, tools are stripped from the request.
+      Removing tool schemas saves 5–15 k tokens; capping output ensures the
       truncated context + output stays well within the model's 70 k limit. The model
       is forced to produce a final textual answer from the available context. Since
       the flag is one-shot, any subsequent model call in the same agent run (there
@@ -286,7 +286,7 @@ class HistoryCompactionMiddleware(AgentMiddleware):
     def __init__(
         self,
         llm: ChatOpenAI,
-        trigger_tokens: int = 20_000,
+        trigger_tokens: int = 50_000,
         keep_last: int = 8,
         max_tokens: int | None = None,
         summarizer_token_cap: int | None = None,
