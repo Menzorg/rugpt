@@ -3,6 +3,8 @@ from uuid import UUID
 
 from langgraph.prebuilt import ToolRuntime
 
+from src.engine.unified_logger import get_logger
+
 from ....models.rag import RelatedDoc
 from ....models.user import User
 from ....models.user_file import UserFile
@@ -18,7 +20,7 @@ from .list_documents_dedupe import (
 )
 from .summary_budget import format_summary_part_with_budget, per_summary_token_limit
 
-logger = logging.getLogger("rugpt.agents.tools.document")
+logger = get_logger("agents")
 
 
 async def format_categories_line(

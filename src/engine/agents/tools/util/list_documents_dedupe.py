@@ -3,11 +3,13 @@ from dataclasses import dataclass
 
 from langgraph.prebuilt import ToolRuntime
 
+from src.engine.unified_logger import get_logger
+
 from ....models.rag import RelatedDoc
 from ....models.user_file import UserFile
 from ...runtime import ListDocumentsRuntimeData, RuntimeContext
 
-logger = logging.getLogger("rugpt.agents.tools.document")
+logger = get_logger("agents")
 
 
 @dataclass(frozen=True)
