@@ -22,6 +22,8 @@ from ..agents.metadata import build_initial_extra_body, resolve_litellm_session_
 from ..config import Config
 from ..constants import IMAGE_TYPES
 from ..models.rag import ChunkRow, ChunkSearchResult, RelatedDoc
+from ..models.user_file import UserFile
+from ..storage.content_type_storage import ContentTypeStorage
 from ..storage.rag_store import RAG_store
 from ..storage.user_file_storage import UserFileStorage
 from ..utils.image_parser import image_bytes_to_data_url
@@ -72,6 +74,7 @@ class RAGService:
         chunk_overlap: int,
         summary_input_max_tokens: int,
         file_storage: UserFileStorage | None = None,
+        content_type_storage: ContentTypeStorage | None = None,
     ) -> None:
         self._store = store or RAG_store(
             dsn=Config.RAG_STORE_DSN,
@@ -80,6 +83,7 @@ class RAGService:
         # UserFileStorage для обновления rag_status в процессе индексации.
         # Опциональный: если не передан, обновление статусов не производится.
         self._file_storage = file_storage
+        self._content_type_storage = content_type_storage
         self._embeddings = OpenAIEmbeddings(
             model=embedding_model,
             base_url=llm_base_url,
@@ -245,6 +249,27 @@ class RAGService:
             raise ValueError("LLM returned empty image summary.")
         return summary
 
+    async def _build_embedding_text(self, summary: str, file_record: UserFile | None) -> str:
+        # Embedding context window target: ~2k tokens for quality.
+        # Description is hard-capped at 3000 chars. Raise only if retrieval demands it — model max is 8k.
+        if not file_record:
+            return summary
+
+        parts = [f"Summary:\n```{summary}```"]
+
+        if file_record.comment:
+            parts.append(f"Comment:\n```{file_record.comment}```")
+
+        if file_record.content_type_id and self._content_type_storage:
+            ct = await self._content_type_storage.get_by_id(file_record.content_type_id)
+            if ct:
+                ct_line = f"Category: {ct.name}"
+                if ct.description:
+                    ct_line += f" / {ct.description[:3000]}"
+                parts.append(ct_line)
+
+        return "\n".join(parts)
+
     async def set_status(self, file_id: UUID, status: str):
         if file_id and self._file_storage:
             await self._file_storage.change_rag_status(file_id, status)
@@ -313,7 +338,8 @@ class RAGService:
 
                     stage = "summary_embedding"
                     logger.info(f"[{fid}] stage={stage}")
-                    summary_embedding = self._embed_query(summary)
+                    embedding_text = await self._build_embedding_text(summary, file_record)
+                    summary_embedding = self._embed_query(embedding_text)
 
                     stage = "db_write"
                     logger.info(f"[{fid}] stage={stage}")
@@ -353,7 +379,8 @@ class RAGService:
 
                 stage = "summary_embedding"
                 logger.info(f"[{fid}] stage={stage}")
-                summary_embedding = self._embed_query(summary)
+                embedding_text = await self._build_embedding_text(summary, file_record)
+                summary_embedding = self._embed_query(embedding_text)
 
                 stage = "db_write"
                 logger.info(f"[{fid}] stage={stage}")
@@ -396,7 +423,8 @@ class RAGService:
 
             stage = "summary_embedding"
             logger.info(f"[{fid}] stage={stage}")
-            summary_embedding = self._embed_query(summary)
+            embedding_text = await self._build_embedding_text(summary, file_record)
+            summary_embedding = self._embed_query(embedding_text)
 
             stage = "db_write"
             logger.info(f"[{fid}] stage={stage}")

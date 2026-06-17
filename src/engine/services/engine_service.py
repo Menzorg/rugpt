@@ -251,6 +251,7 @@ class EngineService:
             chunk_overlap=Config.RAG_CHUNK_OVERLAP,
             summary_input_max_tokens=Config.RAG_SUMMARY_INPUT_MAX_TOKENS,
             file_storage=self.user_file_storage,  # для обновления rag_status при индексации
+            content_type_storage=self.content_type_storage,
         )
 
         # Folder service — depends on folder storage, file storage, rag_service, storage_adapter.
