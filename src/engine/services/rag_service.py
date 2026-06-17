@@ -31,6 +31,13 @@ from ..utils.image_parser import image_bytes_to_data_url
 logger = get_logger("services")
 _ABSTRACT_SEARCH_MIN_WORDS = 5
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+_DOCUMENT_SEARCH_INSTRUCT = (
+    "Search for documents matching the user's request, including matching "
+    "document parameters, file comments, business categories, and category descriptions."
+)
+_PASSAGE_SEARCH_INSTRUCT = (
+    "Given a web search query, retrieve relevant passages that answer the query."
+)
 
 
 def _safe_tika_file_name(file_name: str | None) -> str:
@@ -120,7 +127,9 @@ class RAGService:
             chat_id=None,
         )
 
-    def _embed_query(self, query: str) -> list[float]:
+    def _embed_query(self, query: str, instruct: str | None = None) -> list[float]:
+        if instruct:
+            query = f"Instruct: {instruct}\n{query}"
         return self._embeddings.embed_query(
             query,
             extra_body=self._build_embedding_extra_body(),
@@ -506,13 +515,7 @@ class RAGService:
             "rag find_docs start: query=%r mode=%s top_k=%d org=%s user=%s filter_user=%s is_admin=%s exclude_images=%s",
             query, search_mode, top_k, org_id, user_id, filter_user_id, is_admin, exclude_images,
         )
-        SUMMARY_SEARCH_INSTRUCT = (
-    "Instruct: Retrieve document summaries that are semantically relevant to the user's need, "
-    "including the topic, purpose, task, or problem described, even without exact keyword overlap.\n"
-)
-        qwen_query = (SUMMARY_SEARCH_INSTRUCT + f"Query: {query}")
-        
-        query_embedding = self._embed_query(qwen_query)
+        query_embedding = self._embed_query(query, instruct=_DOCUMENT_SEARCH_INSTRUCT)
         docs = await self._store.call_search_related_docs(
             org_id=org_id,
             user_id=user_id,
@@ -578,9 +581,7 @@ class RAGService:
             "rag search_in_doc start: file_id=%s mode=concrete query=%r top_k=%d words=%d",
             file_id, query, top_k, word_count,
         )
-        qwen_query = ("Instruct: Given a web search query, retrieve relevant passages that answer the query"
-                f"Query: {query}")
-        query_embedding = self._embed_query(qwen_query)
+        query_embedding = self._embed_query(query, instruct=_PASSAGE_SEARCH_INSTRUCT)
         chunks = await self._store.call_search_concrete_chunks(
             file_id=file_id,
             query=query,
