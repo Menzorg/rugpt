@@ -48,12 +48,14 @@ from ...models.user_file import UserFile
 from ..runtime import RuntimeContext
 from ...services.rag_service import RAGService
 from ...storage.chat_storage import ChatStorage
+from ...storage.content_type_storage import ContentTypeStorage
 from ...storage.user_file_storage import UserFileStorage
 from ...storage.user_storage import UserStorage
 from ...utils.token_counter import count_tokens
 from .util.list_documents_dedupe import dedupe_and_page
 from .util.list_documents_formatters import (
     format_and_commit_page,
+    format_categories_line,
     format_single_doc,
     resolve_owner_names,
 )
@@ -71,6 +73,7 @@ _user_file_storage: Optional[UserFileStorage] = None
 _user_storage: Optional[UserStorage] = None
 _rag_service: Optional[RAGService] = None
 _chat_storage: Optional[ChatStorage] = None
+_content_type_storage: Optional[ContentTypeStorage] = None
 
 
 # =================================================================
@@ -144,13 +147,15 @@ def init_document_service(
     rag_service: Optional[RAGService] = None,
     user_storage: Optional[UserStorage] = None,
     chat_storage: Optional[ChatStorage] = None,
+    content_type_storage: Optional[ContentTypeStorage] = None,
 ) -> None:
     """Set the shared storage instances for all document tool calls."""
-    global _user_file_storage, _rag_service, _user_storage, _chat_storage
+    global _user_file_storage, _rag_service, _user_storage, _chat_storage, _content_type_storage
     _user_file_storage = storage
     _rag_service = rag_service
     _user_storage = user_storage
     _chat_storage = chat_storage
+    _content_type_storage = content_type_storage
     logger.info("Document tool storage initialized")
 
 
@@ -502,6 +507,11 @@ async def _list_documents_impl(
             compact_on_budget_exhausted,
             _SUMMARY_TOKENS_BUDGET,
         )
+        if _content_type_storage and summary_before < _SUMMARY_TOKENS_BUDGET:
+            user_file_items = [f for f in page_slice.items if isinstance(f, UserFile)]
+            categories_line = await format_categories_line(user_file_items, _content_type_storage)
+            if categories_line:
+                result = categories_line + "\n" + result
         if not_indexed_count:
             result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + result
         if hidden_count:
