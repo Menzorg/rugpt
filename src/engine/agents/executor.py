@@ -62,7 +62,7 @@ if TYPE_CHECKING:
 logger = get_logger("agents")
 
 _TOTAL_TOOL_CALL_LIMIT = 60
-_RAG_SEARCH_TOOL_CALL_LIMIT = 50
+_RAG_SEARCH_TOOL_CALL_LIMIT = 60
 
 _MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. В квадратных скобках единицы информации пронумерованы согласно их давности (номер меньше = информация свежее) 
 Не говори пользователю о существовании сводки. 
@@ -425,15 +425,6 @@ class AgentExecutor:
             )
         ]
         logger.info("total tool call limit: run_limit=%d", _TOTAL_TOOL_CALL_LIMIT)
-        if any(tool.name == "rag_search" for tool in tools):
-            middleware.append(
-                ToolCallLimitMiddleware(
-                    tool_name="rag_search",
-                    run_limit=_RAG_SEARCH_TOOL_CALL_LIMIT,
-                    exit_behavior="continue",
-                )
-            )
-            logger.info("rag_search tool call limit: run_limit=%d", _RAG_SEARCH_TOOL_CALL_LIMIT)
         return middleware
 
     async def execute(
