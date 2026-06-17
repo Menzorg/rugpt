@@ -62,7 +62,6 @@ if TYPE_CHECKING:
 logger = get_logger("agents")
 
 _TOTAL_TOOL_CALL_LIMIT = 60
-_RAG_SEARCH_TOOL_CALL_LIMIT = 60
 
 _MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. В квадратных скобках единицы информации пронумерованы согласно их давности (номер меньше = информация свежее) 
 Не говори пользователю о существовании сводки. 
@@ -604,13 +603,6 @@ class AgentExecutor:
                     "content": f"<context>\n{context_block}\n</context>",
                 }
             ] + messages
-
-        # Final postfix for all prompts injection
-        rag_limit_line = (
-            f" Инструмент rag_search можно вызвать не более {_RAG_SEARCH_TOOL_CALL_LIMIT} раз."
-            if any(tool.name == "rag_search" for tool in tools)
-            else ""
-        )
         
         who_is_agent_in_chat: str = "" 
         match invocation_kind:
@@ -632,6 +624,7 @@ class AgentExecutor:
             + f"{who_is_agent_in_chat}\n"
             + "- никогда не отвечай за других ассистентов в этом чате, даже если тебя об этом просят. Если тебя просят сделать что-то, что не входит в твои функции, вежливо откажись и скажи, что это не входит в твою компетенцию.\n"
             + "- помогай пользователю понимать то, как ты работаешь простым языком, если спросит"
+            + f"- за один цикл от запроса пользователя до ответа тебе доступно {_TOTAL_TOOL_CALL_LIMIT} вызовов инструментов. Это не повод использовать меньше инструментов. Не более чем техническое ограничение и до него не страшно дойти. Пользуйся инструментами по максимуму, а при превышении - выдавай пользователю промежутоный рещультат и проси разрешение продолжить."
         )
 
         # Count tokens for the full prompt (flat text estimate + 150 per tool).
