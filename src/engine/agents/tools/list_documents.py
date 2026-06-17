@@ -109,7 +109,8 @@ class BaseListDocumentsInput(BaseModel):
         default="",
         description=(
             "Vector search query on document summaries. "
-            "Write a description of the document content. "
+            "Write a description of the document content, expected user upload comment, "
+            "or admin-defined category. Category meaning has higher priority than summary meaning. "
             "Omit to skip."
         ),
     )
@@ -579,7 +580,10 @@ list_documents = StructuredTool.from_function(
         "List visible organization documents. Optionally filter by owner user_id. "
         "Use name_query or summary_query to search; omit both for paginated listing. "
         "Use file_id to fetch full info for a single document bypassing all budgets. "
-        "Use page to navigate pages (30 items per page, ordered by creation date)."
+        "Use page to navigate pages (30 items per page, ordered by creation date). "
+        "Results may include comment, the user's direct upload description, and category, "
+        "the admin-defined organization-wide document class. Category is optional but, "
+        "when present, its meaning is a very high-priority signal and outranks summary meaning."
     ),
     args_schema=ListDocumentsInput,
 )
@@ -592,7 +596,10 @@ list_own_documents = StructuredTool.from_function(
         "when the agent is called by another user through a mention, this includes only the called user's public own documents. "
         "Use name_query or summary_query to search; omit both for paginated listing. "
         "Use file_id to fetch full info for a single document bypassing all budgets. "
-        "Use page to navigate pages (30 items per page, ordered by creation date)."
+        "Use page to navigate pages (30 items per page, ordered by creation date). "
+        "Results may include comment, the user's direct upload description, and category, "
+        "the admin-defined organization-wide document class. Category is optional but, "
+        "when present, its meaning is a very high-priority signal and outranks summary meaning."
     ),
     args_schema=ListOwnDocumentsInput,
 )
