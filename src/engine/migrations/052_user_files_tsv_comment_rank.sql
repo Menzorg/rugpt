@@ -113,8 +113,8 @@ BEGIN
     FROM lex l
     JOIN user_files uf ON uf.id = l.doc_id
     LEFT JOIN content_types ct ON ct.id = uf.content_type_id
-    WHERE uf.summary_embedding IS NOT NULL AND tsv_score > 0
-    ORDER BY tsv_score ASC
+    WHERE uf.summary_embedding IS NOT NULL AND l.tsv_score > 0
+    ORDER BY l.tsv_score ASC
     LIMIT p_top_k;
 
   ELSE
