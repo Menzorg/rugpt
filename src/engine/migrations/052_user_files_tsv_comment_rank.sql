@@ -48,7 +48,7 @@ RETURNS TABLE (
   summary text,
   comment text,
   content_type_id uuid,
-  content_type_name varchar(255),
+  content_type_name TEXT,
   content_type_description text,
   uploaded_at timestamptz,
   created_at date,
@@ -76,7 +76,7 @@ BEGIN
     WITH lex AS (
       SELECT
         uf.id AS doc_id,
-        ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], uf.tsv, v_tsquery) AS tsv_score
+        ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], uf.tsv, v_tsquery, 1) AS tsv_score
       FROM user_files uf
       WHERE uf.org_id    = p_org_id
         AND (p_filter_user_id IS NULL OR uf.user_id = p_filter_user_id)
