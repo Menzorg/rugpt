@@ -62,7 +62,7 @@ from src.engine.models.task import Task
 # Tokenizer setup
 # ---------------------------------------------------------------------------
 
-from src.engine.utils.token_counter import _encode as _encode_engine
+from src.engine.utils.token_counter import _encode_with as _encode_engine
 
 _TARGET_TOKENS = 1000
 _TOKENIZERS_DIR = Path(__file__).resolve().parents[1] / "tokenizers"

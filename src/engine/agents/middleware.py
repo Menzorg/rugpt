@@ -343,6 +343,9 @@ class HistoryCompactionMiddleware(AgentMiddleware):
         if count_fn(trimmed) <= cap:
             return trimmed
 
+        # Trimming latest messages lets preserve oldest context of what is done so far.
+        # If we trimmed from the front, summarizer wouldn't see first messages where it all started from 
+        # (and it could remove previous summary if this is second summary in loop which could loss of whole history between summaries) 
         i = len(trimmed) - 1
         while i > 0:
             if not self._is_immune(trimmed[i]):
