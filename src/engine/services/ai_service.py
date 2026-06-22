@@ -516,7 +516,7 @@ class AIService:
         
             if msg.sender_id not in agent_name_cache:
                 agent_name_cache[msg.sender_id] = await self._resolve_user_name(msg.sender_id)
-            content = self._wrap_agent_content(agent_name_cache[msg.sender_id], content, msg.created_at)
+            content = self._wrap_agent_content(agent_name_cache[msg.sender_id], content)
             messages.append({"role": role_name, "content": content})
 
         # Current message
