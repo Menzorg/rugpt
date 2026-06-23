@@ -122,10 +122,7 @@ async def table_rows_search(
                 "table_rows_search: blocked for file_id=%s — total_tokens_spent=%d >= %d",
                 file_id, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
             )
-            return (
-                f"[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
-                f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]"
-            )
+            return "[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION]"
 
         rows = await _rag_service.get_table_rows_by_range(
             file_id=file_id,
@@ -136,10 +133,7 @@ async def table_rows_search(
         if not rows:
             return f"No rows found in file '{file_id}' between row {row_start} and {row_end}."
 
-        budget_block_msg = (
-            f"[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
-            f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]"
-        )
+        budget_block_msg = "[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION]"
 
         accepted_lines: list[str] = []
         truncated = False
