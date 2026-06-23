@@ -218,6 +218,10 @@ async def _rag_search(
                 "rag_search: blocked after search for file_id=%s — total_tokens_spent=%d >= %d",
                 file_id, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
             )
+            # Intentionally not calling _remember_seen_chunks here: if the result was
+            # blocked we never returned it to the model, so the chunks are not "seen"
+            # from the model's perspective. Marking them seen would prevent re-fetching
+            # them in a future run after compaction resets the budget.
             return blocked
 
         async with runtime.context.lock:

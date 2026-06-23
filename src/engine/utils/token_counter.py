@@ -145,7 +145,14 @@ def _encode_with(enc: Union[Tokenizer, tiktoken.Encoding], text: str) -> int:
         return 0
     if isinstance(enc, Tokenizer):
         return len(enc.encode(text).ids)
-    # tiktoken fallback: heuristic correction for Cyrillic-heavy text
+    # tiktoken fallback: heuristic correction for Cyrillic/Latin ratio.
+    # These heuristics are rough — they are better than nothing in emergencies
+    # (primary tokenizer failed; count_tokens logs a warning when this path fires),
+    # but they are not accurate. Currently tuned for Cyrillic + Latin only.
+    # TODO: when we start working with languages beyond Cyrillic/Latin (CJK, Arabic,
+    #       Hebrew, etc.) these heuristics should be extended or replaced with
+    #       per-script detection so non-Latin scripts don't silently get the
+    #       Cyrillic 0.4 compression factor applied to them.
     if not _LATIN_RE.search(text):
         return int(len(enc.encode(text)) * 0.4)
     cyrillic = sum(1 for c in text if 'Ѐ' <= c <= 'ӏ') * 2

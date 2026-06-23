@@ -18,6 +18,8 @@ from langchain_openai import ChatOpenAI as _ChatOpenAI
 from langchain_core.language_models import LanguageModelInput
 
 MAX_CONCURRENCY = 1  # imported by tests; mirrors RunnableConfig(max_concurrency=...)
+# Keep at 1 until there's a strong reason to raise it cuz it's stable. 
+# LLM inference is slower than sequential tool I/O anyway, so that's not as urgent as other issues
 
 
 class ChatOpenAI(_ChatOpenAI):
