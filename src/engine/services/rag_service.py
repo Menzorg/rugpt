@@ -33,7 +33,7 @@ _ABSTRACT_SEARCH_MIN_WORDS = 5
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 _DOCUMENT_SEARCH_INSTRUCT = (
     "Search for documents matching the user's request, including matching "
-    "document parameters, file comments, business categories, and category descriptions."
+    "document summary and comment"
 )
 _PASSAGE_SEARCH_INSTRUCT = (
     "Given a web search query, retrieve relevant passages that answer the query."
@@ -259,23 +259,14 @@ class RAGService:
         return summary
 
     async def _build_embedding_text(self, summary: str, file_record: UserFile | None) -> str:
-        # Embedding context window target: ~2k tokens for quality.
-        # Description is hard-capped at 3000 chars. Raise only if retrieval demands it — model max is 8k.
+        summary = summary[:3000]
         if not file_record:
             return summary
 
         parts = [f"Summary:\n```{summary}```"]
 
         if file_record.comment:
-            parts.append(f"Comment:\n```{file_record.comment}```")
-
-        if file_record.content_type_id and self._content_type_storage:
-            ct = await self._content_type_storage.get_by_id(file_record.content_type_id)
-            if ct:
-                ct_line = f"Category: {ct.name}"
-                if ct.description:
-                    ct_line += f" / {ct.description[:3000]}"
-                parts.append(ct_line)
+            parts.append(f"Comment:\n```{file_record.comment[:3000]}```")
 
         return "\n".join(parts)
 
