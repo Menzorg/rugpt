@@ -43,6 +43,21 @@ async def format_categories_line(
     return f"<categories>{parts}</categories>"
 
 
+def format_related_docs_categories_line(docs: list[RelatedDoc]) -> str:
+    """Return a '<categories>…</categories>' line from inline content type data on RelatedDoc."""
+    seen: dict[UUID, str] = {}
+    for doc in docs:
+        if doc.content_type_id and doc.content_type_id not in seen:
+            entry = doc.content_type_name or str(doc.content_type_id)
+            if doc.content_type_description:
+                entry += f": {doc.content_type_description}"
+            seen[doc.content_type_id] = entry
+    if not seen:
+        return ""
+    parts = ", ".join(f"{cid}={label}" for cid, label in seen.items())
+    return f"<categories>{parts}</categories>"
+
+
 def document_owner_id(f: UserFile | RelatedDoc) -> UUID | None:
     """Return owner user id for either listing result shape."""
     return f.user_id
@@ -176,9 +191,11 @@ def format_single_related_doc(doc: RelatedDoc, owner_cache: dict[UUID, str] | No
     """Format one search result without summary budget truncation."""
     summary_part = f'summary: "{doc.summary}"' if doc.summary else "summary: -"
     owner = related_doc_owner_label(doc, owner_cache or {})
+    comment_part = f", comment={doc.comment!r}" if doc.comment else ""
+    category_part = f", category={doc.content_type_name!r}" if doc.content_type_name else ""
     return (
         f"- {doc.doc_title} (id={doc.file_id}, created_at={format_related_doc_created_date(doc)}, "
-        f"{format_search_score(doc)}{owner}, {summary_part})"
+        f"{format_search_score(doc)}{owner}{comment_part}{category_part}, {summary_part})"
     )
 
 
@@ -210,9 +227,11 @@ def format_related_docs_batch(
             summary_part = "summary: -"
 
         owner = related_doc_owner_label(doc, owner_cache)
+        comment_part = f", comment={doc.comment!r}" if doc.comment else ""
+        category_part = f", category={doc.content_type_name!r}" if doc.content_type_name else ""
         lines.append(
             f"- {doc.doc_title} (id={doc.file_id}, created_at={format_related_doc_created_date(doc)}, "
-            f"{format_search_score(doc)}{owner}, {summary_part})"
+            f"{format_search_score(doc)}{owner}{comment_part}{category_part}, {summary_part})"
         )
 
     return lines, total_tokens_spent

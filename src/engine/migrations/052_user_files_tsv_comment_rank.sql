@@ -46,6 +46,10 @@ RETURNS TABLE (
   user_id uuid,
   doc_title varchar(500),
   summary text,
+  comment text,
+  content_type_id uuid,
+  content_type_name varchar(255),
+  content_type_description text,
   uploaded_at timestamptz,
   created_at date,
   vec_dist double precision,
@@ -97,6 +101,10 @@ BEGIN
       uf.user_id                             AS user_id,
       uf.original_filename                   AS doc_title,
       uf.summary                             AS summary,
+      uf.comment                             AS comment,
+      uf.content_type_id                     AS content_type_id,
+      ct.name                                AS content_type_name,
+      ct.description                         AS content_type_description,
       uf.created_at                          AS uploaded_at,
       uf.created_at::date                    AS created_at,
       (uf.summary_embedding <=> p_query_emb) AS vec_dist,
@@ -104,6 +112,7 @@ BEGIN
       'concrete'::text                       AS mode_used
     FROM lex l
     JOIN user_files uf ON uf.id = l.doc_id
+    LEFT JOIN content_types ct ON ct.id = uf.content_type_id
     WHERE uf.summary_embedding IS NOT NULL
     ORDER BY vec_dist ASC
     LIMIT p_top_k;
@@ -159,6 +168,10 @@ BEGIN
       r.user_id               AS user_id,
       uf.original_filename    AS doc_title,
       r.summary               AS summary,
+      uf.comment              AS comment,
+      uf.content_type_id      AS content_type_id,
+      ct.name                 AS content_type_name,
+      ct.description          AS content_type_description,
       uf.created_at           AS uploaded_at,
       uf.created_at::date     AS created_at,
       r.vec_dist              AS vec_dist,
@@ -166,6 +179,7 @@ BEGIN
       'abstract'::text        AS mode_used
     FROM ranked r
     JOIN user_files uf ON uf.id = r.doc_id
+    LEFT JOIN content_types ct ON ct.id = uf.content_type_id
     WHERE r.vec_dist < 0.65
     ORDER BY (r.r_vec + 0.3 * r.r_tsv) ASC
     LIMIT p_top_k;

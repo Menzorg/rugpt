@@ -56,6 +56,7 @@ from .util.list_documents_dedupe import dedupe_and_page
 from .util.list_documents_formatters import (
     format_and_commit_page,
     format_categories_line,
+    format_related_docs_categories_line,
     format_single_doc,
     resolve_owner_names,
 )
@@ -508,9 +509,16 @@ async def _list_documents_impl(
             compact_on_budget_exhausted,
             _SUMMARY_TOKENS_BUDGET,
         )
-        if _content_type_storage and summary_before < _SUMMARY_TOKENS_BUDGET:
+        # UserFile: content type names are resolved via storage (not embedded in the model).
+        if _content_type_storage:
             user_file_items = [f for f in page_slice.items if isinstance(f, UserFile)]
             categories_line = await format_categories_line(user_file_items, _content_type_storage)
+            if categories_line:
+                result = categories_line + "\n" + result
+        # RelatedDoc: content type name/description are JOINed inline by the SQL function, no storage needed.
+        related_doc_items = [f for f in page_slice.items if isinstance(f, RelatedDoc)]
+        if related_doc_items:
+            categories_line = format_related_docs_categories_line(related_doc_items)
             if categories_line:
                 result = categories_line + "\n" + result
         if not_indexed_count:
