@@ -116,14 +116,14 @@ class RAGService:
             chat_id=None,
         )
 
-    def _embed_query(self, query: str) -> list[float]:
-        return self._embeddings.embed_query(
+    async def _embed_query(self, query: str) -> list[float]:
+        return await self._embeddings.aembed_query(
             query,
             extra_body=self._build_embedding_extra_body(),
         )
 
-    def _embed_documents(self, documents: list[str]) -> list[list[float]]:
-        return self._embeddings.embed_documents(
+    async def _embed_documents(self, documents: list[str]) -> list[list[float]]:
+        return await self._embeddings.aembed_documents(
             documents,
             extra_body=self._build_embedding_extra_body(),
         )
@@ -213,7 +213,7 @@ class RAGService:
             f"{rows_text}"
         )
 
-    def _generate_summary_with_llm(self, text: str, *, is_table: bool = False) -> str:
+    async def _generate_summary_with_llm(self, text: str, *, is_table: bool = False) -> str:
         from ..utils.token_counter import cut_text_by_token_count
         try:
             source_text = cut_text_by_token_count(text, self._summary_input_max_tokens)
@@ -226,7 +226,7 @@ class RAGService:
             {"role": "system", "content": system_prompt.strip()},
             {"role": "user", "content": source_text},
         ]
-        result = self._summary_llm.invoke(messages)
+        result = await self._summary_llm.ainvoke(messages)
         summary = str(result.content).strip()
         if not summary:
             raise ValueError("LLM returned empty summary.")
@@ -313,7 +313,7 @@ class RAGService:
 
                     stage = "summary_embedding"
                     logger.info(f"[{fid}] stage={stage}")
-                    summary_embedding = self._embed_query(summary)
+                    summary_embedding = await self._embed_query(summary)
 
                     stage = "db_write"
                     logger.info(f"[{fid}] stage={stage}")
@@ -341,19 +341,19 @@ class RAGService:
 
                 stage = "table_embedding"
                 logger.info(f"[{fid}] stage={stage}")
-                row_embeddings = self._embed_documents(table_rows)
+                row_embeddings = await self._embed_documents(table_rows)
                 logger.info(f"[{fid}] embedded {len(row_embeddings)} row vectors")
 
                 stage = "summary_generation"
                 logger.info(f"[{fid}] stage={stage}")
                 summary_source = self._build_table_summary_source(filename, headers, table_rows)
-                summary = self._generate_summary_with_llm(summary_source, is_table=True)
+                summary = await self._generate_summary_with_llm(summary_source, is_table=True)
                 summary = f"Количество строк в таблице: {len(table_rows)}\n" + summary
                 logger.info(f"[{fid}] summary generated ({len(summary)} chars)")
 
                 stage = "summary_embedding"
                 logger.info(f"[{fid}] stage={stage}")
-                summary_embedding = self._embed_query(summary)
+                summary_embedding = await self._embed_query(summary)
 
                 stage = "db_write"
                 logger.info(f"[{fid}] stage={stage}")
@@ -386,17 +386,17 @@ class RAGService:
 
             stage = "chunk_embedding"
             logger.info(f"[{fid}] stage={stage}")
-            chunk_embeddings = self._embed_documents(chunks)
+            chunk_embeddings = await self._embed_documents(chunks)
             logger.info(f"[{fid}] embedded {len(chunk_embeddings)} chunk vectors")
 
             stage = "summary_generation"
             logger.info(f"[{fid}] stage={stage}")
-            summary = self._generate_summary_with_llm(full_text)
+            summary = await self._generate_summary_with_llm(full_text)
             logger.info(f"[{fid}] summary generated ({len(summary)} chars)")
 
             stage = "summary_embedding"
             logger.info(f"[{fid}] stage={stage}")
-            summary_embedding = self._embed_query(summary)
+            summary_embedding = await self._embed_query(summary)
 
             stage = "db_write"
             logger.info(f"[{fid}] stage={stage}")
@@ -484,7 +484,7 @@ class RAGService:
 )
         qwen_query = (SUMMARY_SEARCH_INSTRUCT + f"Query: {query}")
         
-        query_embedding = self._embed_query(qwen_query)
+        query_embedding = await self._embed_query(qwen_query)
         docs = await self._store.call_search_related_docs(
             org_id=org_id,
             user_id=user_id,
@@ -513,7 +513,7 @@ class RAGService:
             "rag search_in_doc start: file_id=%s mode=abstract query=%r top_k=%d",
             file_id, query, top_k,
         )
-        query_embedding = self._embed_query(query)
+        query_embedding = await self._embed_query(query)
         chunks = await self._store.call_search_abstract_chunks(
             file_id=file_id,
             query=query,
@@ -552,7 +552,7 @@ class RAGService:
         )
         qwen_query = ("Instruct: Given a web search query, retrieve relevant passages that answer the query"
                 f"Query: {query}")
-        query_embedding = self._embed_query(qwen_query)
+        query_embedding = await self._embed_query(qwen_query)
         chunks = await self._store.call_search_concrete_chunks(
             file_id=file_id,
             query=query,
