@@ -43,12 +43,23 @@ class _SubagentInputWrapper:
     def _input_from_state(state: dict) -> dict:
         return {"messages": state.get("subagent_messages") or []}
 
+    def _error_result(self, exc: Exception) -> dict:
+        from langchain_core.messages import AIMessage
+        logger.error("Subagent %r failed: %s", self.name, exc, exc_info=True)
+        return {"messages": [AIMessage(content=f"[Subagent error: {exc}]")]}
+
     def invoke(self, state: dict, config: Optional[RunnableConfig] = None) -> dict:
-        return self._agent.invoke(self._input_from_state(state), config)
+        try:
+            return self._agent.invoke(self._input_from_state(state), config)
+        except Exception as exc:
+            return self._error_result(exc)
 
     async def ainvoke(self, state: dict, config: Optional[RunnableConfig] = None) -> dict:
         logger.debug("Subagent %r ainvoke config is not None: %s", self.name, config is not None)
-        return await self._agent.ainvoke(self._input_from_state(state), config)
+        try:
+            return await self._agent.ainvoke(self._input_from_state(state), config)
+        except Exception as exc:
+            return self._error_result(exc)
 
 
 async def run_supervisor_agent(

@@ -58,3 +58,15 @@ class RuntimeContext:
                 return blocked_msg
             self.total_tokens_spent += spent
             return None
+
+    async def try_reserve(self, tokens: int) -> bool:
+        """Atomically reserve *tokens* if the budget allows.
+
+        Returns True and commits the tokens when they fit within the cap.
+        Returns False (without modifying the counter) when the budget is exhausted.
+        """
+        async with self.lock:
+            if self.is_budget_exhausted():
+                return False
+            self.total_tokens_spent += tokens
+            return True

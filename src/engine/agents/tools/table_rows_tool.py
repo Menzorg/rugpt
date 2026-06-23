@@ -136,27 +136,40 @@ async def table_rows_search(
         if not rows:
             return f"No rows found in file '{file_id}' between row {row_start} and {row_end}."
 
-        lines = [f"Rows returned: {len(rows)}"]
-        lines += [f"[row {row_start + i}] {r.chunk_text}" for i, r in enumerate(rows)]
-        result = "\n".join(lines)
-        spent = count_tokens(result)
+        budget_block_msg = (
+            f"[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+            f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]"
+        )
 
-        if runtime is not None:
-            blocked = await runtime.context.try_commit(
-                spent,
-                f"[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
-                f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]",
-            )
-            if blocked:
+        accepted_lines: list[str] = []
+        truncated = False
+        for i, r in enumerate(rows):
+            row_line = f"[row {row_start + i}] {r.chunk_text}"
+            if runtime is not None and not await runtime.context.try_reserve(count_tokens(row_line)):
                 logger.info(
-                    "table_rows_search: blocked after fetch for file_id=%s — total_tokens_spent=%d >= %d",
-                    file_id, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
+                    "table_rows_search: budget exceeded at row %d for file_id=%s — "
+                    "total_tokens_spent=%d >= %d",
+                    row_start + i, file_id,
+                    runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,
                 )
-                return blocked
-            logger.info(
-                "table_rows_search done: file_id=%s rows=%d output_tokens=%d tokens_after=%d",
-                file_id, len(rows), spent, runtime.context.total_tokens_spent,
-            )
+                truncated = True
+                break
+            accepted_lines.append(row_line)
+
+        if not accepted_lines:
+            return budget_block_msg
+
+        header = f"Rows returned: {len(accepted_lines)}"
+        if truncated:
+            header += f" (truncated — budget exhausted after row {row_start + len(accepted_lines) - 1})"
+        result = "\n".join([header] + accepted_lines)
+        if truncated:
+            result += f"\n{budget_block_msg}"
+
+        logger.info(
+            "table_rows_search done: file_id=%s rows_accepted=%d/%d truncated=%s",
+            file_id, len(accepted_lines), len(rows), truncated,
+        )
         return result
     except Exception as e:
         logger.error(f"table_rows_search failed: {e}", exc_info=True)
