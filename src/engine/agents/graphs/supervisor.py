@@ -136,6 +136,7 @@ async def _supervisor_agent_call(
             litellm_session_id=litellm_session_id,
             chat_id=chat_id,
             supervisor_name=supervisor_name,
+            middleware=extra_middleware,
         )
         handoff_tools = [
             _create_task_handoff_tool(
@@ -246,6 +247,7 @@ async def _build_subagents(
     litellm_session_id: str,
     chat_id: Optional[Any] = None,
     supervisor_name: Optional[str] = None,
+    middleware: Optional[List[Any]] = None,
 ) -> tuple[list, dict[str, str]]:
     """Build allowed subagents for a supervisor role."""
     from ...services.engine_service import get_engine_service
@@ -307,6 +309,7 @@ async def _build_subagents(
             model=subagent_llm,
             tools=role_tools,
             system_prompt=subagent_prompt,
+            middleware=middleware or [],
             context_schema=RuntimeContext,
             name=agent_name,
         )
