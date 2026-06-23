@@ -509,11 +509,12 @@ class RAGService:
         filter_user_id: str | None = None,
         exclude_images: bool = True,
         search_mode: str = "abstract",
+        filter_content_type_id: str | None = None,
     ) -> list[RelatedDoc]:
         """Return top-k related docs in org/user scope using SQL hybrid search."""
         logger.info(
-            "rag find_docs start: query=%r mode=%s top_k=%d org=%s user=%s filter_user=%s is_admin=%s exclude_images=%s",
-            query, search_mode, top_k, org_id, user_id, filter_user_id, is_admin, exclude_images,
+            "rag find_docs start: query=%r mode=%s top_k=%d org=%s user=%s filter_user=%s is_admin=%s exclude_images=%s filter_content_type=%s",
+            query, search_mode, top_k, org_id, user_id, filter_user_id, is_admin, exclude_images, filter_content_type_id,
         )
         query_embedding = self._embed_query(query, instruct=_DOCUMENT_SEARCH_INSTRUCT)
         docs = await self._store.call_search_related_docs(
@@ -526,6 +527,7 @@ class RAGService:
             filter_user_id=filter_user_id,
             exclude_images=exclude_images,
             search_mode=search_mode,
+            filter_content_type_id=filter_content_type_id,
         )
         logger.info(
             "rag find_docs done: query=%r mode=%s returned=%d top_k=%d",

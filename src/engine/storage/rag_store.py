@@ -252,6 +252,7 @@ class RAG_store(BaseStorage):
         filter_user_id: str | None = None,
         exclude_images: bool = True,
         search_mode: str = "abstract",
+        filter_content_type_id: str | None = None,
     ) -> list[RelatedDoc]:
         """Call SQL function search_related_docs for doc-level retrieval."""
         self._validate_embedding(query_embedding)
@@ -281,7 +282,8 @@ class RAG_store(BaseStorage):
                 $6::boolean,
                 $7::uuid,
                 $8::boolean,
-                $9::text
+                $9::text,
+                $10::uuid
             )
         """
         rows = await self.fetch(
@@ -295,6 +297,7 @@ class RAG_store(BaseStorage):
             filter_user_id,
             exclude_images,
             search_mode,
+            filter_content_type_id,
         )
         return [
             RelatedDoc(

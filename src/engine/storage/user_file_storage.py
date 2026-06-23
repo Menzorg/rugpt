@@ -145,14 +145,26 @@ class UserFileStorage(BaseStorage):
         rows = await self.fetch(query, user_id)
         return [self._row_to_file(r) for r in rows]
 
-    async def list_by_org(self, org_id: UUID) -> List[UserFile]:
-        """List all files in an organization"""
-        query = """
-            SELECT * FROM user_files
-            WHERE org_id = $1 AND is_active = true
-            ORDER BY created_at DESC
-        """
-        rows = await self.fetch(query, org_id)
+    async def list_by_org(
+        self,
+        org_id: UUID,
+        content_type_id: Optional[UUID] = None,
+    ) -> List[UserFile]:
+        """List all files in an organization, optionally filtered by content_type_id."""
+        if content_type_id is not None:
+            query = """
+                SELECT * FROM user_files
+                WHERE org_id = $1 AND is_active = true AND content_type_id = $2
+                ORDER BY created_at DESC
+            """
+            rows = await self.fetch(query, org_id, content_type_id)
+        else:
+            query = """
+                SELECT * FROM user_files
+                WHERE org_id = $1 AND is_active = true
+                ORDER BY created_at DESC
+            """
+            rows = await self.fetch(query, org_id)
         return [self._row_to_file(r) for r in rows]
 
     async def list_pending_indexing(self) -> List[UserFile]:

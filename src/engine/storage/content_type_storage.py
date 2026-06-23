@@ -77,6 +77,20 @@ class ContentTypeStorage(BaseStorage):
         )
         return "UPDATE 1" in result
 
+    async def search_by_name(
+        self,
+        org_id: UUID,
+        query: str,
+        threshold: float = 0.1,
+    ) -> List[ContentType]:
+        """Fuzzy trigram search over active content type names for an org.
+        Uses search_content_types() SQL function from migration 053."""
+        rows = await self.fetch(
+            "SELECT * FROM search_content_types($1, $2, $3::real)",
+            org_id, query, threshold,
+        )
+        return [self._row_to_content_type(r) for r in rows]
+
     def _row_to_content_type(self, row) -> ContentType:
         return ContentType(
             id=row["id"],

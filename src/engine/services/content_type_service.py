@@ -44,5 +44,14 @@ class ContentTypeService:
             is_active=is_active,
         )
 
+    async def search(
+        self,
+        org_id: UUID,
+        query: str,
+        threshold: float = 0.1,
+    ) -> List[ContentType]:
+        """Fuzzy search active content types by name using trigram similarity."""
+        return await self._storage.search_by_name(org_id, query.strip(), threshold)
+
     async def delete(self, content_type_id: UUID) -> bool:
         return await self._storage.soft_delete(content_type_id)
