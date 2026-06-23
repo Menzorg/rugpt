@@ -259,14 +259,14 @@ class RAGService:
         return summary
 
     def _build_embedding_text(self, summary: str, file_record: UserFile | None) -> str:
-        summary = summary[:3000]
+        summary = summary
         if not file_record:
             return summary
 
         parts = [f"Summary:\n```{summary}```"]
 
         if file_record.comment:
-            parts.append(f"Comment:\n```{file_record.comment[:3000]}```")
+            parts.append(f"Comment:\n```{file_record.comment}```")
 
         return "\n".join(parts)
 

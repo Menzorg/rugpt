@@ -23,20 +23,32 @@ from .summary_budget import format_summary_part_with_budget, per_summary_token_l
 logger = get_logger("agents")
 
 
-async def format_categories_line(
-    files: list[UserFile],
+async def prefetch_category_catalog(
+    org_id: UUID,
     content_type_storage: ContentTypeStorage,
+) -> dict[UUID, str]:
+    """Fetch all active content types for the org in one query; returns {id: 'name: description'}."""
+    cts = await content_type_storage.list_by_org(org_id, include_inactive=True)
+    catalog: dict[UUID, str] = {}
+    for ct in cts:
+        entry = ct.name
+        if ct.description:
+            entry += f": {ct.description}"
+        catalog[ct.id] = entry
+    return catalog
+
+
+def format_categories_line(
+    files: list[UserFile],
+    catalog: dict[UUID, str],
 ) -> str:
     """Return a single '<categories>…</categories>' line for all distinct content types in files."""
     seen: dict[UUID, str] = {}
     for f in files:
         if f.content_type_id and f.content_type_id not in seen:
-            ct = await content_type_storage.get_by_id(f.content_type_id)
-            if ct:
-                entry = ct.name
-                if ct.description:
-                    entry += f": {ct.description}"
-                seen[f.content_type_id] = entry
+            label = catalog.get(f.content_type_id)
+            if label:
+                seen[f.content_type_id] = label
     if not seen:
         return ""
     parts = ", ".join(f"{cid}={label}" for cid, label in seen.items())

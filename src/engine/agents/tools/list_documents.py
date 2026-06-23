@@ -58,6 +58,7 @@ from .util.list_documents_formatters import (
     format_categories_line,
     format_related_docs_categories_line,
     format_single_doc,
+    prefetch_category_catalog,
     resolve_owner_names,
 )
 
@@ -526,10 +527,11 @@ async def _list_documents_impl(
             compact_on_budget_exhausted,
             _SUMMARY_TOKENS_BUDGET,
         )
-        # UserFile: content type names are resolved via storage (not embedded in the model).
+        # UserFile: content type names are resolved via a single prefetch for the whole page.
         if _content_type_storage:
             user_file_items = [f for f in page_slice.items if isinstance(f, UserFile)]
-            categories_line = await format_categories_line(user_file_items, _content_type_storage)
+            catalog = await prefetch_category_catalog(scope.org_id, _content_type_storage)
+            categories_line = format_categories_line(user_file_items, catalog)
             if categories_line:
                 result = categories_line + "\n" + result
         # RelatedDoc: content type name/description are JOINed inline by the SQL function, no storage needed.
