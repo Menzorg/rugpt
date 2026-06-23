@@ -129,7 +129,7 @@ class RAGService:
 
     def _embed_query(self, query: str, instruct: str | None = None) -> list[float]:
         if instruct:
-            query = f"Instruct: {instruct}\n{query}"
+            query = f"Instruct: {instruct}\nQuery:{query}"
         return self._embeddings.embed_query(
             query,
             extra_body=self._build_embedding_extra_body(),
@@ -258,7 +258,7 @@ class RAGService:
             raise ValueError("LLM returned empty image summary.")
         return summary
 
-    async def _build_embedding_text(self, summary: str, file_record: UserFile | None) -> str:
+    def _build_embedding_text(self, summary: str, file_record: UserFile | None) -> str:
         summary = summary[:3000]
         if not file_record:
             return summary
@@ -338,7 +338,7 @@ class RAGService:
 
                     stage = "summary_embedding"
                     logger.info(f"[{fid}] stage={stage}")
-                    embedding_text = await self._build_embedding_text(summary, file_record)
+                    embedding_text = self._build_embedding_text(summary, file_record)
                     summary_embedding = self._embed_query(embedding_text)
 
                     stage = "db_write"
@@ -379,7 +379,7 @@ class RAGService:
 
                 stage = "summary_embedding"
                 logger.info(f"[{fid}] stage={stage}")
-                embedding_text = await self._build_embedding_text(summary, file_record)
+                embedding_text = self._build_embedding_text(summary, file_record)
                 summary_embedding = self._embed_query(embedding_text)
 
                 stage = "db_write"
@@ -423,7 +423,7 @@ class RAGService:
 
             stage = "summary_embedding"
             logger.info(f"[{fid}] stage={stage}")
-            embedding_text = await self._build_embedding_text(summary, file_record)
+            embedding_text = self._build_embedding_text(summary, file_record)
             summary_embedding = self._embed_query(embedding_text)
 
             stage = "db_write"
