@@ -10,7 +10,6 @@ and chunk_index.
 
 from src.engine.unified_logger import get_logger
 from typing import Optional
-from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
@@ -19,6 +18,7 @@ from pydantic import BaseModel, Field
 from ...services.rag_service import RAGService
 from ...storage.chat_storage import ChatStorage
 from ...storage.user_file_storage import UserFileStorage
+from .util.file_access import can_access_file
 
 logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
@@ -34,26 +34,6 @@ def create_expand_chunk_tool(
 ):
     """Create the expand_chunk tool wired to RAGService and UserFileStorage."""
 
-    async def _can_access_file(file_id: str, org_id: str, user_id: str, chat_id: Optional[str] = None) -> bool:
-        try:
-            org_uuid = UUID(org_id)
-            user_uuid = UUID(user_id)
-            file_uuid = UUID(file_id)
-        except ValueError:
-            return False
-        if chat_id and chat_storage is not None:
-            try:
-                attachment_ids = await chat_storage.get_attachments(UUID(chat_id))
-                if file_uuid in attachment_ids:
-                    return True
-            except Exception:
-                pass
-        all_files = await file_storage.list_by_org(org_uuid)
-        return any(
-            f.id == file_uuid and (f.uploaded_by_user_id == user_uuid or f.is_public)
-            for f in all_files
-        )
-
     async def _expand_chunk_async(
         file_id: str,
         chunk_index: int,
@@ -66,16 +46,25 @@ def create_expand_chunk_tool(
         """
         try:
             configurable = (config or {}).get("configurable", {})
+            caller_user_id = configurable["caller_user_id"]
+            callee_user_id = configurable.get("callee_user_id", "")
             org_id = configurable["org_id"]
-            user_id = configurable["caller_user_id"]
+            is_admin = bool(configurable.get("is_admin", False))
+            # In mention calls callee differs from caller — restrict to callee's public docs only.
+            owner_user_id = callee_user_id or caller_user_id
+            mention_mode = bool(callee_user_id and callee_user_id != caller_user_id)
             chat_id = configurable.get("chat_id")
 
             logger.info(
-                "expand_chunk called: file_id=%s, chunk_index=%d, org_id=%s, user_id=%s, chat_id=%s",
-                file_id, chunk_index, org_id, user_id, chat_id,
+                "expand_chunk called: file_id=%s, chunk_index=%d, org_id=%s, user_id=%s, mention_mode=%s, chat_id=%s",
+                file_id, chunk_index, org_id, owner_user_id, mention_mode, chat_id,
             )
 
-            if not await _can_access_file(file_id, org_id, user_id, chat_id):
+            if not await can_access_file(
+                file_id, org_id, owner_user_id, file_storage,
+                mention_mode=mention_mode, is_admin=is_admin,
+                chat_storage=chat_storage, chat_id=chat_id,
+            ):
                 return "You don't have access to that document."
 
             doc = await rag_service.get_doc_by_id(file_id)
