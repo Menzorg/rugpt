@@ -213,7 +213,7 @@ BEGIN
         )
         AND uf.is_active = true
         AND uf.tsv @@ v_tsquery
-      ORDER BY tsv_score DESC
+      ORDER BY ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], uf.tsv, v_tsquery, 1) DESC
       LIMIT v_pool
     )
     SELECT
@@ -288,11 +288,11 @@ BEGIN
     candidates AS (
       -- Merge candidate IDs before scoring so each document is ranked once by
       -- the weighted fusion below.
-      SELECT doc_id FROM summary_candidates
+      SELECT sc.doc_id FROM summary_candidates sc
       UNION
-      SELECT doc_id FROM manual_comment_candidates
+      SELECT mcc.doc_id FROM manual_comment_candidates mcc
       UNION
-      SELECT doc_id FROM category_candidates
+      SELECT cc.doc_id FROM category_candidates cc
     ),
     doc_vectors AS (
       SELECT
@@ -328,7 +328,7 @@ BEGIN
         -- Preserve summary relevance as the base score, then boost/penalize it
         -- by how close the manual-comment/category embedding is to the query.
         CASE
-          WHEN dv.comment_dist IS NOT NULL THEN dv.vec_dist + ((dv.comment_dist - 0.45) / 2)
+          WHEN dv.comment_dist IS NOT NULL THEN dv.vec_dist + ((dv.comment_dist - 0.5) / 2)
           ELSE dv.vec_dist
         END AS final_score
       FROM doc_vectors dv
