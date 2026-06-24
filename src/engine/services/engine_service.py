@@ -144,7 +144,13 @@ class EngineService:
 
         # Initialize department service
         self.department_service = DepartmentService(self.department_storage, self.user_storage)
-        self.content_type_service = ContentTypeService(self.content_type_storage)
+        self.content_type_service = ContentTypeService(
+            self.content_type_storage,
+            embedding_model=Config.EMBEDDING_MODEL,
+            llm_base_url=Config.LLM_BASE_URL,
+            llm_api_key=Config.LLM_API_KEY,
+            vector_dim=Config.RAG_VECTOR_DIM,
+        )
 
         # Kafka producer — event bus to NestJS (chat.events) + internal queue (agent.requests).
         self.kafka_producer = KafkaProducerService()

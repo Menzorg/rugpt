@@ -27,6 +27,13 @@
 | 1 | `/health/ready` не проверяет БД | Средний | TODO в коде: `# TODO: Check database connectivity`. Всегда возвращает `ready: True`. Deploy health checks могут пройти при недоступной БД. |
 | 2 | `web_search` и `role_call` -- stubs | Средний | Возвращают placeholder строки. Агент может пытаться вызвать несуществующий функционал. |
 | 3 | Bare `except Exception` в scheduler | Низкий | ~13 блоков в `scheduler_service.py` которые только логируют ошибку. Нет alerting или circuit-breaking при массовых сбоях. |
+| 4 | Embeddings создаются в разных сервисах синхронно | Средний | RAG, content types и correction rules напрямую вызывают LiteLLM embeddings из сервисного кода. Нужно вынести создание embeddings в единую стабильную queue-friendly точку с retry/idempotency, чтобы обновления сущностей не зависели напрямую от доступности embedding-gateway. |
+
+### Embeddings — единая точка создания
+
+Сейчас embeddings создаются точечно в сервисах (`RAGService`, `ContentTypeService`, `CorrectionRuleService`) и выполняются синхронно внутри пользовательских операций. Это технический долг: нужен единый embedding pipeline/API, который принимает тип сущности + payload, делает retry/idempotency, пишет результат в нужную таблицу и может работать через очередь без блокировки create/update запросов.
+
+Минимальная целевая форма: один сервис/worker для всех embedding-задач, стабильные payload-схемы для document summary, manual file comment, content type и correction rules, idempotency key на сущность+версию текста, повторяемая запись результата в БД.
 
 ## Support: in-app уведомление оператору на сообщение в тикете
 

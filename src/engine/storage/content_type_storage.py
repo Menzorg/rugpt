@@ -16,16 +16,31 @@ from ..models.content_type import ContentType
 logger = get_logger("storage")
 
 
+def _to_pgvector(values: list[float]) -> str:
+    return "[" + ",".join(f"{v:.10f}" for v in values) + "]"
+
+
 class ContentTypeStorage(BaseStorage):
 
-    async def create(self, ct: ContentType) -> ContentType:
+    async def create(
+        self,
+        ct: ContentType,
+        embedding: Optional[list[float]] = None,
+    ) -> ContentType:
         row = await self.fetchrow(
             """
-            INSERT INTO content_types (id, org_id, name, description, is_active, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO content_types (id, org_id, name, description, embedding, is_active, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5::vector, $6, $7, $8)
             RETURNING *
             """,
-            ct.id, ct.org_id, ct.name, ct.description, ct.is_active, ct.created_at, ct.updated_at,
+            ct.id,
+            ct.org_id,
+            ct.name,
+            ct.description,
+            _to_pgvector(embedding) if embedding is not None else None,
+            ct.is_active,
+            ct.created_at,
+            ct.updated_at,
         )
         return self._row_to_content_type(row)
 
@@ -54,6 +69,7 @@ class ContentTypeStorage(BaseStorage):
         name: Optional[str] = None,
         description: Optional[str] = None,
         is_active: Optional[bool] = None,
+        embedding: Optional[list[float]] = None,
     ) -> Optional[ContentType]:
         """Partial update — only non-None fields change (COALESCE)."""
         row = await self.fetchrow(
@@ -62,11 +78,17 @@ class ContentTypeStorage(BaseStorage):
             SET name = COALESCE($2, name),
                 description = COALESCE($3, description),
                 is_active = COALESCE($4, is_active),
-                updated_at = $5
+                embedding = COALESCE($5::vector, embedding),
+                updated_at = $6
             WHERE id = $1
             RETURNING *
             """,
-            content_type_id, name, description, is_active, datetime.utcnow(),
+            content_type_id,
+            name,
+            description,
+            is_active,
+            _to_pgvector(embedding) if embedding is not None else None,
+            datetime.utcnow(),
         )
         return self._row_to_content_type(row) if row else None
 

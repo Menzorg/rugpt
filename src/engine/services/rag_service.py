@@ -33,7 +33,7 @@ _ABSTRACT_SEARCH_MIN_WORDS = 5
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 _DOCUMENT_SEARCH_INSTRUCT = (
     "Search for documents matching the user's request, including matching "
-    "document summary and comment"
+    "document summaries, document parameters, manual comments, and business categories"
 )
 _PASSAGE_SEARCH_INSTRUCT = (
     "Given a web search query, retrieve relevant passages that answer the query."
@@ -259,16 +259,31 @@ class RAGService:
         return summary
 
     def _build_embedding_text(self, summary: str, file_record: UserFile | None) -> str:
-        summary = summary
-        if not file_record:
-            return summary
+        return summary
 
-        parts = [f"Summary:\n```{summary}```"]
+    def _build_manual_comment_embedding(self, file_record: UserFile | None) -> list[float] | None:
+        if (
+            file_record is None
+            or file_record.content_type_id is not None
+            or not file_record.comment
+        ):
+            return None
+        return self._embed_query(file_record.comment)
 
-        if file_record.comment:
-            parts.append(f"Comment:\n```{file_record.comment}```")
-
-        return "\n".join(parts)
+    async def _update_manual_comment_embedding(
+        self,
+        file_id: UUID,
+        file_record: UserFile | None,
+    ) -> None:
+        comment_embedding = self._build_manual_comment_embedding(file_record)
+        if comment_embedding is None or self._file_storage is None or file_record is None:
+            return
+        await self._file_storage.update_comment(
+            file_id=file_id,
+            comment=file_record.comment,
+            content_type_id=None,
+            comment_embedding=comment_embedding,
+        )
 
     async def set_status(self, file_id: UUID, status: str):
         if file_id and self._file_storage:
@@ -348,6 +363,7 @@ class RAGService:
                         summary=summary,
                         summary_embedding=summary_embedding,
                     )
+                    await self._update_manual_comment_embedding(file_id, file_record)
                     # Per design: image invoices get a summary but are NOT marked indexed.
                     await self.set_status(file_id, "not_indexed")
                     logger.info(f"[{fid}] ingest completed (image invoice) — summarized")
@@ -391,6 +407,7 @@ class RAGService:
                     rows_text=table_rows,
                     row_embeddings=row_embeddings,
                 )
+                await self._update_manual_comment_embedding(file_id, file_record)
 
                 await self.set_status(file_id, "indexed")
                 logger.info(f"[{fid}] ingest completed (table) — rows_ingested={len(table_rows)}")
@@ -435,6 +452,7 @@ class RAGService:
                 chunks=chunks,
                 chunk_embeddings=chunk_embeddings,
             )
+            await self._update_manual_comment_embedding(file_id, file_record)
 
         except Exception as exc:
             logger.error(f"[{fid}] ingest failed at stage={stage}: {exc}")
