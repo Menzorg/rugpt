@@ -10,10 +10,10 @@
 --     content_types.name.
 --   * concrete document search is TSV-first over user_files.tsv. The TSV column
 --     includes filename, comment, and summary.
---   * abstract document search ranks summary distance and adjusts it with the
---     first non-null auxiliary embedding:
---       COALESCE(user_files.comment_embedding, content_types.embedding).
---     Category embeddings are joined at search time and are not copied to files.
+--   * abstract document search ranks by vec_dist - comment_dist * 0.15, where
+--     comment_dist is sourced from a MATERIALIZED CTE of per-category cosine
+--     distances (computed once per call). Files without a category use their own
+--     comment_embedding distance; files with neither get comment_dist = 0.
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
@@ -142,7 +142,7 @@ EXECUTE FUNCTION sync_content_type_description_to_file_comments();
 
 COMMENT ON FUNCTION sync_content_type_description_to_file_comments() IS
     'Mirrors content_types.description into user_files.comment for category-backed files only. '
-    'Does not mirror embeddings; search joins content_types.embedding directly.';
+    'Does not mirror embeddings; abstract search reads category distances from a pre-built CTE.';
 
 DROP FUNCTION IF EXISTS search_related_docs(uuid, uuid, text, vector, integer);
 DROP FUNCTION IF EXISTS search_related_docs(uuid, uuid, text, vector, integer, boolean);
@@ -240,10 +240,23 @@ BEGIN
 
   ELSE
     RETURN QUERY
-    -- Abstract document search uses separate nearest-neighbor candidate pools.
-    -- A category/manual-comment match must be able to enter the result set even
-    -- when the summary vector alone would not make the initial top-N pool.
-    WITH eligible_files AS (
+    -- _category_dists is MATERIALIZED so each category's distance to the query
+    -- is computed once and reused per file. A plain CTE would suffice here since
+    -- only one branch executes per call (no cross-branch sharing needed); we chose
+    -- MATERIALIZED over TEMP TABLE specifically because it avoids DDL overhead and
+    -- catalog pollution while still guaranteeing a single evaluation.
+    WITH _category_dists AS MATERIALIZED (
+      SELECT
+        ct.id          AS content_type_id,
+        ct.name        AS content_type_name,
+        ct.description AS content_type_description,
+        (ct.embedding <=> p_query_emb)::double precision AS cat_dist
+      FROM content_types ct
+      WHERE ct.org_id    = p_org_id
+        AND ct.is_active = true
+        AND ct.embedding IS NOT NULL
+    ),
+    eligible_files AS (
       SELECT
         uf.id,
         uf.content_type_id,
@@ -264,35 +277,11 @@ BEGIN
         AND uf.is_active = true
         AND uf.summary_embedding IS NOT NULL
     ),
-    summary_candidates AS (
+    candidates AS (
       SELECT ef.id AS doc_id
       FROM eligible_files ef
       ORDER BY ef.summary_embedding <=> p_query_emb
       LIMIT v_pool
-    ),
-    manual_comment_candidates AS (
-      SELECT ef.id AS doc_id
-      FROM eligible_files ef
-      WHERE ef.comment_embedding IS NOT NULL
-      ORDER BY ef.comment_embedding <=> p_query_emb
-      LIMIT v_pool
-    ),
-    category_candidates AS (
-      SELECT ef.id AS doc_id
-      FROM eligible_files ef
-      JOIN content_types ct ON ct.id = ef.content_type_id AND ct.org_id = p_org_id
-      WHERE ct.embedding IS NOT NULL
-      ORDER BY ct.embedding <=> p_query_emb
-      LIMIT v_pool
-    ),
-    candidates AS (
-      -- Merge candidate IDs before scoring so each document is ranked once by
-      -- the weighted fusion below.
-      SELECT sc.doc_id FROM summary_candidates sc
-      UNION
-      SELECT mcc.doc_id FROM manual_comment_candidates mcc
-      UNION
-      SELECT cc.doc_id FROM category_candidates cc
     ),
     doc_vectors AS (
       SELECT
@@ -302,21 +291,24 @@ BEGIN
         uf.original_filename   AS doc_title,
         uf.summary             AS summary,
         uf.comment             AS comment,
-        uf.content_type_id     AS content_type_id,
-        ct.name                AS content_type_name,
-        ct.description         AS content_type_description,
-        uf.created_at          AS uploaded_at,
-        uf.created_at::date    AS created_at,
-        uf.tsv                 AS tsv,
+        uf.content_type_id          AS content_type_id,
+        cd.content_type_name        AS content_type_name,
+        cd.content_type_description AS content_type_description,
+        uf.created_at               AS uploaded_at,
+        uf.created_at::date         AS created_at,
+        uf.tsv                      AS tsv,
         (uf.summary_embedding <=> p_query_emb) AS vec_dist,
+        -- comment_dist: use cached category distance when the file has a category,
+        -- fall back to the file's own comment_embedding distance if no category,
+        -- or 0 if neither exists.
         CASE
-          WHEN COALESCE(uf.comment_embedding, ct.embedding) IS NOT NULL THEN
-            (COALESCE(uf.comment_embedding, ct.embedding) <=> p_query_emb)
-          ELSE NULL
+          WHEN uf.content_type_id IS NOT NULL THEN COALESCE(cd.cat_dist, 0)
+          WHEN uf.comment_embedding IS NOT NULL THEN (uf.comment_embedding <=> p_query_emb)
+          ELSE 0
         END AS comment_dist
       FROM candidates c
       JOIN user_files uf ON uf.id = c.doc_id
-      LEFT JOIN content_types ct ON ct.id = uf.content_type_id AND ct.org_id = p_org_id
+      LEFT JOIN _category_dists cd ON cd.content_type_id = uf.content_type_id
     ),
     scored AS (
       SELECT
@@ -325,12 +317,7 @@ BEGIN
           WHEN dv.tsv @@ v_tsquery THEN ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], dv.tsv, v_tsquery)
           ELSE 0
         END AS tsv_score,
-        -- Preserve summary relevance as the base score, then boost/penalize it
-        -- by how close the manual-comment/category embedding is to the query.
-        CASE
-          WHEN dv.comment_dist IS NOT NULL THEN dv.vec_dist + ((dv.comment_dist - 0.5) / 2)
-          ELSE dv.vec_dist
-        END AS final_score
+        dv.vec_dist - dv.comment_dist * 0.15 AS final_score
       FROM doc_vectors dv
     )
     SELECT
@@ -349,7 +336,7 @@ BEGIN
       s.tsv_score             AS tsv_score,
       'abstract'::text        AS mode_used
     FROM scored s
-    WHERE s.vec_dist < 0.65 OR s.comment_dist < 0.65
+    WHERE s.vec_dist < 0.65
     ORDER BY s.final_score ASC, s.tsv_score DESC
     LIMIT p_top_k;
   END IF;
@@ -358,7 +345,9 @@ $$;
 
 COMMENT ON FUNCTION search_related_docs(uuid, uuid, text, vector, integer, boolean, uuid, boolean, text, uuid) IS
   'p_search_mode chooses concrete TSV-first or abstract vector-first search. '
-  'Abstract mode boosts document distance with the first non-null manual comment or content-type embedding. '
+  'Abstract mode scores by vec_dist - comment_dist * 0.15. comment_dist comes from a '
+  'MATERIALIZED CTE of per-category cosine distances (evaluated once per call); files '
+  'without a category fall back to their own comment_embedding distance, or 0 if absent. '
   'p_is_admin allows org admins to search all active documents including private files. '
   'p_filter_user_id narrows to one file owner. '
   'p_exclude_images omits image files. '
