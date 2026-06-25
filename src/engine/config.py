@@ -151,6 +151,7 @@ class Config:
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
     RAG_SUMMARY_MODEL = os.getenv("RAG_SUMMARY_MODEL", DEFAULT_MODEL)
     RAG_TIKA_SERVER_ENDPOINT = os.getenv("RAG_TIKA_SERVER_ENDPOINT", "http://localhost:9998")
+    UNOSERVER_URL = os.getenv("UNOSERVER_URL", "http://localhost:2004/request")
     RAG_STORE_DSN = os.getenv("RAG_STORE_DSN", POSTGRES_DSN)
     RAG_VECTOR_DIM = int(os.getenv("RAG_VECTOR_DIM", "1024"))
     RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1000"))

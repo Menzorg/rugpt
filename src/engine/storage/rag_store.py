@@ -122,21 +122,27 @@ class RAG_store(BaseStorage):
             await self.execute(chunk_sql, *row)
 
     def _build_table_rows(
-        self, file_id: str, rows_text: list[str], row_embeddings: list[list[float]]
+        self,
+        file_id: str,
+        rows_text: list[str],
+        row_embeddings: list[list[float]],
+        sheet_names: list[str],
+        row_indexes: list[int],
     ) -> list[tuple[Any, ...]]:
-        if len(rows_text) != len(row_embeddings):
-            raise ValueError("Table rows count does not match embeddings count.")
+        if not (len(rows_text) == len(row_embeddings) == len(sheet_names) == len(row_indexes)):
+            raise ValueError("Table rows lists must all have the same length.")
         rows: list[tuple[Any, ...]] = []
-        for idx, (row_text, emb) in enumerate(zip(rows_text, row_embeddings)):
+        for row_text, emb, sheet_name, row_index in zip(rows_text, row_embeddings, sheet_names, row_indexes):
             self._validate_embedding(emb)
             rows.append(
                 (
                     file_id,
                     None,  # No parent chunk for native table-row ingestion path.
-                    idx,
+                    row_index,
                     row_text,
                     _to_pgvector(emb),
-                    json.dumps({"row_index": idx}),
+                    json.dumps({"row_index": row_index}),
+                    sheet_name,
                 )
             )
         return rows
@@ -148,6 +154,8 @@ class RAG_store(BaseStorage):
         summary_embedding: list[float],
         rows_text: list[str],
         row_embeddings: list[list[float]],
+        sheet_names: list[str],
+        row_indexes: list[int],
     ) -> None:
         """
         Atomically ingest a table document:
@@ -159,6 +167,8 @@ class RAG_store(BaseStorage):
             file_id=file_id,
             rows_text=rows_text,
             row_embeddings=row_embeddings,
+            sheet_names=sheet_names,
+            row_indexes=row_indexes,
         )
         await self.init()
 
@@ -172,8 +182,8 @@ class RAG_store(BaseStorage):
         # 2. Table rows reference user_files(id) directly
         table_rows_sql = """
             INSERT INTO tables_rows_chunks
-                (file_id, table_chunk_id, row_index, row_text, embedding, metadata)
-            VALUES ($1::uuid, $2::uuid, $3, $4, $5::vector, $6::jsonb)
+                (file_id, table_chunk_id, row_index, row_text, embedding, metadata, sheet_name)
+            VALUES ($1::uuid, $2::uuid, $3, $4, $5::vector, $6::jsonb, $7)
         """
         for row in table_rows:
             await self.execute(table_rows_sql, *row)
@@ -388,31 +398,55 @@ class RAG_store(BaseStorage):
         file_id: str,
         row_start: int,
         row_end: int,
+        sheet_name: str | None = None,
     ) -> list[ChunkSearchResult]:
-        """Return table_rows_chunks rows where row_index BETWEEN row_start AND row_end."""
+        """Return table_rows_chunks rows where row_index BETWEEN row_start AND row_end.
+
+        When sheet_name is provided, only rows from that sheet are returned.
+        """
         await self.init()
-        rows = await self.fetch(
-            """
-            SELECT
-                id AS chunk_id,
-                file_id,
-                row_text   AS chunk_text,
-                row_index
-            FROM tables_rows_chunks
-            WHERE file_id  = $1::uuid
-              AND row_index BETWEEN $2 AND $3
-            ORDER BY row_index
-            """,
-            str(file_id),
-            row_start,
-            row_end,
-        )
+        if sheet_name is not None:
+            rows = await self.fetch(
+                """
+                SELECT
+                    id AS chunk_id,
+                    file_id,
+                    row_text   AS chunk_text,
+                    row_index
+                FROM tables_rows_chunks
+                WHERE file_id   = $1::uuid
+                  AND row_index BETWEEN $2 AND $3
+                  AND sheet_name = $4
+                ORDER BY row_index
+                """,
+                str(file_id),
+                row_start,
+                row_end,
+                sheet_name,
+            )
+        else:
+            rows = await self.fetch(
+                """
+                SELECT
+                    id AS chunk_id,
+                    file_id,
+                    row_text   AS chunk_text,
+                    row_index
+                FROM tables_rows_chunks
+                WHERE file_id  = $1::uuid
+                  AND row_index BETWEEN $2 AND $3
+                ORDER BY row_index
+                """,
+                str(file_id),
+                row_start,
+                row_end,
+            )
         return [
             ChunkSearchResult(
                 chunk_id=_as_uuid(row["chunk_id"]),
                 file_id=_as_uuid(row["file_id"]),
                 chunk_text=row["chunk_text"],
-                chunk_index=None,
+                chunk_index=row["row_index"],
                 vec_dist=None,
                 tsv_score=None,
                 r_vec=None,
@@ -422,6 +456,21 @@ class RAG_store(BaseStorage):
             )
             for row in rows
         ]
+
+    async def get_sheet_names(self, file_id: str) -> list[str]:
+        """Return distinct sheet names stored for a file, in alphabetical order."""
+        await self.init()
+        rows = await self.fetch(
+            """
+            SELECT DISTINCT sheet_name
+            FROM tables_rows_chunks
+            WHERE file_id = $1::uuid
+              AND sheet_name IS NOT NULL
+            ORDER BY sheet_name
+            """,
+            str(file_id),
+        )
+        return [row["sheet_name"] for row in rows]
 
     async def call_search_concrete_chunks(
         self,
