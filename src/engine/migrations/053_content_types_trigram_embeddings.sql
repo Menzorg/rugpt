@@ -195,7 +195,21 @@ BEGIN
 
   IF p_search_mode = 'concrete' THEN
     RETURN QUERY
-    WITH lex AS (
+    -- MATERIALIZED CTE instead of TEMP TABLE: each branch executes independently
+    -- in a single call so there is nothing to share across branches; MATERIALIZED
+    -- avoids DDL overhead and catalog pollution while still evaluating once.
+    WITH _category_dists AS MATERIALIZED (
+      SELECT
+        ct.id          AS content_type_id,
+        ct.name        AS content_type_name,
+        ct.description AS content_type_description,
+        (ct.embedding <=> p_query_emb)::double precision AS cat_dist
+      FROM content_types ct
+      WHERE ct.org_id    = p_org_id
+        AND ct.is_active = true
+        AND ct.embedding IS NOT NULL
+    ),
+    lex AS (
       SELECT
         uf.id AS doc_id,
         ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], uf.tsv, v_tsquery, 1) AS tsv_score
@@ -224,8 +238,8 @@ BEGIN
       uf.summary                             AS summary,
       uf.comment                             AS comment,
       uf.content_type_id                     AS content_type_id,
-      ct.name                                AS content_type_name,
-      ct.description                         AS content_type_description,
+      cd.content_type_name                   AS content_type_name,
+      cd.content_type_description            AS content_type_description,
       uf.created_at                          AS uploaded_at,
       uf.created_at::date                    AS created_at,
       (uf.summary_embedding <=> p_query_emb) AS vec_dist,
@@ -233,9 +247,10 @@ BEGIN
       'concrete'::text                       AS mode_used
     FROM lex l
     JOIN user_files uf ON uf.id = l.doc_id
-    LEFT JOIN content_types ct ON ct.id = uf.content_type_id AND ct.org_id = p_org_id
+    LEFT JOIN _category_dists cd ON cd.content_type_id = uf.content_type_id
     WHERE uf.summary_embedding IS NOT NULL AND l.tsv_score > 0
-    ORDER BY l.tsv_score DESC, (uf.summary_embedding <=> p_query_emb) ASC
+    ORDER BY l.tsv_score DESC,
+             (uf.summary_embedding <=> p_query_emb) - COALESCE(cd.cat_dist, 0) * 0.15 ASC
     LIMIT p_top_k;
 
   ELSE
@@ -345,9 +360,11 @@ $$;
 
 COMMENT ON FUNCTION search_related_docs(uuid, uuid, text, vector, integer, boolean, uuid, boolean, text, uuid) IS
   'p_search_mode chooses concrete TSV-first or abstract vector-first search. '
-  'Abstract mode scores by vec_dist - comment_dist * 0.15. comment_dist comes from a '
-  'MATERIALIZED CTE of per-category cosine distances (evaluated once per call); files '
-  'without a category fall back to their own comment_embedding distance, or 0 if absent. '
+  'Both modes compute per-category cosine distances via a MATERIALIZED CTE and apply '
+  'category boosting as vec_dist - cat_dist * 0.15 on the secondary sort key. '
+  'Abstract mode uses this as the primary ranking score; concrete mode uses TSV rank first '
+  'then the boosted vec_dist as tiebreaker. Files without a category get no boost (0). '
+  'In abstract mode, files without a category fall back to their own comment_embedding distance. '
   'p_is_admin allows org admins to search all active documents including private files. '
   'p_filter_user_id narrows to one file owner. '
   'p_exclude_images omits image files. '
