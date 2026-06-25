@@ -163,8 +163,8 @@ class RAGService:
         """Parse an xlsx file with pylightxl and emit one dict per data row.
 
         Stage 1 — read workbook.
-            pylightxl.readxl() returns a Workbook; ws.rows() iterates all rows
-            as lists of raw cell values (strings/ints/floats).
+            pylightxl.readxl() returns a Workbook; ws.rows is a property that
+            returns an iterator of rows as lists of raw cell values (strings/ints/floats).
 
         Stage 2 — per-sheet scan.
             enumerate(ws.row) yields (0-based index, row).  We add 1 so
@@ -204,7 +204,7 @@ class RAGService:
             # enumerate gives 0-based index; +1 converts to 1-based Excel row.
             data_rows = [
                 (i + 1, row)
-                for i, row in enumerate(ws.rows())
+                for i, row in enumerate(ws.rows)
                 if any(str(c).strip() for c in row)
             ]
             if not data_rows:
