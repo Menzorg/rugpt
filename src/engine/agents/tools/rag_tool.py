@@ -156,11 +156,11 @@ async def _rag_search(
         spent = count_tokens(result)
 
         doc_name = doc.original_filename or file_id
-        blocked = await runtime.context.try_commit(
+        result = await runtime.context.try_commit(
             spent,
             f"[RAG SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
             f"USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO SEARCH {doc_name}]",
-        )
+        ) or result
         return result
     except Exception as e:
         logger.error(f"rag_search failed: {e}", exc_info=True)

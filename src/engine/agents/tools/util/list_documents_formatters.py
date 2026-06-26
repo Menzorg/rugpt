@@ -134,6 +134,7 @@ def related_doc_owner_label(doc: RelatedDoc, owner_cache: dict[UUID, str]) -> st
 def format_full_batch(
     files: list[UserFile],
     owner_cache: dict[UUID, str],
+    catalog: dict[UUID, str] | None = None,
 ) -> list[str]:
     lines = []
     for f in files:
@@ -143,7 +144,8 @@ def format_full_batch(
             summary_part = "summary: -"
         owner = owner_label(f, owner_cache)
         comment_part = f", comment={f.comment!r}" if f.comment else ""
-        category_part = f", category={f.content_type_name!r}" if f.content_type_name else ""
+        cat_name = (catalog or {}).get(f.content_type_id) if f.content_type_id else None
+        category_part = f", category={cat_name!r}" if cat_name else ""
         lines.append(
             f"- {f.original_filename} (id={f.id}, created_at={format_created_date(f)}, "
             f"rag={f.rag_status}, is_table={f.is_table}{owner}"
@@ -153,12 +155,17 @@ def format_full_batch(
     return lines
 
 
-def format_single_doc(f: UserFile, owner_cache: dict[UUID, str] | None = None) -> str:
+def format_single_doc(
+    f: UserFile,
+    owner_cache: dict[UUID, str] | None = None,
+    catalog: dict[UUID, str] | None = None,
+) -> str:
     """Format one file row with full detail."""
     summary_part = f'summary: "{f.summary}"' if f.rag_status == "indexed" and f.summary else "summary: -"
     owner = owner_label(f, owner_cache or {})
     comment_part = f", comment={f.comment!r}" if f.comment else ""
-    category_part = f", category={f.content_type_name!r}" if f.content_type_name else ""
+    cat_name = (catalog or {}).get(f.content_type_id) if f.content_type_id else None
+    category_part = f", category={cat_name!r}" if cat_name else ""
     return (
         f"- {f.original_filename} (id={f.id}, created_at={format_created_date(f)}, "
         f"rag={f.rag_status}, is_table={f.is_table}{owner}, "
@@ -220,20 +227,21 @@ def format_related_docs_batch(
 def format_page(
     page_slice: PageSlice,
     owner_cache: dict[UUID, str],
+    catalog: dict[UUID, str] | None = None,
 ) -> str:
     """Format one page of file rows or search rows."""
     if len(page_slice.items) == 1:
         item = page_slice.items[0]
         if isinstance(item, RelatedDoc):
             return format_single_related_doc(item, owner_cache)
-        return format_single_doc(item, owner_cache)
+        return format_single_doc(item, owner_cache, catalog)
 
     if isinstance(page_slice.items[0], RelatedDoc):
         related_docs = [doc for doc in page_slice.items if isinstance(doc, RelatedDoc)]
         lines = format_related_docs_batch(related_docs, owner_cache)
     else:
         user_files = [f for f in page_slice.items if isinstance(f, UserFile)]
-        lines = format_full_batch(user_files, owner_cache)
+        lines = format_full_batch(user_files, owner_cache, catalog)
 
     span = f"{page_slice.start + 1}-{page_slice.end} of {page_slice.total}"
     header = f"Documents {span} (page {page_slice.page}/{page_slice.total_pages}):"
@@ -243,6 +251,7 @@ def format_page(
 async def format_page_with_owners(
     page_slice: PageSlice,
     user_storage: UserStorage | None,
+    catalog: dict[UUID, str] | None = None,
 ) -> str:
     owner_cache = await resolve_owner_names(page_slice.items, user_storage)
-    return format_page(page_slice, owner_cache)
+    return format_page(page_slice, owner_cache, catalog)

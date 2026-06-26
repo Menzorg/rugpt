@@ -260,7 +260,15 @@ async def _get_single_document(file_id: str, scope: DocumentToolScope, chat_atta
     if not visible:
         return f"Document {file_id} not found or not visible to you."
     owner_cache = await resolve_owner_names([f], _user_storage)
-    return format_single_doc(f, owner_cache)
+    catalog: dict[UUID, str] = {}
+    if f.content_type_id and _content_type_storage:
+        ct = await _content_type_storage.get_by_id(f.content_type_id)
+        if ct:
+            entry = ct.name
+            if ct.description:
+                entry += f": {ct.description}"
+            catalog[f.content_type_id] = entry
+    return format_single_doc(f, owner_cache, catalog)
 
 
 async def _search_scoped(
@@ -514,14 +522,17 @@ async def _list_documents_impl(
             page_slice.total,
             len(page_slice.items),
         )
+        catalog: dict[UUID, str] = {}
+        if _content_type_storage:
+            catalog = await prefetch_category_catalog(scope.org_id, _content_type_storage)
         result = await format_page_with_owners(
             page_slice,
             _user_storage,
+            catalog,
         )
-        # UserFile: content type names are resolved via a single prefetch for the whole page.
-        if _content_type_storage:
-            user_file_items = [f for f in page_slice.items if isinstance(f, UserFile)]
-            catalog = await prefetch_category_catalog(scope.org_id, _content_type_storage)
+        # UserFile: prepend category legend for the page.
+        user_file_items = [f for f in page_slice.items if isinstance(f, UserFile)]
+        if catalog:
             categories_line = format_categories_line(user_file_items, catalog)
             if categories_line:
                 result = categories_line + "\n" + result

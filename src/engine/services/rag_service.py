@@ -141,7 +141,7 @@ class RAGService:
     async def _embed_query(self, query: str, instruct: str | None = None) -> list[float]:
         if instruct:
             query = f"Instruct: {instruct}\nQuery:{query}"
-        return self._embeddings.aembed_query(
+        return await self._embeddings.aembed_query(
             query,
             extra_body=self._build_embedding_extra_body(),
         )
@@ -300,21 +300,21 @@ class RAGService:
     def _build_embedding_text(self, summary: str, file_record: UserFile | None) -> str:
         return summary
 
-    def _build_manual_comment_embedding(self, file_record: UserFile | None) -> list[float] | None:
+    async def _build_manual_comment_embedding(self, file_record: UserFile | None) -> list[float] | None:
         if (
             file_record is None
             or file_record.content_type_id is not None
             or not file_record.comment
         ):
             return None
-        return self._embed_query(file_record.comment)
+        return await self._embed_query(file_record.comment)
 
     async def _update_manual_comment_embedding(
         self,
         file_id: UUID,
         file_record: UserFile | None,
     ) -> None:
-        comment_embedding = self._build_manual_comment_embedding(file_record)
+        comment_embedding = await self._build_manual_comment_embedding(file_record)
         if comment_embedding is None or self._file_storage is None or file_record is None:
             return
         await self._file_storage.update_comment(
