@@ -86,7 +86,7 @@ class DocumentToolScope:
     owner_user_id: UUID
     callee_user_id: UUID
     org_id: UUID
-    public_only_owner: bool
+    mention_mode: bool
     is_admin: bool
     own_only: bool
     # Explicit owner filter: callee for own_only, LLM-supplied user_id for list_documents.
@@ -170,8 +170,8 @@ def _resolve_tool_identity(configurable: dict) -> tuple[str, str, bool]:
     org_id = configurable.get("org_id", "")
     # callee_user_id == caller_user_id in direct calls (always set by executor).
     callee_user_id = configurable.get("callee_user_id", "")
-    public_only_owner = bool(callee_user_id and callee_user_id != caller_user_id)
-    return callee_user_id or caller_user_id, org_id, public_only_owner
+    mention_mode = bool(callee_user_id and callee_user_id != caller_user_id)
+    return callee_user_id or caller_user_id, org_id, mention_mode
 
 
 def _parse_scope_uuid(value: str, field: str) -> UUID:
@@ -195,7 +195,7 @@ def _build_scope(
     """
     configurable = config.get("configurable", {})
     caller_user_id_str = configurable.get("caller_user_id", "")
-    owner_user_id_str, org_id_str, public_only_owner = _resolve_tool_identity(configurable)
+    owner_user_id_str, org_id_str, mention_mode = _resolve_tool_identity(configurable)
     callee_user_id_str = configurable.get("callee_user_id") or caller_user_id_str
     callee_uuid = _parse_scope_uuid(callee_user_id_str, "callee_user_id")
     if own_only:
@@ -215,7 +215,7 @@ def _build_scope(
         owner_user_id=_parse_scope_uuid(owner_user_id_str, "owner_user_id"),
         callee_user_id=callee_uuid,
         org_id=_parse_scope_uuid(org_id_str, "org_id"),
-        public_only_owner=public_only_owner,
+        mention_mode=mention_mode,
         is_admin=bool(configurable.get("is_admin", False)),
         own_only=own_only,
         owner_filter_user_id=owner_filter_user_id,
@@ -248,7 +248,7 @@ async def _get_single_document(file_id: str, scope: DocumentToolScope, chat_atta
     elif scope.own_only:
         visible = (
             f.user_id == scope.owner_user_id
-            and (not scope.public_only_owner or f.is_public)
+            and (not scope.mention_mode or f.is_public)
             and not _is_image_file(f)
         )
     else:
@@ -336,7 +336,7 @@ def _filter_listed_files(
         indexed = [f for f in owner_matched if f.rag_status != "not_indexed"]
         visible = [
             f for f in indexed
-            if f.id in chat_attachment_ids or not scope.public_only_owner or f.is_public or scope.is_admin
+            if f.id in chat_attachment_ids or not scope.mention_mode or f.is_public or scope.is_admin
         ]
         hidden = len(indexed) - len(visible)
         return visible, hidden, not_indexed_count
@@ -393,11 +393,15 @@ async def _list_documents_impl(
             tool_name, configurable.get("caller_user_id", ""), configurable.get("callee_user_id", ""),
             configurable.get("org_id", ""), bool(configurable.get("is_admin", False)), configurable.get("invocation_kind", ""))
         logger.info(
-            "%s access: caller=%s callee=%s org=%s public_only_owner=%s is_admin=%s chat_id=%s",
-            tool_name, scope.caller_user_id, scope.callee_user_id, scope.org_id,
-            scope.public_only_owner, scope.is_admin, scope.chat_id)
-
-        # Chat attachments are always visible regardless of ownership/public flag.
+            "%s access: caller=%s callee=%s org=%s mention_mode=%s is_admin=%s chat_id=%s",
+            tool_name,
+            scope.caller_user_id,
+            scope.callee_user_id,
+            scope.org_id,
+            scope.mention_mode,
+            scope.is_admin,
+            scope.chat_id,
+        )
         chat_attachment_ids = await _get_chat_attachment_ids(scope.chat_id)
         name_query = name_query.strip()
         summary_query = summary_query.strip()
@@ -411,10 +415,23 @@ async def _list_documents_impl(
             token_cap = runtime.context.critical_tokens_cap
 
         logger.info(
-            "%s start: path=%s name_query=%r summary_query=%r file_id=%r page=%d owner_filter=%s caller=%s owner=%s public_only_owner=%s is_admin=%s summary_tokens=%d/%d total_tokens=%d/%d",
-            tool_name, path, raw_name_query, raw_summary_query, file_id, page,
-            scope.owner_filter_user_id, scope.caller_user_id, scope.owner_user_id,
-            scope.public_only_owner, scope.is_admin, summary_before, _SUMMARY_TOKENS_BUDGET, tokens_before, token_cap)
+            "%s start: path=%s name_query=%r summary_query=%r file_id=%r page=%d owner_filter=%s caller=%s owner=%s mention_mode=%s is_admin=%s summary_tokens=%d/%d total_tokens=%d/%d",
+            tool_name,
+            path,
+            raw_name_query,
+            raw_summary_query,
+            file_id,
+            page,
+            scope.owner_filter_user_id,
+            scope.caller_user_id,
+            scope.owner_user_id,
+            scope.mention_mode,
+            scope.is_admin,
+            summary_before,
+            _SUMMARY_TOKENS_BUDGET,
+            tokens_before,
+            token_cap,
+        )
 
         # --- Stage 3: Single-document fast path ---
         # Bypasses pagination, deduplication, and summary budgets entirely.

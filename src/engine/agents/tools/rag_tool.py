@@ -23,6 +23,7 @@ from ...services.rag_service import RAGService
 from ...storage.chat_storage import ChatStorage
 from ...storage.user_file_storage import UserFileStorage
 from ...utils.token_counter import count_tokens
+from .util.file_access import can_access_file
 
 
 class RagSearchInput(BaseModel):
@@ -51,53 +52,10 @@ def _resolve_tool_identity(configurable: dict) -> tuple[str, str, bool]:
     org_id = configurable.get("org_id", "")
     # callee_user_id == caller_user_id in direct calls (always set by executor).
     callee_user_id = configurable.get("callee_user_id", "")
-    public_only_owner = bool(callee_user_id and callee_user_id != caller_user_id)
-    return callee_user_id or caller_user_id, org_id, public_only_owner
+    mention_mode = bool(callee_user_id and callee_user_id != caller_user_id)
+    return callee_user_id or caller_user_id, org_id, mention_mode
 
 
-async def _can_access_file(
-    file_id: str,
-    org_id: str,
-    owner_user_id: str,
-    public_only_owner: bool,
-    is_admin: bool = False,
-    chat_id: Optional[str] = None,
-) -> bool:
-    """Return True when the caller can see file_id in their org.
-
-    When another user calls an owner by mention, that owner's private docs stay hidden.
-    Files attached to the originating chat are always accessible.
-    """
-    if _user_file_storage is None:
-        logger.error("rag_search: file storage not initialized for access check")
-        return False
-
-    try:
-        org_uuid = UUID(org_id)
-        owner_uuid = UUID(owner_user_id)
-        file_uuid = UUID(file_id)
-    except ValueError:
-        return False
-
-    if chat_id and _chat_storage is not None:
-        try:
-            chat_uuid = UUID(chat_id)
-            attachment_ids = await _chat_storage.get_attachments(chat_uuid)
-            if file_uuid in attachment_ids:
-                return True
-        except (ValueError, Exception):
-            pass
-
-    all_files = await _user_file_storage.list_by_org(org_uuid)
-    for f in all_files:
-        if f.id != file_uuid:
-            continue
-        if f.user_id == owner_uuid:
-            if public_only_owner:
-                return f.is_public
-            return True
-        return is_admin or f.is_public
-    return False
 
 def _top_k_for_seen_chunks(seen_count: int) -> int:
     #if seen_count > 30:
@@ -118,13 +76,13 @@ async def _rag_search(
 ) -> str:
     try:
         configurable = config.get("configurable", {})
-        user_id, org_id, public_only_owner = _resolve_tool_identity(configurable)
+        user_id, org_id, mention_mode = _resolve_tool_identity(configurable)
         is_admin = bool(configurable.get("is_admin", False))
         chat_id = configurable.get("chat_id")
 
         logger.info(
-            "rag_search start: file_id=%s query=%r org_id=%s user_id=%s public_only_owner=%s is_admin=%s chat_id=%s",
-            file_id, query, org_id, user_id, public_only_owner, is_admin, chat_id,
+            "rag_search start: file_id=%s query=%r org_id=%s user_id=%s mention_mode=%s is_admin=%s chat_id=%s",
+            file_id, query, org_id, user_id, mention_mode, is_admin, chat_id,
         )
 
         if not org_id or not user_id:
@@ -135,10 +93,18 @@ async def _rag_search(
             logger.error("rag_search: service not initialized, call init_rag_service() at startup")
             return "RAG search unavailable: service not initialized."
 
-        can_access = await _can_access_file(file_id, org_id, user_id, public_only_owner, is_admin, chat_id)
+        if _user_file_storage is None:
+            logger.error("rag_search: file storage not initialized")
+            return "RAG search unavailable: file storage not initialized."
+
+        can_access = await can_access_file(
+            file_id, org_id, user_id, _user_file_storage,
+            mention_mode=mention_mode, is_admin=is_admin,
+            chat_storage=_chat_storage, chat_id=chat_id,
+        )
         logger.info(
-            "rag_search access: file_id=%s allowed=%s user_id=%s public_only_owner=%s is_admin=%s chat_id=%s",
-            file_id, can_access, user_id, public_only_owner, is_admin, chat_id,
+            "rag_search access: file_id=%s allowed=%s user_id=%s mention_mode=%s is_admin=%s chat_id=%s",
+            file_id, can_access, user_id, mention_mode, is_admin, chat_id,
         )
         if not can_access:
             return "You don't have access to that document."
