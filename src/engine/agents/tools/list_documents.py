@@ -12,24 +12,6 @@ Visibility modes
   "own"    — direct: caller-owned; mention: called-user-owned, public only if caller differs
 
 Service lifecycle: call init_document_service(storage) once during engine startup.
-
-Summary budget system
----------------------
-Each list_*_documents call may display document summaries.  To prevent the model
-context from being overwhelmed we maintain a per-run token budget tracked in
-ListDocumentsRuntimeData.spent_summary_tokens.
-
-How it works:
-1. Before list-mode formatting we check the remaining budget
-   (SUMMARY_TOKENS_BUDGET - spent_so_far).  If it is already exhausted, the
-   page switches to compact mode (id + name + is_table only).
-2. Within a full-detail batch, the remaining summary budget is divided across
-   documents in that batch that actually have indexed summaries. Each displayed
-   summary is capped by the smaller of that per-document allowance and the
-   current remaining budget. This prevents one huge document from starving the rest.
-3. After formatting we count the tokens of every summary text that was
-   displayed and add them to spent_summary_tokens.  Summaries replaced by
-   [BUDGET EXHAUSTED] are not counted — they did not consume budget.
 """
 
 from src.engine.unified_logger import get_logger
@@ -52,24 +34,26 @@ from ...storage.content_type_storage import ContentTypeStorage
 from ...storage.user_file_storage import UserFileStorage
 from ...storage.user_storage import UserStorage
 from ...utils.token_counter import count_tokens
-from .util.list_documents_dedupe import blocked_listing_message, dedupe_and_page
 from .util.list_documents_formatters import (
-    format_and_commit_page,
+    PageSlice,
+    format_page_with_owners,
     format_categories_line,
     format_related_docs_categories_line,
     format_single_doc,
     prefetch_category_catalog,
+    page_files,
     resolve_owner_names,
 )
 
 logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
+_LISTING_BLOCKED_MESSAGE = (
+    "[DOCUMENT LISTING IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+    "USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO LIST DOCUMENTS]"
+)
 
 _PAGE_SIZE = 30
 _MAX_RESULTS = 180
-
-# Total token budget for document summaries across the whole agent run.
-_SUMMARY_TOKENS_BUDGET = 4000
 
 _user_file_storage: Optional[UserFileStorage] = None
 _user_storage: Optional[UserStorage] = None
@@ -429,12 +413,11 @@ async def _list_documents_impl(
         # Capture current budget state before doing any work so we can log the delta at the end.
         path = "single" if file_id and file_id.strip() else ("search" if name_query or summary_query else "list")
         async with runtime.context.lock:
-            summary_before = runtime.context.list_documents_runtime_data.spent_summary_tokens
             tokens_before = runtime.context.total_tokens_spent
             token_cap = runtime.context.critical_tokens_cap
 
         logger.info(
-            "%s start: path=%s name_query=%r summary_query=%r file_id=%r page=%d owner_filter=%s caller=%s owner=%s mention_mode=%s is_admin=%s summary_tokens=%d/%d total_tokens=%d/%d",
+            "%s start: path=%s name_query=%r summary_query=%r file_id=%r page=%d owner_filter=%s caller=%s owner=%s public_only_owner=%s is_admin=%s total_tokens=%d/%d",
             tool_name,
             path,
             raw_name_query,
@@ -446,8 +429,6 @@ async def _list_documents_impl(
             scope.owner_user_id,
             scope.mention_mode,
             scope.is_admin,
-            summary_before,
-            _SUMMARY_TOKENS_BUDGET,
             tokens_before,
             token_cap,
         )
@@ -483,8 +464,6 @@ async def _list_documents_impl(
             if error:
                 return error
             empty_message = "No documents matched your query."
-            # Search results are already ranked; no need to downgrade to compact on budget exhaustion.
-            compact_on_budget_exhausted = False
             raw_count = len(files)
             visible_count = len(files)
         else:
@@ -492,53 +471,52 @@ async def _list_documents_impl(
             all_files = await _user_file_storage.list_by_org(scope.org_id, content_type_id=category_uuid)
             files, hidden_count, not_indexed_count = _filter_listed_files(all_files, scope, chat_attachment_ids)
             empty_message = "No documents in your scope."
-            # Full listing can be large; switch to compact format when summary budget runs out.
-            compact_on_budget_exhausted = True
             raw_count = len(all_files)
             visible_count = len(files)
 
         logger.info(
-            "%s candidates: path=%s raw=%d visible=%d compact_on_budget=%s",
-            tool_name, path, raw_count, visible_count, compact_on_budget_exhausted)
-
-        # --- Stage 5: Deduplicate and paginate ---
-        # Skip items the model already received in earlier tool calls this run,
-        # then slice the requested page from what remains.
-        dedupe_state, page_slice, shortcut_result = await dedupe_and_page(
-            runtime,
-            files,
-            page,
-            _PAGE_SIZE,
-            scope.tool_name,
-            empty_message,
+            "%s candidates: path=%s raw=%d visible=%d",
+            tool_name, path, raw_count, visible_count,
         )
-        # shortcut_result is non-None when dedupe_and_page can answer without full formatting
-        # (empty list, global token budget exhausted, or all items already seen).
-        if shortcut_result is not None:
+
+        if not files:
+            result = empty_message
             if not_indexed_count:
-                shortcut_result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + shortcut_result
+                result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + result
             if hidden_count:
-                shortcut_result = f"Some document(s) are private and not accessible to caller.\n" + shortcut_result
+                result = f"Some document(s) are private and not accessible to caller.\n" + result
+            logger.info("%s done: path=%s result=empty hidden=%d", tool_name, path, hidden_count)
+            return result
+
+        async with runtime.context.lock:
+            tokens_now = runtime.context.total_tokens_spent
+            cap = runtime.context.critical_tokens_cap
+        if tokens_now >= cap:
             logger.info(
-                "%s done: path=%s result=shortcut hidden=%d output_tokens=%d deduped=%s",
-                tool_name, path, hidden_count, count_tokens(shortcut_result), dedupe_state.deduplicated_across_runs)
-            return shortcut_result
+                "%s blocked: total_tokens_spent=%d cap=%d candidates=%d",
+                tool_name, tokens_now, cap, len(files),
+            )
+            result = _LISTING_BLOCKED_MESSAGE
+            if not_indexed_count:
+                result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + result
+            if hidden_count:
+                result = f"Some document(s) are private and not accessible to caller.\n" + result
+            return result
 
+        page_slice: PageSlice = page_files(files, page, _PAGE_SIZE)
         logger.info(
-            "%s page: page=%d/%d span=%d-%d total=%d page_items=%d deduped=%s",
-            tool_name, page_slice.page, page_slice.total_pages, page_slice.start + 1,
-            page_slice.end, page_slice.total, len(page_slice.items), dedupe_state.deduplicated_across_runs)
-
-        # --- Stage 6: Format page and enforce summary budget ---
-        # Renders each document; summaries are capped per-document by the remaining
-        # summary token budget and replaced with [BUDGET EXHAUSTED] once spent.
-        result = await format_and_commit_page(
-            runtime,
+            "%s page: page=%d/%d span=%d-%d total=%d page_items=%d",
+            tool_name,
+            page_slice.page,
+            page_slice.total_pages,
+            page_slice.start + 1,
+            page_slice.end,
+            page_slice.total,
+            len(page_slice.items),
+        )
+        result = await format_page_with_owners(
             page_slice,
             _user_storage,
-            dedupe_state,
-            compact_on_budget_exhausted,
-            _SUMMARY_TOKENS_BUDGET,
         )
         # UserFile: content type names are resolved via a single prefetch for the whole page.
         if _content_type_storage:
@@ -562,18 +540,23 @@ async def _list_documents_impl(
         # If the formatted result would exceed the agent's critical token cap,
         # discard it and return a compact blocked message instead.
         spent = count_tokens(result)
-        blocked = await runtime.context.try_commit(spent, blocked_listing_message())
+        blocked = await runtime.context.try_commit(spent, _LISTING_BLOCKED_MESSAGE)
         if blocked:
             logger.info(
                 "%s blocked after format: total_tokens_spent=%d >= %d",
                 tool_name, runtime.context.total_tokens_spent, runtime.context.critical_tokens_cap,)
             return blocked
         async with runtime.context.lock:
-            summary_after = runtime.context.list_documents_runtime_data.spent_summary_tokens
             tokens_after = runtime.context.total_tokens_spent
         logger.info(
-            "%s done: path=%s hidden=%d output_tokens=%d summary_tokens=%d->%d total_tokens=%d->%d",
-            tool_name, path, hidden_count, spent, summary_before, summary_after, tokens_before, tokens_after)
+            "%s done: path=%s hidden=%d output_tokens=%d total_tokens=%d->%d",
+            tool_name,
+            path,
+            hidden_count,
+            count_tokens(result),
+            tokens_before,
+            tokens_after,
+        )
         return result
 
     except Exception as e:

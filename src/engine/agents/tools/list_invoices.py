@@ -1,8 +1,8 @@
 """list_invoices tool: returns invoices visible to the caller.
 
 Admin → all invoices in org. Non-admin → only invoices uploaded by self.
-Output is a compact paginated textual list with id, file name, status, due_date,
-uploader name, and a budgeted file summary. The LLM uses ids from this output to
+Output is a paginated textual list with id, file name, status, due_date,
+uploader name, and full file summary. The LLM uses ids from this output to
 drive get_invoice / show_modal.
 """
 from datetime import date
@@ -20,15 +20,8 @@ from src.engine.models.invoice import Invoice
 from src.engine.models.user_file import UserFile
 from src.engine.utils.token_counter import count_tokens
 
-from .util.summary_budget import (
-    format_summary_part_with_budget,
-    per_summary_token_limit,
-)
-
 
 _PAGE_SIZE = 30
-_SUMMARY_TOKENS_BUDGET = 2000
-_MAX_SUMMARY_TOKENS_PER_INVOICE = 80
 
 
 class ListInvoicesInput(BaseModel):
@@ -108,46 +101,24 @@ def _format_invoice_page(
     total: int,
     users_by_id: dict[UUID, str],
     files_by_id: dict[UUID, UserFile],
-    summary_tokens_spent_before: int,
-) -> tuple[str, int]:
-    remaining = max(0, _SUMMARY_TOKENS_BUDGET - summary_tokens_spent_before)
-    summary_items_count = sum(
-        1 for inv in invoices
-        if (file := files_by_id.get(inv.file_id)) is not None and file.summary
-    )
-    per_item_limit = per_summary_token_limit(
-        remaining,
-        summary_items_count,
-        max_tokens_per_item=_MAX_SUMMARY_TOKENS_PER_INVOICE,
-    )
-
+) -> str:
     lines = []
-    tokens_spent = 0
     for inv in invoices:
         file = files_by_id.get(inv.file_id)
-        budget_result = format_summary_part_with_budget(
-            file.summary if file else None,
-            remaining,
-            per_item_limit,
-        )
-        remaining = budget_result.remaining_tokens
-        tokens_spent += budget_result.tokens_spent
         filename = file.original_filename if file else str(inv.file_id)
         is_image = bool(file and (file.file_type or "").lower() in IMAGE_TYPES)
+        summary_part = f'summary: "{file.summary}"' if file and file.summary else "summary: -"
         lines.append(
             f"- id={inv.id} | file={filename} | "
             f"status={inv.status.value} | due={inv.due_date or '-'} | "
             f"uploader={users_by_id.get(inv.uploaded_by_user_id, str(inv.uploaded_by_user_id))} | "
             f"is_image={'true' if is_image else 'false'} | "
-            f"{budget_result.summary_part}"
+            f"{summary_part}"
         )
 
     span = f"{start + 1}-{end} of {total}"
     header = f"Invoices {span} (page {page}/{total_pages}):"
-    footer = ""
-    if summary_tokens_spent_before >= _SUMMARY_TOKENS_BUDGET:
-        footer = "\n[SUMMARY BUDGET EXHAUSTED FROM PREVIOUS CALLS. USE STATUS/PAGE FILTERS TO NARROW RESULTS.]"
-    return f"{header}\n" + "\n".join(lines) + footer, tokens_spent
+    return f"{header}\n" + "\n".join(lines)
 
 
 def create_list_invoices_tool(engine):
@@ -222,22 +193,19 @@ def create_list_invoices_tool(engine):
             if f:
                 files_by_id[fid] = f
 
+        result = _format_invoice_page(
+            page_invoices,
+            page,
+            total_pages,
+            start,
+            end,
+            len(invoices),
+            users_by_id,
+            files_by_id,
+        )
         async with runtime.context.lock:
-            summary_before = runtime.context.list_invoices_summary_tokens_spent
-            result, tokens_spent = _format_invoice_page(
-                page_invoices,
-                page,
-                total_pages,
-                start,
-                end,
-                len(invoices),
-                users_by_id,
-                files_by_id,
-                summary_tokens_spent_before=summary_before,
-            )
-            runtime.context.list_invoices_summary_tokens_spent += tokens_spent
             runtime.context.total_tokens_spent += count_tokens(result)
-            return result
+        return result
 
     return StructuredTool.from_function(
         coroutine=_list,
