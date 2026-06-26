@@ -35,6 +35,9 @@
 
 Минимальная целевая форма: один сервис/worker для всех embedding-задач, стабильные payload-схемы для document summary, manual file comment, content type и correction rules, idempotency key на сущность+версию текста, повторяемая запись результата в БД.
 
+
+| 5 | Удалить `table_chunk_id` и `metadata` из `tables_rows_chunks` | Средний | `table_chunk_id` — мёртвый столбец: всегда `NULL`, что делает `UNIQUE(file_id, table_chunk_id, row_index)` бесполезным (PostgreSQL не считает два NULL равными, поэтому повторная индексация без предварительного `DELETE` добавляет дубликаты вместо upsert). `metadata` — JSONB-дубль `row_index`, не читается ни одним кодпасом. **Что сделать:** 1) убедиться, что `metadata` нигде не используется (`grep -r 'metadata' storage/rag_store.py`); 2) написать миграцию `DROP COLUMN table_chunk_id, DROP COLUMN metadata`; 3) убрать соответствующие поля из `_build_table_rows` в `rag_store.py`; 4) заменить UNIQUE-констрейнт на `UNIQUE(file_id, sheet_name, row_index)` чтобы повторная индексация одного и того же файла + листа делала upsert корректно. |
+
 ## Support: in-app уведомление оператору на сообщение в тикете
 
 | # | Проблема | Приоритет | Статус |

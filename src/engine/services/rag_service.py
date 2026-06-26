@@ -12,7 +12,6 @@ _DOC_SUMMARY_PROMPT: str = (_PROMPTS_DIR / "rag_doc_summary.md").read_text(encod
 _TABLE_SUMMARY_PROMPT: str = (_PROMPTS_DIR / "rag_table_summary.md").read_text(encoding="utf-8")
 _IMAGE_SUMMARY_PROMPT: str = (_PROMPTS_DIR / "rag_image_summary.md").read_text(encoding="utf-8")
 
-from bs4 import BeautifulSoup
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -63,10 +62,22 @@ def _extract_tika_content(parsed: Any) -> str:
         return str(content or "")
     return ""
 
+def _col_letter(idx: int) -> str:
+    """Convert 0-based column index to Excel column letter (0→A, 25→Z, 26→AA)."""
+    label = ""
+    n = idx + 1
+    while n:
+        n, rem = divmod(n - 1, 26)
+        label = chr(65 + rem) + label
+    return label
+
+
 def _format_row(headers: list[str], values: list[str], sheet_name: str | None = None) -> str:
-    pairs = [f"{header}: {value}" for header, value in zip(headers, values)]
+    # Row format: "Sheet:SheetName, A:ColumnHeader=value, B:ColumnHeader=value, ..."
+    # Column letters follow Excel convention (A–Z, then AA, AB, ...; max 16 384 columns = XFD).
+    pairs = [f"{_col_letter(i)}:{header}={value}" for i, (header, value) in enumerate(zip(headers, values))]
     if sheet_name:
-        pairs.insert(0, f"Sheet: {sheet_name}")
+        pairs.insert(0, f"Sheet:{sheet_name}")
     return ", ".join(pairs)
 
 class RAGService:
@@ -161,55 +172,83 @@ class RAGService:
         self,
         file_bytes: bytes,
         file_name: str | None,
-    ) -> tuple[list[str], list[str]]:
-        parsed = parser.from_buffer(
-            file_bytes,
-            serverEndpoint=self._tika_server_endpoint,
-            xmlContent=True,
-            headers={"X-File-Name": _safe_tika_file_name(file_name)},
-        )
-        xhtml = _extract_tika_content(parsed)
-        if not xhtml:
-            return [], []
+    ) -> tuple[list[str], list[dict], list[dict]]:
+        """Parse an xlsx file with pylightxl and emit one dict per data row.
 
-        soup = BeautifulSoup(xhtml, "html.parser")
-        table_nodes = soup.find_all("table")
-        if not table_nodes:
-            return [], []
+        Stage 1 — read workbook.
+            pylightxl.readxl() returns a Workbook; ws.rows is a property that
+            returns an iterator of rows as lists of raw cell values (strings/ints/floats).
 
+        Stage 2 — per-sheet scan.
+            enumerate(ws.row) yields (0-based index, row).  We add 1 so
+            `excel_row` matches what the user sees in Excel (row 1 = header row,
+            row 2 = first data row, etc.).  Blank rows are skipped; the first
+            non-blank row is treated as the header.
+
+        Stage 3 — build output.
+            row_index stored in the DB == Excel row number (1-based).
+            This means LLM can tell the user "see Excel row 5" and it will
+            be correct.  sheet_infos records the min/max Excel row numbers
+            for the data rows (not counting the header) so the summary block
+            injected into the document accurately describes ranges a human
+            can navigate to.
+
+        Returns:
+            summary_headers: flat list of "SheetName.ColumnHeader" strings
+            rows_with_meta:  list of {text, sheet_name, row_index} dicts —
+                             row_index is the 1-based Excel row number
+            sheet_infos:     list of {sheet, min_row, max_row} dicts —
+                             min_row/max_row are 1-based Excel row numbers
+                             for the data rows of that sheet
+        """
+        import io
+        import pylightxl as xl
+
+        # Stage 1: read workbook from bytes — no temp file needed
+        db = xl.readxl(fn=io.BytesIO(file_bytes))
         summary_headers: list[str] = []
-        formatted_rows: list[str] = []
+        rows_with_meta: list[dict] = []
+        sheet_infos: list[dict] = []
 
-        for table_idx, table in enumerate(table_nodes, start=1):
-            tr_nodes = table.find_all("tr")
-            if not tr_nodes:
+        for ws_name in db.ws_names:
+            ws = db.ws(ws=ws_name)
+
+            # Stage 2: collect non-blank rows with their real Excel row numbers.
+            # enumerate gives 0-based index; +1 converts to 1-based Excel row.
+            data_rows = [
+                (i + 1, row)
+                for i, row in enumerate(ws.rows)
+                if any(str(c).strip() for c in row)
+            ]
+            if not data_rows:
                 continue
 
-            raw_rows: list[list[str]] = []
-            for tr in tr_nodes:
-                cell_nodes = tr.find_all(["th", "td"])
-                cells = [_normalize_cell(cell.get_text(" ", strip=True)) for cell in cell_nodes]
-                if any(cells):
-                    raw_rows.append(cells)
+            # First non-blank row is the header (Excel row N, typically row 1).
+            header_excel_row, header_row = data_rows[0]
+            header_cells = [_normalize_cell(c) for c in header_row]
+            headers = [v if v else f"Column{i + 1}" for i, v in enumerate(header_cells)]
+            summary_headers.extend([f"{ws_name}.{h}" for h in headers])
 
-            if not raw_rows:
-                continue
+            # Stage 3: remaining non-blank rows are data rows.
+            # row_index == excel_row so the LLM and the user share the same coordinates.
+            sheet_data_rows = data_rows[1:]
+            for excel_row, row in sheet_data_rows:
+                padded = [_normalize_cell(c) for c in row] + [""] * (len(headers) - len(row))
+                text = _format_row(headers, padded[: len(headers)], sheet_name=ws_name)
+                rows_with_meta.append({
+                    "text": text,
+                    "sheet_name": ws_name,
+                    "row_index": excel_row,  # 1-based Excel row number
+                })
 
-            header_cells = raw_rows[0]
-            header_has_text = any(header_cells)
-            headers = [
-                (value if value else f"Column{idx + 1}")
-                for idx, value in enumerate(header_cells)
-            ] if header_has_text else [f"Column{idx + 1}" for idx in range(len(header_cells))]
-            summary_headers.extend([f"Table{table_idx}.{h}" for h in headers])
+            if sheet_data_rows:
+                sheet_infos.append({
+                    "sheet": ws_name,
+                    "min_row": sheet_data_rows[0][0],   # Excel row of first data row
+                    "max_row": sheet_data_rows[-1][0],  # Excel row of last data row
+                })
 
-            start_idx = 1 if header_has_text else 0
-            for row_cells in raw_rows[start_idx:]:
-                padded = row_cells + [""] * (len(headers) - len(row_cells))
-                values = padded[: len(headers)]
-                formatted_rows.append(_format_row(headers, values, sheet_name=f"Table{table_idx}"))
-
-        return summary_headers, formatted_rows
+        return summary_headers, rows_with_meta, sheet_infos
 
     def _build_table_summary_source(
         self,
@@ -376,21 +415,42 @@ class RAGService:
             if is_table:
                 stage = "table_parsing"
                 logger.info(f"[{fid}] stage={stage}")
-                headers, table_rows = self._parse_table_rows(data, filename)
-                if not table_rows:
+                summary_headers, rows_with_meta, sheet_infos = self._parse_table_rows(data, filename)
+                if not rows_with_meta:
                     raise ValueError("No table rows extracted from file.")
-                logger.info(f"[{fid}] parsed {len(table_rows)} rows, {len(headers)} headers")
+                row_texts = [r["text"] for r in rows_with_meta]
+                sheet_names = [r["sheet_name"] for r in rows_with_meta]
+                row_indexes = [r["row_index"] for r in rows_with_meta]
+                logger.info(
+                    f"[{fid}] parsed {len(row_texts)} rows across {len(sheet_infos)} sheets"
+                )
 
                 stage = "table_embedding"
                 logger.info(f"[{fid}] stage={stage}")
-                row_embeddings = await self._embed_documents(table_rows)
+                row_embeddings = await self._embed_documents(row_texts)
                 logger.info(f"[{fid}] embedded {len(row_embeddings)} row vectors")
 
                 stage = "summary_generation"
                 logger.info(f"[{fid}] stage={stage}")
-                summary_source = self._build_table_summary_source(filename, headers, table_rows)
+                structure_lines = ["<Table structure>"]
+                for si in sheet_infos:
+                    structure_lines.append(
+                        f"  Лист «{si['sheet']}»: строки {si['min_row']}–{si['max_row']}"
+                    )
+                structure_lines.append("</Table structure>")
+                structure_block = "\n".join(structure_lines)
+                summary_source = (
+                    + f"<structure>{structure_block}<structure>"
+                    + "<system>Структуру, не пересказывать</system>\n\n"
+                    + self._build_table_summary_source(filename, summary_headers, row_texts)
+                )
                 summary = await self._generate_summary_with_llm(summary_source, is_table=True)
-                summary = f"Количество строк в таблице: {len(table_rows)}\n" + summary
+                summary = (
+                    f"Количество строк в таблице: {len(row_texts)}\n"
+                    + structure_block
+                    + "\n"
+                    + summary
+                )
                 logger.info(f"[{fid}] summary generated ({len(summary)} chars)")
 
                 stage = "summary_embedding"
@@ -404,14 +464,16 @@ class RAGService:
                     file_id=str(file_id),
                     summary=summary,
                     summary_embedding=summary_embedding,
-                    rows_text=table_rows,
+                    rows_text=row_texts,
                     row_embeddings=row_embeddings,
+                    sheet_names=sheet_names,
+                    row_indexes=row_indexes,
                 )
                 await self._update_manual_comment_embedding(file_id, file_record)
 
                 await self.set_status(file_id, "indexed")
-                logger.info(f"[{fid}] ingest completed (table) — rows_ingested={len(table_rows)}")
-                return {"file_id": fid, "chunks_ingested": len(table_rows)}
+                logger.info(f"[{fid}] ingest completed (table) — rows_ingested={len(row_texts)}")
+                return {"file_id": fid, "chunks_ingested": len(row_texts)}
 
             stage = "text_extraction"
             logger.info(f"[{fid}] stage={stage}")
@@ -624,10 +686,12 @@ class RAGService:
         file_id: str,
         row_start: int,
         row_end: int,
+        sheet_name: str | None = None,
     ) -> list[ChunkSearchResult]:
         """Return table rows from a specific row_index range within a file."""
         return await self._store.get_table_rows_by_range(
             file_id=file_id,
             row_start=row_start,
             row_end=row_end,
+            sheet_name=sheet_name,
         )

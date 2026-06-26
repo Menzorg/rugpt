@@ -5,7 +5,7 @@ LangChain tool for fetching table rows from a document by row index range.
 Delegates all DB access to RAGService.
 
 org_id and caller_user_id are injected via RunnableConfig — LLM sees only file_id,
-row_start, row_end.
+sheet_name, row_start, row_end.
 
 Service lifecycle: call init_table_rows_service(service, file_storage) once
 during engine startup.
@@ -46,6 +46,14 @@ def init_table_rows_service(
     _chat_storage = chat_storage
     logger.info("Table rows tool service initialized")
 
+async def _sheet_hint(file_id: str, prefix: str) -> str:
+    """Return prefix + available sheet list, or prefix alone if none found."""
+    if _rag_service is not None:
+        available = await _rag_service._store.get_sheet_names(file_id)
+        if available:
+            return f"{prefix} Available sheets: {', '.join(available)}. Call the tool again with the correct sheet_name."
+    return prefix
+
 @tool(response_format="content")
 async def table_rows_search(
     file_id: str,
@@ -53,11 +61,20 @@ async def table_rows_search(
     row_end: int,
     config: RunnableConfig,
     runtime: ToolRuntime[RuntimeContext] = None,
+    sheet_name: str = "",
 ) -> str:
-    """Fetch rows from a table document by row index range. Maximum 50 rows returned per call.
+    """Fetch rows from a table document by sheet name and row index range. Maximum 50 rows returned per call.
+
+    Each returned row is formatted as:
+        Sheet:<sheet_name>, A:<header>=<value>, B:<header>=<value>, ...
+    Column letters follow Excel convention (A, B, ..., Z, AA, ...) and correspond to
+    actual spreadsheet column coordinates. Row indexes are 1-based Excel row numbers,
+    so you can reference a cell as e.g. «column B, row 5» or «B5».
+
     Args:
         file_id: Document ID of the table file.
-        row_start: First row index to include (inclusive).
+        sheet_name: Name of the sheet to query. Must match exactly one of the sheet names listed in the document summary under «Структура таблицы». Required — call will fail with available sheet list if omitted or left empty.
+        row_start: First row index to include (inclusive). Uses 1-based Excel row numbers.
         row_end: Last row index to include (inclusive). Capped so at most 50 rows are returned.
     """
     try:
@@ -73,11 +90,14 @@ async def table_rows_search(
         mention_mode = bool(callee_user_id and callee_user_id != caller_user_id)
         chat_id = configurable.get("chat_id")
 
+        if not sheet_name:
+            return await _sheet_hint(file_id, "sheet_name was not provided.")
+
         row_end = min(row_end, row_start + _MAX_ROWS - 1)
 
         logger.info(
-            "table_rows_search called: file_id=%s, row_start=%d, row_end=%d, org_id=%s, user_id=%s, mention_mode=%s, chat_id=%s",
-            file_id, row_start, row_end, org_id, owner_user_id, mention_mode, chat_id,
+            "table_rows_search called: file_id=%s, row_start=%d, row_end=%d, org_id=%s, user_id=%s, mention_mode=%s, chat_id=%s, sheet=%s",
+            file_id, row_start, row_end, org_id, owner_user_id, mention_mode, chat_id, sheet_name
         )
 
         if _rag_service is None:
@@ -112,17 +132,24 @@ async def table_rows_search(
             file_id=file_id,
             row_start=row_start,
             row_end=row_end,
+            sheet_name=sheet_name,
         )
 
         if not rows:
-            return f"No rows found in file '{file_id}' between row {row_start} and {row_end}."
+            return await _sheet_hint(
+                file_id,
+                f"No rows found for sheet '{sheet_name}' between row {row_start} and {row_end}.",
+            )
 
         budget_block_msg = "[TABLE ROWS SEARCH IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION]"
 
         accepted_lines: list[str] = []
         truncated = False
         for i, r in enumerate(rows):
-            row_line = f"[row {row_start + i}] {r.chunk_text}"
+            row_line = [
+                f"[row {r.chunk_index}] {r.chunk_text}" if r.chunk_index is not None
+                else f"[row index unavailable] {r.chunk_text}"
+            ]
             if runtime is not None and not await runtime.context.try_reserve(count_tokens(row_line)):
                 logger.info(
                     "table_rows_search: budget exceeded at row %d for file_id=%s — "

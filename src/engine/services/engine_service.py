@@ -56,6 +56,7 @@ from .in_app_notification_service import InAppNotificationService
 from .task_service import TaskService
 from .task_poll_service import TaskPollService
 from .task_report_service import TaskReportService
+from .converter_service import ConverterService
 from .file_service import FileService
 from .folder_service import FolderService
 from .invoice_service import InvoiceService
@@ -228,11 +229,15 @@ class EngineService:
             user_storage=self.user_storage,
         )
 
+        # Initialize converter service (shared aiohttp session for unoserver calls)
+        self.converter_service = ConverterService(unoserver_url=Config.UNOSERVER_URL)
+
         # Initialize file service with StorageAdapter
         self.storage_adapter = LocalStorageAdapter(base_dir=Config.STORAGE_LOCAL_DIR)
         self.file_service = FileService(
             file_storage=self.user_file_storage,
             storage_adapter=self.storage_adapter,
+            converter_service=self.converter_service,
             max_file_size=Config.FILE_MAX_SIZE_MB * 1024 * 1024,
             allowed_types=set(Config.FILE_ALLOWED_TYPES.split(",")),
             content_type_storage=self.content_type_storage,
@@ -471,6 +476,8 @@ class EngineService:
 
         logger.info("Initializing EngineService...")
 
+        await self.converter_service.startup()
+
         # Initialize all storages
         await self.org_storage.init()
         await self.user_storage.init()
@@ -599,6 +606,7 @@ class EngineService:
         await self.nonce_store.close()
         await self.rag_store.close()
         await self.scheduler_service.stop()
+        await self.converter_service.shutdown()
         await self.notification_service.close()
         await self.ai_service.close()
         try:
