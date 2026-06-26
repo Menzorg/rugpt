@@ -21,6 +21,9 @@ class RuntimeContext:
     # Critical token budget cap for this run. Once reached, RAG tools are blocked
     # and summarization middleware starts compacting conversation state.
     critical_tokens_cap: int = 60000
+    # Set by HistoryCompactionMiddleware when summarization fails and hard truncation
+    # is used. Consumed on the next wrap_model_call to strip tools from that request.
+    compaction_failed: bool = False
 
     def is_budget_exhausted(self) -> bool:
         """Return True if the token cap has been reached. Call inside self.lock."""

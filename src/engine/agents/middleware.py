@@ -272,7 +272,7 @@ class HistoryCompactionMiddleware(AgentMiddleware):
       the tail of loop messages that fits within *hard_truncation_cap* (defaults to
       *trigger_tokens* if not set), respecting COMPACTION_IMMUNE_TOOLS, then appends
       a system instruction telling the model to give a final answer without tools.
-      It also sets the internal flag *_compaction_failed = True*.
+      It also sets RuntimeContext.compaction_failed = True.
 
       On the very next awrap_model_call / wrap_model_call the flag is read once,
       reset to False, tools are stripped from the request.
@@ -297,7 +297,6 @@ class HistoryCompactionMiddleware(AgentMiddleware):
         self._keep_last = keep_last
         self._summarizer_token_cap = summarizer_token_cap
         self._hard_truncation_cap = hard_truncation_cap
-        self._compaction_failed: bool = False
 
     def _ensure_ids(self, messages: list) -> None:
         for m in messages:
@@ -513,7 +512,13 @@ class HistoryCompactionMiddleware(AgentMiddleware):
             self._ensure_ids(messages)
             cap = self._hard_truncation_cap if self._hard_truncation_cap is not None else self._trigger_tokens
             truncated = self._trim_loop_messages(loop_messages, cap)
-            self._compaction_failed = True
+            if hasattr(runtime, "context") and isinstance(runtime.context, RuntimeContext):
+                # Signal wrap_model_call (fired in the same cycle, after abefore_model
+                # applies its state update) to strip tool schemas from the request.
+                # abefore_model injects the "tools blocked" message into the conversation;
+                # wrap_model_call removes the actual tool definitions so the model can't
+                # call them. Both halves happen in the same model-call cycle — not the next one.
+                runtime.context.compaction_failed = True
             return {
                 "messages": [
                     RemoveMessage(id=REMOVE_ALL_MESSAGES),
@@ -527,13 +532,17 @@ class HistoryCompactionMiddleware(AgentMiddleware):
             }
 
     def wrap_model_call(self, request, handler):
-        if self._compaction_failed:
-            self._compaction_failed = False
+        # Pair with abefore_model fallback path: if summarization failed this cycle,
+        # strip tool schemas so the model is forced to produce a final text answer.
+        ctx = getattr(getattr(request, "runtime", None), "context", None)
+        if isinstance(ctx, RuntimeContext) and ctx.compaction_failed:
+            ctx.compaction_failed = False
             request = request.override(tools=[])
         return handler(request)
 
     async def awrap_model_call(self, request, handler):
-        if self._compaction_failed:
-            self._compaction_failed = False
+        ctx = getattr(getattr(request, "runtime", None), "context", None)
+        if isinstance(ctx, RuntimeContext) and ctx.compaction_failed:
+            ctx.compaction_failed = False
             request = request.override(tools=[])
         return await handler(request)

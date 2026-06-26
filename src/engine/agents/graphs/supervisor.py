@@ -4,7 +4,6 @@ Supervisor Agent Graph
 LangGraph supervisor entrypoint. Subagent construction is intentionally
 stubbed for now and will be filled in when multiagency roles are defined.
 """
-import copy
 import logging
 from typing import Any, List, Optional
 
@@ -321,7 +320,7 @@ async def _build_subagents(
             model=subagent_llm,
             tools=role_tools,
             system_prompt=subagent_prompt,
-            middleware=[copy.deepcopy(m) for m in (middleware or [])],
+            middleware=middleware or [],
             context_schema=RuntimeContext,
             name=agent_name,
         )
