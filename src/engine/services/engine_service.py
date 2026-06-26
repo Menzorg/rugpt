@@ -408,6 +408,7 @@ class EngineService:
             task_poll_storage=self.task_poll_storage,
             task_storage=self.task_storage,
             storage_adapter=self.storage_adapter,
+            org_storage=self.org_storage,
         )
 
         # support_ticket_service is constructed before ai_service; wire the AI
