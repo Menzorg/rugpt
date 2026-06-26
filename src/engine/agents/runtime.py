@@ -14,7 +14,6 @@ class RuntimeContext:
     available_tools_count: int = 0
     # Synchronizes small runtime-state reads/writes across parallel tool calls.
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    list_invoices_summary_tokens_spent: int = 0
     called_modals: list[dict] = field(default_factory=list)
     # Cumulative tokens spent this run (prompt messages + RAG retrieval output).
     # Checked before each rag_search / list_documents call to prevent context overflow.

@@ -8,20 +8,10 @@ from ....models.rag import RelatedDoc
 from ....models.user import User
 from ....models.user_file import UserFile
 from ....storage.user_storage import UserStorage
-from ....utils.token_counter import count_tokens, cut_text_by_token_count
+from ....utils.token_counter import count_tokens
 from ...runtime import RuntimeContext
 
 logger = logging.getLogger("rugpt.agents.tools.document")
-
-# Truncation work for all files. Ignored for single file requests
-_SUMMARY_TOKEN_LIMIT = 100
-
-
-def _truncate_summary(summary: str) -> str:
-    """Truncate summary to _SUMMARY_TOKEN_LIMIT tokens."""
-    if count_tokens(summary) <= _SUMMARY_TOKEN_LIMIT:
-        return summary
-    return cut_text_by_token_count(summary, _SUMMARY_TOKEN_LIMIT).rstrip() + "..."
 
 
 @dataclass(frozen=True)
@@ -99,11 +89,10 @@ def format_full_batch(
     files: list[UserFile],
     owner_cache: dict[UUID, str],
 ) -> list[str]:
-    """Format file rows with summaries truncated to _SUMMARY_TOKEN_LIMIT tokens each."""
     lines = []
     for f in files:
         if f.rag_status == "indexed" and f.summary:
-            summary_part = f'summary: "{_truncate_summary(f.summary)}"'
+            summary_part = f'summary: "{f.summary}"'
         else:
             summary_part = "summary: -"
         owner = owner_label(f, owner_cache)
@@ -159,11 +148,10 @@ def format_related_docs_batch(
     docs: list[RelatedDoc],
     owner_cache: dict[UUID, str],
 ) -> list[str]:
-    """Format search results with summaries truncated to _SUMMARY_TOKEN_LIMIT tokens each."""
     lines = []
     for doc in docs:
         if doc.summary:
-            summary_part = f'summary: "{_truncate_summary(doc.summary)}"'
+            summary_part = f'summary: "{doc.summary}"'
         else:
             summary_part = "summary: -"
         owner = related_doc_owner_label(doc, owner_cache)
