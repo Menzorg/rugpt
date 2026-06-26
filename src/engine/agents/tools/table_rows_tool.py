@@ -146,10 +146,10 @@ async def table_rows_search(
         accepted_lines: list[str] = []
         truncated = False
         for i, r in enumerate(rows):
-            row_line = [
+            row_line = (
                 f"[row {r.chunk_index}] {r.chunk_text}" if r.chunk_index is not None
                 else f"[row index unavailable] {r.chunk_text}"
-            ]
+            )
             if runtime is not None and not await runtime.context.try_reserve(count_tokens(row_line)):
                 logger.info(
                     "table_rows_search: budget exceeded at row %d for file_id=%s — "

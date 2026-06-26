@@ -440,7 +440,7 @@ class RAGService:
                 structure_lines.append("</Table structure>")
                 structure_block = "\n".join(structure_lines)
                 summary_source = (
-                    + f"<structure>{structure_block}<structure>"
+                    f"<structure>{structure_block}</structure>"
                     + "<system>Структуру, не пересказывать</system>\n\n"
                     + self._build_table_summary_source(filename, summary_headers, row_texts)
                 )
