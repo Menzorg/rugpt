@@ -13,6 +13,7 @@ from ...runtime import RuntimeContext
 
 logger = logging.getLogger("rugpt.agents.tools.document")
 
+# Truncation work for all files. Ignored for single file requests
 _SUMMARY_TOKEN_LIMIT = 100
 
 
