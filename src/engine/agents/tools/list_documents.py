@@ -12,24 +12,6 @@ Visibility modes
   "own"    — direct: caller-owned; mention: called-user-owned, public only if caller differs
 
 Service lifecycle: call init_document_service(storage) once during engine startup.
-
-Summary budget system
----------------------
-Each list_*_documents call may display document summaries.  To prevent the model
-context from being overwhelmed we maintain a per-run token budget tracked in
-ListDocumentsRuntimeData.spent_summary_tokens.
-
-How it works:
-1. Before list-mode formatting we check the remaining budget
-   (SUMMARY_TOKENS_BUDGET - spent_so_far).  If it is already exhausted, the
-   page switches to compact mode (id + name + is_table only).
-2. Within a full-detail batch, the remaining summary budget is divided across
-   documents in that batch that actually have indexed summaries. Each displayed
-   summary is capped by the smaller of that per-document allowance and the
-   current remaining budget. This prevents one huge document from starving the rest.
-3. After formatting we count the tokens of every summary text that was
-   displayed and add them to spent_summary_tokens.  Summaries replaced by
-   [BUDGET EXHAUSTED] are not counted — they did not consume budget.
 """
 
 from src.engine.unified_logger import get_logger
@@ -51,10 +33,11 @@ from ...storage.chat_storage import ChatStorage
 from ...storage.user_file_storage import UserFileStorage
 from ...storage.user_storage import UserStorage
 from ...utils.token_counter import count_tokens
-from .util.list_documents_dedupe import dedupe_and_page
 from .util.list_documents_formatters import (
+    PageSlice,
     format_and_commit_page,
     format_single_doc,
+    page_files,
     resolve_owner_names,
 )
 
@@ -63,9 +46,6 @@ _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
 
 _PAGE_SIZE = 30
 _MAX_RESULTS = 180
-
-# Total token budget for document summaries across the whole agent run.
-_SUMMARY_TOKENS_BUDGET = 2000
 
 _user_file_storage: Optional[UserFileStorage] = None
 _user_storage: Optional[UserStorage] = None
@@ -402,11 +382,10 @@ async def _list_documents_impl(
 
         path = "single" if file_id and file_id.strip() else ("search" if name_query or summary_query else "list")
         async with runtime.context.lock:
-            summary_before = runtime.context.list_documents_runtime_data.spent_summary_tokens
             tokens_before = runtime.context.total_tokens_spent
             token_cap = runtime.context.critical_tokens_cap
         logger.info(
-            "%s start: path=%s name_query=%r summary_query=%r file_id=%r page=%d owner_filter=%s caller=%s owner=%s public_only_owner=%s is_admin=%s summary_tokens=%d/%d total_tokens=%d/%d",
+            "%s start: path=%s name_query=%r summary_query=%r file_id=%r page=%d owner_filter=%s caller=%s owner=%s public_only_owner=%s is_admin=%s total_tokens=%d/%d",
             tool_name,
             path,
             raw_name_query,
@@ -418,8 +397,6 @@ async def _list_documents_impl(
             scope.owner_user_id,
             scope.public_only_owner,
             scope.is_admin,
-            summary_before,
-            _SUMMARY_TOKENS_BUDGET,
             tokens_before,
             token_cap,
         )
@@ -445,7 +422,6 @@ async def _list_documents_impl(
             if error:
                 return error
             empty_message = "No documents matched your query."
-            compact_on_budget_exhausted = False
             raw_count = len(files)
             visible_count = len(files)
         else:
@@ -453,38 +429,44 @@ async def _list_documents_impl(
             all_files = await _user_file_storage.list_by_org(scope.org_id)
             files, hidden_count, not_indexed_count = _filter_listed_files(all_files, scope, chat_attachment_ids)
             empty_message = "No documents in your scope."
-            compact_on_budget_exhausted = True
             raw_count = len(all_files)
             visible_count = len(files)
 
         logger.info(
-            "%s candidates: path=%s raw=%d visible=%d compact_on_budget=%s",
-            tool_name, path, raw_count, visible_count, compact_on_budget_exhausted,
+            "%s candidates: path=%s raw=%d visible=%d",
+            tool_name, path, raw_count, visible_count,
         )
 
-        dedupe_state, page_slice, shortcut_result = await dedupe_and_page(
-            runtime,
-            files,
-            page,
-            _PAGE_SIZE,
-            scope.tool_name,
-            empty_message,
-        )
-        # shortcut_result is set when dedupe_and_page can answer without full formatting
-        # (empty list, budget exhausted, or all items already seen in a previous call).
-        if shortcut_result is not None:
+        if not files:
+            result = empty_message
             if not_indexed_count:
-                shortcut_result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + shortcut_result
+                result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + result
             if hidden_count:
-                shortcut_result = f"Some document(s) are private and not accessible to caller.\n" + shortcut_result
-            logger.info(
-                "%s done: path=%s result=shortcut hidden=%d output_tokens=%d deduped=%s",
-                tool_name, path, hidden_count, count_tokens(shortcut_result), dedupe_state.deduplicated_across_runs,
-            )
-            return shortcut_result
+                result = f"Some document(s) are private and not accessible to caller.\n" + result
+            logger.info("%s done: path=%s result=empty hidden=%d", tool_name, path, hidden_count)
+            return result
 
+        async with runtime.context.lock:
+            tokens_now = runtime.context.total_tokens_spent
+            cap = runtime.context.critical_tokens_cap
+        if tokens_now >= cap:
+            logger.info(
+                "%s blocked: total_tokens_spent=%d cap=%d candidates=%d",
+                tool_name, tokens_now, cap, len(files),
+            )
+            result = (
+                "[DOCUMENT LISTING IS BLOCKED TO PREVENT CONTEXT WINDOW EXPLOSION. "
+                "USE WHAT YOU'VE GOT ALREADY AND TELL USER THAT YOU NEED ONE MORE RUN TO LIST DOCUMENTS]"
+            )
+            if not_indexed_count:
+                result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + result
+            if hidden_count:
+                result = f"Some document(s) are private and not accessible to caller.\n" + result
+            return result
+
+        page_slice: PageSlice = page_files(files, page, _PAGE_SIZE)
         logger.info(
-            "%s page: page=%d/%d span=%d-%d total=%d page_items=%d deduped=%s",
+            "%s page: page=%d/%d span=%d-%d total=%d page_items=%d",
             tool_name,
             page_slice.page,
             page_slice.total_pages,
@@ -492,31 +474,24 @@ async def _list_documents_impl(
             page_slice.end,
             page_slice.total,
             len(page_slice.items),
-            dedupe_state.deduplicated_across_runs,
         )
         result = await format_and_commit_page(
             runtime,
             page_slice,
             _user_storage,
-            dedupe_state,
-            compact_on_budget_exhausted,
-            _SUMMARY_TOKENS_BUDGET,
         )
         if not_indexed_count:
             result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + result
         if hidden_count:
             result = f"Some document(s) are private and not accessible to caller.\n" + result
         async with runtime.context.lock:
-            summary_after = runtime.context.list_documents_runtime_data.spent_summary_tokens
             tokens_after = runtime.context.total_tokens_spent
         logger.info(
-            "%s done: path=%s hidden=%d output_tokens=%d summary_tokens=%d->%d total_tokens=%d->%d",
+            "%s done: path=%s hidden=%d output_tokens=%d total_tokens=%d->%d",
             tool_name,
             path,
             hidden_count,
             count_tokens(result),
-            summary_before,
-            summary_after,
             tokens_before,
             tokens_after,
         )

@@ -27,6 +27,7 @@
 | 1 | `/health/ready` не проверяет БД | Средний | TODO в коде: `# TODO: Check database connectivity`. Всегда возвращает `ready: True`. Deploy health checks могут пройти при недоступной БД. |
 | 2 | `web_search` и `role_call` -- stubs | Средний | Возвращают placeholder строки. Агент может пытаться вызвать несуществующий функционал. |
 | 3 | Bare `except Exception` в scheduler | Низкий | ~13 блоков в `scheduler_service.py` которые только логируют ошибку. Нет alerting или circuit-breaking при массовых сбоях. |
+| 4 | Нет re-check токен-кэпа перед коммитом в `format_and_commit_page` | Средний | `list_documents` проверяет `total_tokens_spent >= critical_tokens_cap` под коротким lock'ом, отпускает его, затем вызывает `format_and_commit_page` — та добавляет токены уже под своим lock'ом **без** повторной проверки кэпа. При параллельных tool-вызовах оба прохода мимо check'а и оба коммитят, выходя за кэп на сумму одной страницы. `rag_tool.py` решает это корректно: re-check внутри commit-lock'а (`rag_tool.py:192-203`). Фикс: в `format_and_commit_page` (`list_documents_formatters.py`) добавить аналогичный re-check перед `total_tokens_spent +=`. |
 
 ## Support: in-app уведомление оператору на сообщение в тикете
 
