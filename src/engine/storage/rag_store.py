@@ -202,16 +202,21 @@ class RAG_store(BaseStorage):
         rows = await self.fetch(
             """
             SELECT
-                id AS file_id,
-                org_id,
-                user_id,
-                original_filename AS doc_title,
-                summary,
-                created_at AS uploaded_at,
-                created_at::date AS created_at
-            FROM user_files
-            WHERE id = $1::uuid
-              AND is_active = true
+                uf.id AS file_id,
+                uf.org_id,
+                uf.user_id,
+                uf.original_filename AS doc_title,
+                uf.summary,
+                uf.comment,
+                uf.content_type_id,
+                ct.name AS content_type_name,
+                ct.description AS content_type_description,
+                uf.created_at AS uploaded_at,
+                uf.created_at::date AS created_at
+            FROM user_files uf
+            LEFT JOIN content_types ct ON ct.id = uf.content_type_id
+            WHERE uf.id = $1::uuid
+              AND uf.is_active = true
             LIMIT 1
             """,
             file_id,
@@ -225,6 +230,10 @@ class RAG_store(BaseStorage):
             user_id=_as_optional_uuid(row["user_id"]),
             doc_title=row["doc_title"],
             summary=row["summary"] or "",
+            comment=row["comment"],
+            content_type_id=_as_optional_uuid(row["content_type_id"]),
+            content_type_name=row["content_type_name"],
+            content_type_description=row["content_type_description"],
             uploaded_at=row["uploaded_at"],
             created_at=row["created_at"],
             vec_dist=None,
@@ -243,6 +252,7 @@ class RAG_store(BaseStorage):
         filter_user_id: str | None = None,
         exclude_images: bool = True,
         search_mode: str = "abstract",
+        filter_content_type_id: str | None = None,
     ) -> list[RelatedDoc]:
         """Call SQL function search_related_docs for doc-level retrieval."""
         self._validate_embedding(query_embedding)
@@ -254,6 +264,10 @@ class RAG_store(BaseStorage):
                 user_id,
                 doc_title,
                 summary,
+                comment,
+                content_type_id,
+                content_type_name,
+                content_type_description,
                 uploaded_at,
                 created_at,
                 vec_dist,
@@ -268,7 +282,8 @@ class RAG_store(BaseStorage):
                 $6::boolean,
                 $7::uuid,
                 $8::boolean,
-                $9::text
+                $9::text,
+                $10::uuid
             )
         """
         rows = await self.fetch(
@@ -282,6 +297,7 @@ class RAG_store(BaseStorage):
             filter_user_id,
             exclude_images,
             search_mode,
+            filter_content_type_id,
         )
         return [
             RelatedDoc(
@@ -290,6 +306,10 @@ class RAG_store(BaseStorage):
                 user_id=_as_optional_uuid(row["user_id"]),
                 doc_title=row["doc_title"],
                 summary=row["summary"] or "",
+                comment=row["comment"],
+                content_type_id=_as_optional_uuid(row["content_type_id"]),
+                content_type_name=row["content_type_name"],
+                content_type_description=row["content_type_description"],
                 uploaded_at=row["uploaded_at"],
                 created_at=row["created_at"],
                 vec_dist=row["vec_dist"],

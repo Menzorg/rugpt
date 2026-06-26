@@ -14,6 +14,11 @@ from ..models.user_file import UserFile
 
 logger = get_logger("storage")
 
+
+def _to_pgvector(values: List[float]) -> str:
+    return "[" + ",".join(f"{v:.10f}" for v in values) + "]"
+
+
 class UserFileStorage(BaseStorage):
 
     async def create(self, file: UserFile) -> UserFile:
@@ -32,7 +37,11 @@ class UserFileStorage(BaseStorage):
             file.id, file.user_id, file.org_id, file.uploaded_by_user_id,
             file.storage_key, file.original_filename, file.file_type,
             file.file_size, file.content_hash, file.summary, file.is_table, file.is_public, file.rag_status,
-            file.is_active, file.cloned_from_file_id, file.folder_id, file.comment, file.content_type_id,
+            file.is_active,
+            file.cloned_from_file_id,
+            file.folder_id,
+            file.comment,
+            file.content_type_id,
             file.created_at, file.updated_at,
         )
         return self._row_to_file(row)
@@ -145,14 +154,26 @@ class UserFileStorage(BaseStorage):
         rows = await self.fetch(query, user_id)
         return [self._row_to_file(r) for r in rows]
 
-    async def list_by_org(self, org_id: UUID) -> List[UserFile]:
-        """List all files in an organization"""
-        query = """
-            SELECT * FROM user_files
-            WHERE org_id = $1 AND is_active = true
-            ORDER BY created_at DESC
-        """
-        rows = await self.fetch(query, org_id)
+    async def list_by_org(
+        self,
+        org_id: UUID,
+        content_type_id: Optional[UUID] = None,
+    ) -> List[UserFile]:
+        """List all files in an organization, optionally filtered by content_type_id."""
+        if content_type_id is not None:
+            query = """
+                SELECT * FROM user_files
+                WHERE org_id = $1 AND is_active = true AND content_type_id = $2
+                ORDER BY created_at DESC
+            """
+            rows = await self.fetch(query, org_id, content_type_id)
+        else:
+            query = """
+                SELECT * FROM user_files
+                WHERE org_id = $1 AND is_active = true
+                ORDER BY created_at DESC
+            """
+            rows = await self.fetch(query, org_id)
         return [self._row_to_file(r) for r in rows]
 
     async def list_pending_indexing(self) -> List[UserFile]:
@@ -237,6 +258,32 @@ class UserFileStorage(BaseStorage):
             RETURNING *
             """,
             file_id, is_public, datetime.utcnow(),
+        )
+        return self._row_to_file(row) if row else None
+
+    async def update_comment(
+        self,
+        file_id: UUID,
+        comment: Optional[str],
+        content_type_id: Optional[UUID],
+        comment_embedding: Optional[List[float]],
+    ) -> Optional[UserFile]:
+        """Update file comment metadata and its optional manual-comment embedding."""
+        row = await self.fetchrow(
+            """
+            UPDATE user_files
+            SET comment = $2,
+                content_type_id = $3,
+                comment_embedding = $4::vector,
+                updated_at = $5
+            WHERE id = $1 AND is_active = true
+            RETURNING *
+            """,
+            file_id,
+            comment,
+            content_type_id,
+            _to_pgvector(comment_embedding) if comment_embedding is not None else None,
+            datetime.utcnow(),
         )
         return self._row_to_file(row) if row else None
 

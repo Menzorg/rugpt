@@ -22,6 +22,8 @@ from ..agents.metadata import build_initial_extra_body, resolve_litellm_session_
 from ..config import Config
 from ..constants import IMAGE_TYPES
 from ..models.rag import ChunkRow, ChunkSearchResult, RelatedDoc
+from ..models.user_file import UserFile
+from ..storage.content_type_storage import ContentTypeStorage
 from ..storage.rag_store import RAG_store
 from ..storage.user_file_storage import UserFileStorage
 from ..utils.image_parser import image_bytes_to_data_url
@@ -29,6 +31,13 @@ from ..utils.image_parser import image_bytes_to_data_url
 logger = get_logger("services")
 _ABSTRACT_SEARCH_MIN_WORDS = 5
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+_DOCUMENT_SEARCH_INSTRUCT = (
+    "Search for documents matching the user's request, including matching "
+    "document summaries, document parameters, manual comments, and business categories"
+)
+_PASSAGE_SEARCH_INSTRUCT = (
+    "Given a web search query, retrieve relevant passages that answer the query."
+)
 
 
 def _safe_tika_file_name(file_name: str | None) -> str:
@@ -72,6 +81,7 @@ class RAGService:
         chunk_overlap: int,
         summary_input_max_tokens: int,
         file_storage: UserFileStorage | None = None,
+        content_type_storage: ContentTypeStorage | None = None,
     ) -> None:
         self._store = store or RAG_store(
             dsn=Config.RAG_STORE_DSN,
@@ -80,6 +90,7 @@ class RAGService:
         # UserFileStorage для обновления rag_status в процессе индексации.
         # Опциональный: если не передан, обновление статусов не производится.
         self._file_storage = file_storage
+        self._content_type_storage = content_type_storage
         self._embeddings = OpenAIEmbeddings(
             model=embedding_model,
             base_url=llm_base_url,
@@ -116,8 +127,10 @@ class RAGService:
             chat_id=None,
         )
 
-    async def _embed_query(self, query: str) -> list[float]:
-        return await self._embeddings.aembed_query(
+    async def _embed_query(self, query: str, instruct: str | None = None) -> list[float]:
+        if instruct:
+            query = f"Instruct: {instruct}\nQuery:{query}"
+        return self._embeddings.aembed_query(
             query,
             extra_body=self._build_embedding_extra_body(),
         )
@@ -245,6 +258,33 @@ class RAGService:
             raise ValueError("LLM returned empty image summary.")
         return summary
 
+    def _build_embedding_text(self, summary: str, file_record: UserFile | None) -> str:
+        return summary
+
+    def _build_manual_comment_embedding(self, file_record: UserFile | None) -> list[float] | None:
+        if (
+            file_record is None
+            or file_record.content_type_id is not None
+            or not file_record.comment
+        ):
+            return None
+        return self._embed_query(file_record.comment)
+
+    async def _update_manual_comment_embedding(
+        self,
+        file_id: UUID,
+        file_record: UserFile | None,
+    ) -> None:
+        comment_embedding = self._build_manual_comment_embedding(file_record)
+        if comment_embedding is None or self._file_storage is None or file_record is None:
+            return
+        await self._file_storage.update_comment(
+            file_id=file_id,
+            comment=file_record.comment,
+            content_type_id=None,
+            comment_embedding=comment_embedding,
+        )
+
     async def set_status(self, file_id: UUID, status: str):
         if file_id and self._file_storage:
             await self._file_storage.change_rag_status(file_id, status)
@@ -313,7 +353,8 @@ class RAGService:
 
                     stage = "summary_embedding"
                     logger.info(f"[{fid}] stage={stage}")
-                    summary_embedding = await self._embed_query(summary)
+                    embedding_text = self._build_embedding_text(summary, file_record)
+                    summary_embedding = await self._embed_query(embedding_text)
 
                     stage = "db_write"
                     logger.info(f"[{fid}] stage={stage}")
@@ -322,6 +363,7 @@ class RAGService:
                         summary=summary,
                         summary_embedding=summary_embedding,
                     )
+                    await self._update_manual_comment_embedding(file_id, file_record)
                     # Per design: image invoices get a summary but are NOT marked indexed.
                     await self.set_status(file_id, "not_indexed")
                     logger.info(f"[{fid}] ingest completed (image invoice) — summarized")
@@ -353,7 +395,8 @@ class RAGService:
 
                 stage = "summary_embedding"
                 logger.info(f"[{fid}] stage={stage}")
-                summary_embedding = await self._embed_query(summary)
+                embedding_text = self._build_embedding_text(summary, file_record)
+                summary_embedding = await self._embed_query(embedding_text)
 
                 stage = "db_write"
                 logger.info(f"[{fid}] stage={stage}")
@@ -364,6 +407,7 @@ class RAGService:
                     rows_text=table_rows,
                     row_embeddings=row_embeddings,
                 )
+                await self._update_manual_comment_embedding(file_id, file_record)
 
                 await self.set_status(file_id, "indexed")
                 logger.info(f"[{fid}] ingest completed (table) — rows_ingested={len(table_rows)}")
@@ -396,7 +440,8 @@ class RAGService:
 
             stage = "summary_embedding"
             logger.info(f"[{fid}] stage={stage}")
-            summary_embedding = await self._embed_query(summary)
+            embedding_text = self._build_embedding_text(summary, file_record)
+            summary_embedding = await self._embed_query(embedding_text)
 
             stage = "db_write"
             logger.info(f"[{fid}] stage={stage}")
@@ -407,6 +452,7 @@ class RAGService:
                 chunks=chunks,
                 chunk_embeddings=chunk_embeddings,
             )
+            await self._update_manual_comment_embedding(file_id, file_record)
 
         except Exception as exc:
             logger.error(f"[{fid}] ingest failed at stage={stage}: {exc}")
@@ -472,19 +518,14 @@ class RAGService:
         filter_user_id: str | None = None,
         exclude_images: bool = True,
         search_mode: str = "abstract",
+        filter_content_type_id: str | None = None,
     ) -> list[RelatedDoc]:
         """Return top-k related docs in org/user scope using SQL hybrid search."""
         logger.info(
-            "rag find_docs start: query=%r mode=%s top_k=%d org=%s user=%s filter_user=%s is_admin=%s exclude_images=%s",
-            query, search_mode, top_k, org_id, user_id, filter_user_id, is_admin, exclude_images,
+            "rag find_docs start: query=%r mode=%s top_k=%d org=%s user=%s filter_user=%s is_admin=%s exclude_images=%s filter_content_type=%s",
+            query, search_mode, top_k, org_id, user_id, filter_user_id, is_admin, exclude_images, filter_content_type_id,
         )
-        SUMMARY_SEARCH_INSTRUCT = (
-    "Instruct: Retrieve document summaries that are semantically relevant to the user's need, "
-    "including the topic, purpose, task, or problem described, even without exact keyword overlap.\n"
-)
-        qwen_query = (SUMMARY_SEARCH_INSTRUCT + f"Query: {query}")
-        
-        query_embedding = await self._embed_query(qwen_query)
+        query_embedding = await self._embed_query(query, instruct=_DOCUMENT_SEARCH_INSTRUCT)
         docs = await self._store.call_search_related_docs(
             org_id=org_id,
             user_id=user_id,
@@ -495,6 +536,7 @@ class RAGService:
             filter_user_id=filter_user_id,
             exclude_images=exclude_images,
             search_mode=search_mode,
+            filter_content_type_id=filter_content_type_id,
         )
         logger.info(
             "rag find_docs done: query=%r mode=%s returned=%d top_k=%d",
@@ -550,9 +592,7 @@ class RAGService:
             "rag search_in_doc start: file_id=%s mode=concrete query=%r top_k=%d words=%d",
             file_id, query, top_k, word_count,
         )
-        qwen_query = ("Instruct: Given a web search query, retrieve relevant passages that answer the query"
-                f"Query: {query}")
-        query_embedding = await self._embed_query(qwen_query)
+        query_embedding = await self._embed_query(query, instruct=_PASSAGE_SEARCH_INSTRUCT)
         chunks = await self._store.call_search_concrete_chunks(
             file_id=file_id,
             query=query,

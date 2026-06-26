@@ -3,9 +3,12 @@ from uuid import UUID
 
 from langgraph.prebuilt import ToolRuntime
 
+from src.engine.unified_logger import get_logger
+
 from ....models.rag import RelatedDoc
 from ....models.user import User
 from ....models.user_file import UserFile
+from ....storage.content_type_storage import ContentTypeStorage
 from ....storage.user_storage import UserStorage
 from ....utils.token_counter import count_tokens
 from ...runtime import ListDocumentsRuntimeData, RuntimeContext
@@ -17,7 +20,54 @@ from .list_documents_dedupe import (
 )
 from .summary_budget import format_summary_part_with_budget, per_summary_token_limit
 
-logger = logging.getLogger("rugpt.agents.tools.document")
+logger = get_logger("agents")
+
+
+async def prefetch_category_catalog(
+    org_id: UUID,
+    content_type_storage: ContentTypeStorage,
+) -> dict[UUID, str]:
+    """Fetch all active content types for the org in one query; returns {id: 'name: description'}."""
+    cts = await content_type_storage.list_by_org(org_id, include_inactive=True)
+    catalog: dict[UUID, str] = {}
+    for ct in cts:
+        entry = ct.name
+        if ct.description:
+            entry += f": {ct.description}"
+        catalog[ct.id] = entry
+    return catalog
+
+
+def format_categories_line(
+    files: list[UserFile],
+    catalog: dict[UUID, str],
+) -> str:
+    """Return a single '<categories>…</categories>' line for all distinct content types in files."""
+    seen: dict[UUID, str] = {}
+    for f in files:
+        if f.content_type_id and f.content_type_id not in seen:
+            label = catalog.get(f.content_type_id)
+            if label:
+                seen[f.content_type_id] = label
+    if not seen:
+        return ""
+    parts = ", ".join(f"{cid}={label}" for cid, label in seen.items())
+    return f"<categories>{parts}</categories>"
+
+
+def format_related_docs_categories_line(docs: list[RelatedDoc]) -> str:
+    """Return a '<categories>…</categories>' line from inline content type data on RelatedDoc."""
+    seen: dict[UUID, str] = {}
+    for doc in docs:
+        if doc.content_type_id and doc.content_type_id not in seen:
+            entry = doc.content_type_name or str(doc.content_type_id)
+            if doc.content_type_description:
+                entry += f": {doc.content_type_description}"
+            seen[doc.content_type_id] = entry
+    if not seen:
+        return ""
+    parts = ", ".join(f"{cid}={label}" for cid, label in seen.items())
+    return f"<categories>{parts}</categories>"
 
 
 def document_owner_id(f: UserFile | RelatedDoc) -> UUID | None:
@@ -91,9 +141,12 @@ def format_full_batch(
             summary_part = "summary: -"
 
         owner = owner_label(f, owner_cache)
+        comment_part = f", comment={f.comment!r}" if f.comment else ""
+        category_part = f", category={f.content_type_name!r}" if f.content_type_name else ""
         lines.append(
             f"- {f.original_filename} (id={f.id}, created_at={format_created_date(f)}, "
-            f"rag={f.rag_status}, is_table={f.is_table}{owner}, "
+            f"rag={f.rag_status}, is_table={f.is_table}{owner}"
+            f"{comment_part}{category_part}, "
             f"{summary_part})"
         )
 
@@ -108,7 +161,9 @@ def format_compact_batch(
     lines = []
     for f in files:
         owner = owner_label(f, owner_cache)
-        lines.append(f"- {f.original_filename} (id={f.id}, is_table={f.is_table}{owner})")
+        comment_part = f", comment={f.comment!r}" if f.comment else ""
+        category_part = f", category={f.content_type_name!r}" if f.content_type_name else ""
+        lines.append(f"- {f.original_filename} (id={f.id}, is_table={f.is_table}{owner}{comment_part}{category_part})")
     return lines
 
 
@@ -116,10 +171,12 @@ def format_single_doc(f: UserFile, owner_cache: dict[UUID, str] | None = None) -
     """Format one file row with full detail."""
     summary_part = f'summary: "{f.summary}"' if f.rag_status == "indexed" and f.summary else "summary: -"
     owner = owner_label(f, owner_cache or {})
+    comment_part = f", comment={f.comment!r}" if f.comment else ""
+    category_part = f", category={f.content_type_name!r}" if f.content_type_name else ""
     return (
         f"- {f.original_filename} (id={f.id}, created_at={format_created_date(f)}, "
         f"rag={f.rag_status}, is_table={f.is_table}{owner}, "
-        f"size={f.file_size / 1_000_000:.2f}MB, {summary_part})"
+        f"size={f.file_size / 1_000_000:.2f}MB{comment_part}{category_part}, {summary_part})"
     )
 
 
@@ -146,9 +203,11 @@ def format_single_related_doc(doc: RelatedDoc, owner_cache: dict[UUID, str] | No
     """Format one search result without summary budget truncation."""
     summary_part = f'summary: "{doc.summary}"' if doc.summary else "summary: -"
     owner = related_doc_owner_label(doc, owner_cache or {})
+    comment_part = f", comment={doc.comment!r}" if doc.comment else ""
+    category_part = f", category={doc.content_type_name!r}" if doc.content_type_name else ""
     return (
         f"- {doc.doc_title} (id={doc.file_id}, created_at={format_related_doc_created_date(doc)}, "
-        f"{format_search_score(doc)}{owner}, {summary_part})"
+        f"{format_search_score(doc)}{owner}{comment_part}{category_part}, {summary_part})"
     )
 
 
@@ -180,9 +239,11 @@ def format_related_docs_batch(
             summary_part = "summary: -"
 
         owner = related_doc_owner_label(doc, owner_cache)
+        comment_part = f", comment={doc.comment!r}" if doc.comment else ""
+        category_part = f", category={doc.content_type_name!r}" if doc.content_type_name else ""
         lines.append(
             f"- {doc.doc_title} (id={doc.file_id}, created_at={format_related_doc_created_date(doc)}, "
-            f"{format_search_score(doc)}{owner}, {summary_part})"
+            f"{format_search_score(doc)}{owner}{comment_part}{category_part}, {summary_part})"
         )
 
     return lines, total_tokens_spent

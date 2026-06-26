@@ -144,7 +144,13 @@ class EngineService:
 
         # Initialize department service
         self.department_service = DepartmentService(self.department_storage, self.user_storage)
-        self.content_type_service = ContentTypeService(self.content_type_storage)
+        self.content_type_service = ContentTypeService(
+            self.content_type_storage,
+            embedding_model=Config.EMBEDDING_MODEL,
+            llm_base_url=Config.LLM_BASE_URL,
+            llm_api_key=Config.LLM_API_KEY,
+            vector_dim=Config.RAG_VECTOR_DIM,
+        )
 
         # Kafka producer — event bus to NestJS (chat.events) + internal queue (agent.requests).
         self.kafka_producer = KafkaProducerService()
@@ -251,6 +257,7 @@ class EngineService:
             chunk_overlap=Config.RAG_CHUNK_OVERLAP,
             summary_input_max_tokens=Config.RAG_SUMMARY_INPUT_MAX_TOKENS,
             file_storage=self.user_file_storage,  # для обновления rag_status при индексации
+            content_type_storage=self.content_type_storage,
         )
 
         # Folder service — depends on folder storage, file storage, rag_service, storage_adapter.
@@ -298,6 +305,7 @@ class EngineService:
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
         from ..agents.tools.list_documents import list_documents, list_own_documents
+        from ..agents.tools.list_categories import list_categories, init_list_categories_storage
         from ..agents.tools.user_tool import create_user_tools
         from ..agents.tools.analyze_image import create_analyze_image_tool
 
@@ -331,6 +339,7 @@ class EngineService:
         self.tool_registry.register("role_call", role_call)
         self.tool_registry.register("list_documents", list_documents)
         self.tool_registry.register("list_own_documents", list_own_documents)
+        self.tool_registry.register("list_categories", list_categories)
         self.tool_registry.register("analyze_image", analyze_image_tool)
 
         (user_search_tool,) = create_user_tools(
@@ -510,7 +519,9 @@ class EngineService:
 
         # Wire the shared UserFileStorage into the document tool
         from ..agents.tools.list_documents import init_document_service
-        init_document_service(self.user_file_storage, self.rag_service, self.user_storage, self.chat_storage)
+        from ..agents.tools.list_categories import init_list_categories_storage
+        init_document_service(self.user_file_storage, self.rag_service, self.user_storage, self.chat_storage, self.content_type_storage)
+        init_list_categories_storage(self.content_type_storage)
 
         # Start Kafka producer. Kafka is a mandatory dependency: crash at startup
         # if the broker is unavailable, so agent requests never go to a dead producer.

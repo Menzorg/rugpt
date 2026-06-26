@@ -48,13 +48,17 @@ from ...models.user_file import UserFile
 from ..runtime import RuntimeContext
 from ...services.rag_service import RAGService
 from ...storage.chat_storage import ChatStorage
+from ...storage.content_type_storage import ContentTypeStorage
 from ...storage.user_file_storage import UserFileStorage
 from ...storage.user_storage import UserStorage
 from ...utils.token_counter import count_tokens
 from .util.list_documents_dedupe import blocked_listing_message, dedupe_and_page
 from .util.list_documents_formatters import (
     format_and_commit_page,
+    format_categories_line,
+    format_related_docs_categories_line,
     format_single_doc,
+    prefetch_category_catalog,
     resolve_owner_names,
 )
 
@@ -71,6 +75,7 @@ _user_file_storage: Optional[UserFileStorage] = None
 _user_storage: Optional[UserStorage] = None
 _rag_service: Optional[RAGService] = None
 _chat_storage: Optional[ChatStorage] = None
+_content_type_storage: Optional[ContentTypeStorage] = None
 
 
 # =================================================================
@@ -106,7 +111,8 @@ class BaseListDocumentsInput(BaseModel):
         default="",
         description=(
             "Vector search query on document summaries. "
-            "Write a description of the document content. "
+            "Write a description of the document content, expected user upload comment, "
+            "or admin-defined category. Category meaning has higher priority than summary meaning. "
             "Omit to skip."
         ),
     )
@@ -116,6 +122,14 @@ class BaseListDocumentsInput(BaseModel):
             "UUID of a specific document. When provided, returns full info for that "
             "document only, bypassing pagination, deduplication, and summary budgets. "
             "Visibility checks still apply."
+        ),
+    )
+    category_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "UUID of a content type (category) to filter documents by. "
+            "Use list_categories to look up category IDs. "
+            "Ignored when file_id is provided."
         ),
     )
     page: int = Field(
@@ -144,13 +158,15 @@ def init_document_service(
     rag_service: Optional[RAGService] = None,
     user_storage: Optional[UserStorage] = None,
     chat_storage: Optional[ChatStorage] = None,
+    content_type_storage: Optional[ContentTypeStorage] = None,
 ) -> None:
     """Set the shared storage instances for all document tool calls."""
-    global _user_file_storage, _rag_service, _user_storage, _chat_storage
+    global _user_file_storage, _rag_service, _user_storage, _chat_storage, _content_type_storage
     _user_file_storage = storage
     _rag_service = rag_service
     _user_storage = user_storage
     _chat_storage = chat_storage
+    _content_type_storage = content_type_storage
     logger.info("Document tool storage initialized")
 
 
@@ -267,6 +283,7 @@ async def _search_scoped(
     scope: DocumentToolScope,
     name_query: str,
     summary_query: str,
+    filter_content_type_id: Optional[str] = None,
 ) -> tuple[list[RelatedDoc], Optional[str]]:
     """Search visible docs in SQL and return ranked RelatedDoc rows as-is."""
     if _rag_service is None:
@@ -296,10 +313,11 @@ async def _search_scoped(
             filter_user_id=filter_user_id,
             exclude_images=True,
             search_mode=method,
+            filter_content_type_id=filter_content_type_id,
         )
         logger.info(
-            "%s search filter: method=%s query=%r returned=%d filter_user=%s",
-            scope.tool_name, method, query, len(docs), filter_user_id,
+            "%s search filter: method=%s query=%r returned=%d filter_user=%s filter_content_type=%s",
+            scope.tool_name, method, query, len(docs), filter_user_id, filter_content_type_id,
         )
         return docs
 
@@ -370,13 +388,14 @@ async def _list_documents_impl(
     file_id: Optional[str] = None,
     page: int = 1,
     user_id: Optional[str] = None,
+    category_id: Optional[str] = None,
 ) -> str:
     """Shared implementation for own/global document listing tools."""
     tool_name = "list_own_documents" if own_only else "list_documents"
     raw_name_query = name_query
     raw_summary_query = summary_query
-    logger.info("tool %s: name_query=%r, summary_query=%r, file_id=%r, page=%d, user_id=%r",
-                tool_name, name_query, summary_query, file_id, page, user_id)
+    logger.info("tool %s: name_query=%r, summary_query=%r, file_id=%r, page=%d, user_id=%r, category_id=%r",
+                tool_name, name_query, summary_query, file_id, page, user_id, category_id)
 
     if _user_file_storage is None:
         logger.error("%s: storage not initialized, call init_document_service() at startup", tool_name)
@@ -447,11 +466,19 @@ async def _list_documents_impl(
         # List path: loads all org files then filters by visibility rules locally.
         hidden_count = 0
         not_indexed_count = 0
+        category_uuid: Optional[UUID] = None
+        if category_id and category_id.strip():
+            try:
+                category_uuid = UUID(category_id.strip())
+            except ValueError:
+                return f"Invalid UUID for category_id: {category_id!r}"
+        filter_content_type_str = str(category_uuid) if category_uuid else None
         if name_query or summary_query:
             files, error = await _search_scoped(
                 scope,
                 name_query,
                 summary_query,
+                filter_content_type_id=filter_content_type_str,
             )
             if error:
                 return error
@@ -462,7 +489,7 @@ async def _list_documents_impl(
             visible_count = len(files)
         else:
             # List all files, then apply visibility + indexed-only filter.
-            all_files = await _user_file_storage.list_by_org(scope.org_id)
+            all_files = await _user_file_storage.list_by_org(scope.org_id, content_type_id=category_uuid)
             files, hidden_count, not_indexed_count = _filter_listed_files(all_files, scope, chat_attachment_ids)
             empty_message = "No documents in your scope."
             # Full listing can be large; switch to compact format when summary budget runs out.
@@ -513,6 +540,19 @@ async def _list_documents_impl(
             compact_on_budget_exhausted,
             _SUMMARY_TOKENS_BUDGET,
         )
+        # UserFile: content type names are resolved via a single prefetch for the whole page.
+        if _content_type_storage:
+            user_file_items = [f for f in page_slice.items if isinstance(f, UserFile)]
+            catalog = await prefetch_category_catalog(scope.org_id, _content_type_storage)
+            categories_line = format_categories_line(user_file_items, catalog)
+            if categories_line:
+                result = categories_line + "\n" + result
+        # RelatedDoc: content type name/description are JOINed inline by the SQL function, no storage needed.
+        related_doc_items = [f for f in page_slice.items if isinstance(f, RelatedDoc)]
+        if related_doc_items:
+            categories_line = format_related_docs_categories_line(related_doc_items)
+            if categories_line:
+                result = categories_line + "\n" + result
         if not_indexed_count:
             result = f"{not_indexed_count} document(s) excluded (not indexed).\n" + result
         if hidden_count:
@@ -551,11 +591,13 @@ async def _list_documents_async(
     file_id: Optional[str] = None,
     page: int = 1,
     user_id: Optional[str] = None,
+    category_id: Optional[str] = None,
 ) -> str:
     """LangChain coroutine wrapper for organization document listing."""
     return await _list_documents_impl(config, runtime, own_only=False,
                                       name_query=name_query, summary_query=summary_query,
-                                      file_id=file_id, page=page, user_id=user_id)
+                                      file_id=file_id, page=page, user_id=user_id,
+                                      category_id=category_id)
 
 
 async def _list_own_documents_async(
@@ -583,7 +625,11 @@ list_documents = StructuredTool.from_function(
         "List visible organization documents. Optionally filter by owner user_id. "
         "Use name_query or summary_query to search; omit both for paginated listing. "
         "Use file_id to fetch full info for a single document bypassing all budgets. "
-        "Use page to navigate pages (30 items per page, ordered by creation date)."
+        "Use category_id to filter documents by content type; use list_categories to find category IDs. "
+        "Use page to navigate pages (30 items per page, ordered by creation date). "
+        "Results may include comment, the user's direct upload description, and category, "
+        "the admin-defined organization-wide document class. Category is optional but, "
+        "when present, its meaning is a very high-priority signal and outranks summary meaning."
     ),
     args_schema=ListDocumentsInput,
 )
@@ -596,7 +642,10 @@ list_own_documents = StructuredTool.from_function(
         "when the agent is called by another user through a mention, this includes only the called user's public own documents. "
         "Use name_query or summary_query to search; omit both for paginated listing. "
         "Use file_id to fetch full info for a single document bypassing all budgets. "
-        "Use page to navigate pages (30 items per page, ordered by creation date)."
+        "Use page to navigate pages (30 items per page, ordered by creation date). "
+        "Results may include comment, the user's direct upload description, and category, "
+        "the admin-defined organization-wide document class. Category is optional but, "
+        "when present, its meaning is a very high-priority signal and outranks summary meaning."
     ),
     args_schema=ListOwnDocumentsInput,
 )
