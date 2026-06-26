@@ -11,9 +11,13 @@ Tool is async so the ReAct loop awaits it directly in the same event loop
 
 from src.engine.unified_logger import get_logger
 import httpx
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+from langgraph.prebuilt import ToolRuntime
 
+from ..runtime import RuntimeContext
 from ...config import Config
+from ...utils.token_counter import count_tokens
 
 logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
@@ -23,7 +27,11 @@ _MODEL = "sonar"
 _TIMEOUT_SECONDS = 60.0
 
 @tool
-async def web_search(query: str) -> str:
+async def web_search(
+    query: str,
+    config: RunnableConfig = None,
+    runtime: ToolRuntime[RuntimeContext] = None,
+) -> str:
     """Search the web for current information via Perplexity.
 
     Returns an answer synthesised from live web results, plus a numbered list
@@ -42,7 +50,16 @@ async def web_search(query: str) -> str:
             "Сообщите об этом администратору."
         )
 
-    logger.info(f"web_search: query={query!r}")
+    logger.info("tool web_search: query=%r", query)
+    configurable = (config or {}).get("configurable", {})
+    logger.info(
+        "web_search identity: caller_user_id=%s callee_user_id=%s org_id=%s is_admin=%s invocation=%s",
+        configurable.get("caller_user_id", ""),
+        configurable.get("callee_user_id", ""),
+        configurable.get("org_id", ""),
+        bool(configurable.get("is_admin", False)),
+        configurable.get("invocation_kind", ""),
+    )
 
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
@@ -69,7 +86,11 @@ async def web_search(query: str) -> str:
         else:
             sources_block = ""
 
-        return answer + sources_block
+        result = answer + sources_block
+        if runtime is not None:
+            async with runtime.context.lock:
+                runtime.context.total_tokens_spent += count_tokens(result)
+        return result
     except Exception as e:
         logger.error(f"web_search failed: {e}", exc_info=True)
         return _TOOL_ERROR_RESULT

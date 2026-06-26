@@ -22,6 +22,7 @@ from ..constants import (
     RAG_COMPATIBLE_TYPES,
     TABLE_EXTENSIONS,
 )
+from .converter_service import ConverterService
 
 # Types that index_for_rag accepts. Images are allowed so invoice images can be
 # summarized by the vision LLM during ingest (only when is_invoice=True); other
@@ -36,6 +37,7 @@ class FileService:
         self,
         file_storage: UserFileStorage,
         storage_adapter: StorageAdapter,
+        converter_service: ConverterService,
         max_file_size: int = MAX_FILE_SIZE,
         allowed_types: set = None,
         content_type_storage=None,
@@ -43,6 +45,7 @@ class FileService:
     ):
         self.file_storage = file_storage
         self.adapter = storage_adapter
+        self.converter = converter_service
         self.max_file_size = max_file_size
         self.allowed_types = ALLOWED_FILE_TYPES or allowed_types
         # Optional: content-type catalog + org policy for the upload comment field (migration 051).
@@ -127,6 +130,13 @@ class FileService:
         # Validate file size
         if len(data) > self.max_file_size:
             raise ValueError(f"File too large: {len(data)} bytes (max {self.max_file_size})")
+
+        # Convert non-xlsx table formats to xlsx via unoserver before storing.
+        if ext in (TABLE_EXTENSIONS - {"xlsx"}):
+            data = await self.converter.to_xlsx(data, filename)
+            stem = filename.rsplit(".", 1)[0]
+            filename = f"{stem}.xlsx"
+            ext = "xlsx"
 
         # Resolve comment + content type per org policy (raises ValueError on violation).
         resolved_comment, resolved_content_type_id = await self._resolve_comment(

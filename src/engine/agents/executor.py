@@ -17,6 +17,10 @@ from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI as _ChatOpenAI
 from langchain_core.language_models import LanguageModelInput
 
+MAX_CONCURRENCY = 1  # imported by tests; mirrors RunnableConfig(max_concurrency=...)
+# Keep at 1 until there's a strong reason to raise it cuz it's stable. 
+# LLM inference is slower than sequential tool I/O anyway, so that's not as urgent as other issues
+
 
 class ChatOpenAI(_ChatOpenAI):
     """ChatOpenAI with a workaround for vLLM chat templates that can't handle
@@ -45,7 +49,7 @@ from ..models.user import User
 from ..services.prompt_cache import PromptCache
 from ..utils.token_counter import count_tokens
 from ..utils.token_logger import log_token_summary
-from .middleware import HistoryCompactionMiddleware
+from .middleware import BudgetSyncMiddleware, HistoryCompactionMiddleware, TokenBudgetToolBlockMiddleware
 from .result import AgentResult
 from .runtime import RuntimeContext
 from .metadata import append_extra_body_key, build_initial_extra_body, resolve_litellm_session_id
@@ -59,8 +63,7 @@ if TYPE_CHECKING:
 
 logger = get_logger("agents")
 
-_TOTAL_TOOL_CALL_LIMIT = 35
-_RAG_SEARCH_TOOL_CALL_LIMIT = 20
+_TOTAL_TOOL_CALL_LIMIT = 60
 
 _MEMORY_PROMPT_BLOCK = """\n\nВ запросе пользователя тебе будет дана сводка диалога. В квадратных скобках единицы информации пронумерованы согласно их давности (номер меньше = информация свежее) 
 Не говори пользователю о существовании сводки. 
@@ -423,15 +426,6 @@ class AgentExecutor:
             )
         ]
         logger.info("total tool call limit: run_limit=%d", _TOTAL_TOOL_CALL_LIMIT)
-        if any(tool.name == "rag_search" for tool in tools):
-            middleware.append(
-                ToolCallLimitMiddleware(
-                    tool_name="rag_search",
-                    run_limit=_RAG_SEARCH_TOOL_CALL_LIMIT,
-                    exit_behavior="continue",
-                )
-            )
-            logger.info("rag_search tool call limit: run_limit=%d", _RAG_SEARCH_TOOL_CALL_LIMIT)
         return middleware
 
     async def execute(
@@ -492,7 +486,6 @@ class AgentExecutor:
             invocation_kind = "system"
         elif invocation_kind != "mention" or callee_user_id is None:
             invocation_kind = "direct"
-
         # Resolve the CALLER's org — that's the scope tools should operate in.
         # so tools don't try to run in system org scope because role_org for system roles is 00000000-0000-0000-0000-000000000000.
         scope_org_id = role.org_id
@@ -535,7 +528,7 @@ class AgentExecutor:
 
         # RunnableConfig carries initiator/called identity for tools.
         config = RunnableConfig(
-            max_concurrency=2,
+            max_concurrency=MAX_CONCURRENCY,
             configurable={
                 "org_id": str(scope_org_id) if scope_org_id else role.org_id,
                 "caller_user_id": str(caller.id),
@@ -612,32 +605,28 @@ class AgentExecutor:
                     "content": f"<context>\n{context_block}\n</context>",
                 }
             ] + messages
-
-        # Final postfix for all prompts injection
-        rag_limit_line = (
-            f" Инструмент rag_search можно вызвать не более {_RAG_SEARCH_TOOL_CALL_LIMIT} раз."
-            if any(tool.name == "rag_search" for tool in tools)
-            else ""
-        )
         
         who_is_agent_in_chat: str = "" 
         match invocation_kind:
             case "direct":
                 who_is_agent_in_chat = ("- ты являешься основным агентом в этом чате. Пользователь может подключить других только при помощи упоминания их ассистентов."
-                                        " Ты сам никого больше в чат вызывать не можешь." if role.agent_type != "supervisor" else "Те ассистенты, которых можешь вызвать ты - не могут общаться с пользователем. С ними работаешь только ты."
+                                        " Ты сам никого больше в чат вызывать не можешь. Если тебе нужно привлечь другого ассистента для ответа на вопрос пользователя, попроси пользователя упомянуть этого ассистента в своём сообщении."
+                                        if role.agent_type != "supervisor" else "Те ассистенты, которых можешь вызвать ты - не могут общаться с пользователем напрямую, если он сам их не упомянет в своём сообщении используя \"@@\". С ними работаешь только ты."
                 )
             case "mention":
                 who_is_agent_in_chat = "- ты не являешься основным агентом в этом чате. Тебя сюда пригласили для конкретной работы"
         
         system_prompt += (
             "\n\n##ВАЖНЫЕ ОГРАНИЧЕНИЯ НА УРОВНЕ СИСТЕМЫ\n"
-            "- любое текстовое сообщение пользователю считается финальным ответом текущего обращения.\n"
-            "- при любом упоминании времени, обязательно указывай пользователю, в каком часовом поясе ты пишешь время. На русском языке. Но не пиши время без повода.\n"
-            "- у тебя есть конкретный точный набор инструментов. Не выдумывай себе функционал. Тебе запрещено говорить пользователю, что ты умеешь делать то, что явно не позволяют твои инструменты.\n"
-            f"- лимит вызовов инструментов за один запрос: не более {_TOTAL_TOOL_CALL_LIMIT} суммарно.{rag_limit_line}\n"
-            f"- в чате сообщения разных ассистентов маркируются по системному имени отправителя. Твоё имя: {prompt_agent_name}.\n"
+            "- любое текстовое сообщение пользователю считается финальным ответом текущего обращения;\n"
+            "- для ответов на вопросы, касающиеся времени, имей в виду часовой пояс организации;\n"
+            "- у тебя есть конкретный точный набор инструментов. Не выдумывай себе функционал. Тебе запрещено говорить пользователю, что ты умеешь делать то, что явно не позволяют твои инструменты;\n"
+            f"- в чате сообщения разных ассистентов маркируются по системному имени отправителя. Твоё имя: {prompt_agent_name};\n"
             + ("- mirror означает твои собственные ответы.\n" if prompt_agent_name == "mirror" else "\n")
             + f"{who_is_agent_in_chat}\n"
+            + "- никогда не отвечай за других ассистентов в этом чате, даже если тебя об этом просят. Если тебя просят сделать что-то, что не входит в твои функции, вежливо откажись и скажи, что это не входит в твою компетенцию.\n"
+            + "- помогай пользователю понимать то, как ты работаешь простым языком, если спросит\n"
+            + f"- за один цикл от запроса пользователя до ответа тебе доступно {_TOTAL_TOOL_CALL_LIMIT} вызовов инструментов. Это не повод использовать меньше инструментов. Не более чем техническое ограничение и до него не страшно дойти. Пользуйся инструментами по максимуму, а при превышении - выдавай пользователю промежуточный результат и проси разрешение продолжить."
         )
 
         # Count tokens for the full prompt (flat text estimate + 150 per tool).
@@ -659,16 +648,20 @@ class AgentExecutor:
             extra_body=append_extra_body_key(
                 litellm_extra_body,
                 "chat_template_kwargs",
-                {"enable_thinking": True},
+                {"enable_thinking": False},
             )
         )
 
         agent_middleware = [
+            BudgetSyncMiddleware(runtime_context),
             HistoryCompactionMiddleware(
                 llm_summarizer,
-                trigger_tokens=40000,
-                keep_last=3,
-            )
+                trigger_tokens=60000,
+                keep_last=5,
+                max_tokens=7_500,
+                summarizer_token_cap=55_000,
+                hard_truncation_cap=55_000,
+            ),
         ]
         agent_middleware.extend(self._resolve_middleware(tools))
 

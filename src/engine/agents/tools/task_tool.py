@@ -19,10 +19,13 @@ import zoneinfo
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
+from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field
 
+from ..runtime import RuntimeContext
 from ...config import Config
 from ...services.task_service import TaskService
+from ...utils.token_counter import count_tokens
 
 logger = get_logger("agents")
 _TOOL_ERROR_RESULT = "Tool execution caused errors. No result"
@@ -264,6 +267,7 @@ def create_task_tools(
         created_to: Optional[date] = None,
         page: int = 1,
         config: RunnableConfig = None,
+        runtime: ToolRuntime[RuntimeContext] = None,
     ) -> str:
         """Query tasks. Filter by assignee, creator, status, full-text search, and/or date ranges.
         Args:
@@ -391,19 +395,20 @@ def create_task_tools(
             end = min(start + _TASKS_PAGE_SIZE, total)
             shown = tasks[start:end]
 
-            # TODO: replace char budget with token budget via a token counting service
-            total_desc_chars = sum(len(t.description) for t in shown if t.description)
-            include_descriptions = total_desc_chars <= Config.TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET
+            tokens_spent = runtime.context.total_tokens_spent if runtime is not None else 0
+            token_cap = runtime.context.critical_tokens_cap if runtime is not None else Config.TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET
+            desc_tokens = count_tokens(" ".join(t.description for t in shown if t.description))
+            include_descriptions = (tokens_spent + desc_tokens) <= token_cap
             logger.info(
-                "task_query page: page=%d/%d span=%d-%d total=%d shown=%d desc_chars=%d desc_budget=%d include_desc=%s",
+                "task_query page: page=%d/%d span=%d-%d total=%d shown=%d desc_tokens=%d token_cap=%d include_desc=%s",
                 page,
                 total_pages,
                 start + 1,
                 end,
                 total,
                 len(shown),
-                total_desc_chars,
-                Config.TASKS_QUERY_DESCRIPTIONS_CHAR_BUDGET,
+                desc_tokens,
+                token_cap,
                 include_descriptions,
             )
 
@@ -447,13 +452,18 @@ def create_task_tools(
                 " SHRINK OUTPUT USING FILTERS TO CHECK DESCRIPTIONS IF YOU NEED"
                 if not include_descriptions else ""
             )
+            result = header + "\n" + "\n".join(lines) + footer
+            if runtime is not None:
+                async with runtime.context.lock:
+                    runtime.context.total_tokens_spent += count_tokens(result)
             logger.info(
-                "task_query done: total=%d shown=%d include_desc=%s",
+                "task_query done: total=%d shown=%d include_desc=%s output_tokens=%d",
                 total,
                 len(shown),
                 include_descriptions,
+                count_tokens(result),
             )
-            return header + "\n" + "\n".join(lines) + footer
+            return result
         except Exception as e:
             logger.error(f"task_query failed: {e}", exc_info=True)
             if isinstance(e, ValueError) and "badly formed hexadecimal UUID string" in str(e):
@@ -751,6 +761,7 @@ def create_task_tools(
         status: Optional[Literal["done", "created", "in_progress"]] = None,
         page: int = 1,
         config: RunnableConfig = None,
+        runtime: ToolRuntime[RuntimeContext] = None,
     ) -> str:
         """Return tasks assigned to the role owner.
         In a mention invocation (@@role) returns the callee's tasks; otherwise the caller's.
@@ -848,8 +859,15 @@ def create_task_tools(
                 )
 
             span = f"{start + 1}–{end} of {total}"
-            logger.info("get_own_tasks done: target=%s total=%d shown=%d", target_uuid, total, len(shown))
-            return f"Tasks {span} (page {page}/{total_pages}):\n" + "\n".join(lines)
+            result = f"Tasks {span} (page {page}/{total_pages}):\n" + "\n".join(lines)
+            if runtime is not None:
+                async with runtime.context.lock:
+                    runtime.context.total_tokens_spent += count_tokens(result)
+            logger.info(
+                "get_own_tasks done: target=%s total=%d shown=%d output_tokens=%d",
+                target_uuid, total, len(shown), count_tokens(result),
+            )
+            return result
         except Exception as e:
             logger.error("get_own_tasks failed: %s", e, exc_info=True)
             if isinstance(e, ValueError) and "badly formed hexadecimal UUID string" in str(e):

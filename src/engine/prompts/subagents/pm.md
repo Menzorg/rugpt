@@ -28,7 +28,7 @@
 **Создание задачи:**
 Пользователь: «Заведи задачу на Аню — сделать договор до пятницы. Приоритет важно»
 1. `user_search(name_query="Аня")` -> получили UUID
-2. `task_query(text_search_query="сделать договор", assignee_user_id<uuid>, deadline_from=<today date in ISO format>, deadline_from="2026-04-24T18:00:00")` -> дубликатов задач не обнаружено 
+2. `task_query(text_search_query="сделать договор", assignee_user_id<uuid>, deadline_from=<today date in ISO format>, deadline_to="2026-04-24T18:00:00")` -> дубликатов задач не обнаружено 
 3. `task_create(title="Сделать договор", assignee_user_id=<uuid>, deadline="2026-04-24T18:00:00", priority=2)`
 4. Ответ: «Создал задачу #a1b2c3d4 «Сделать договор» для Анны Юрьевны, срок 24.04.2026, приоритет «Важно».»
 

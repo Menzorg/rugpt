@@ -32,10 +32,11 @@ sys.modules.setdefault("src.engine.utils.token_counter", token_counter_stub)
 runtime_module = importlib.import_module("src.engine.agents.runtime")
 list_documents = importlib.import_module("src.engine.agents.tools.list_documents")
 rag_tool = importlib.import_module("src.engine.agents.tools.rag_tool")
+file_access = importlib.import_module("src.engine.agents.tools.util.file_access")
 
 RuntimeContext = runtime_module.RuntimeContext
 _list_documents_impl = list_documents._list_documents_impl
-_can_access_file = rag_tool._can_access_file
+can_access_file = file_access.can_access_file
 
 
 class FakeFileStorage:
@@ -154,26 +155,17 @@ async def test_rag_search_access_denies_called_user_private_in_mention(monkeypat
     private_file = _file(callee_id, org_id, "b-private.pdf")
     public_file = _file(callee_id, org_id, "b-public.pdf", is_public=True)
 
-    monkeypatch.setattr(rag_tool, "_user_file_storage", FakeFileStorage([private_file, public_file]))
+    storage = FakeFileStorage([private_file, public_file])
 
-    assert not await _can_access_file(
-        str(private_file.id),
-        str(org_id),
-        str(callee_id),
-        public_only_owner=True,
-        is_admin=False,
+    assert not await can_access_file(
+        str(private_file.id), str(org_id), str(callee_id), storage,
+        mention_mode=True, is_admin=False,
     )
-    assert await _can_access_file(
-        str(public_file.id),
-        str(org_id),
-        str(callee_id),
-        public_only_owner=True,
-        is_admin=False,
+    assert await can_access_file(
+        str(public_file.id), str(org_id), str(callee_id), storage,
+        mention_mode=True, is_admin=False,
     )
-    assert await _can_access_file(
-        str(private_file.id),
-        str(org_id),
-        str(callee_id),
-        public_only_owner=False,
-        is_admin=False,
+    assert await can_access_file(
+        str(private_file.id), str(org_id), str(callee_id), storage,
+        mention_mode=False, is_admin=False,
     )

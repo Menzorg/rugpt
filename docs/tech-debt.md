@@ -27,6 +27,21 @@
 | 1 | `/health/ready` не проверяет БД | Средний | TODO в коде: `# TODO: Check database connectivity`. Всегда возвращает `ready: True`. Deploy health checks могут пройти при недоступной БД. |
 | 2 | `web_search` и `role_call` -- stubs | Средний | Возвращают placeholder строки. Агент может пытаться вызвать несуществующий функционал. |
 | 3 | Bare `except Exception` в scheduler | Низкий | ~13 блоков в `scheduler_service.py` которые только логируют ошибку. Нет alerting или circuit-breaking при массовых сбоях. |
+| 4 | Embeddings создаются в разных сервисах синхронно | Средний | RAG, content types и correction rules напрямую вызывают LiteLLM embeddings из сервисного кода. Нужно вынести создание embeddings в единую стабильную queue-friendly точку с retry/idempotency, чтобы обновления сущностей не зависели напрямую от доступности embedding-gateway. |
+
+### Embeddings — единая точка создания
+
+Сейчас embeddings создаются точечно в сервисах (`RAGService`, `ContentTypeService`, `CorrectionRuleService`) и выполняются синхронно внутри пользовательских операций. Это технический долг: нужен единый embedding pipeline/API, который принимает тип сущности + payload, делает retry/idempotency, пишет результат в нужную таблицу и может работать через очередь без блокировки create/update запросов.
+
+Минимальная целевая форма: один сервис/worker для всех embedding-задач, стабильные payload-схемы для document summary, manual file comment, content type и correction rules, idempotency key на сущность+версию текста, повторяемая запись результата в БД.
+
+
+| 5 | Удалить `table_chunk_id` и `metadata` из `tables_rows_chunks` | Средний | `table_chunk_id` — мёртвый столбец: всегда `NULL`, что делает `UNIQUE(file_id, table_chunk_id, row_index)` бесполезным (PostgreSQL не считает два NULL равными, поэтому повторная индексация без предварительного `DELETE` добавляет дубликаты вместо upsert). `metadata` — JSONB-дубль `row_index`, не читается ни одним кодпасом. **Что сделать:** 1) убедиться, что `metadata` нигде не используется (`grep -r 'metadata' storage/rag_store.py`); 2) написать миграцию `DROP COLUMN table_chunk_id, DROP COLUMN metadata`; 3) убрать соответствующие поля из `_build_table_rows` в `rag_store.py`; 4) заменить UNIQUE-констрейнт на `UNIQUE(file_id, sheet_name, row_index)` чтобы повторная индексация одного и того же файла + листа делала upsert корректно. |
+
+
+
+
+| 6 | Нет re-check токен-кэпа перед коммитом в `format_and_commit_page` | Средний | `list_documents` проверяет `total_tokens_spent >= critical_tokens_cap` под коротким lock'ом, отпускает его, затем вызывает `format_and_commit_page` — та добавляет токены уже под своим lock'ом **без** повторной проверки кэпа. При параллельных tool-вызовах оба прохода мимо check'а и оба коммитят, выходя за кэп на сумму одной страницы. `rag_tool.py` решает это корректно: re-check внутри commit-lock'а (`rag_tool.py:192-203`). Фикс: в `format_and_commit_page` (`list_documents_formatters.py`) добавить аналогичный re-check перед `total_tokens_spent +=`. |
 
 ## Support: in-app уведомление оператору на сообщение в тикете
 

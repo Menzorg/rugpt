@@ -56,6 +56,7 @@ from .in_app_notification_service import InAppNotificationService
 from .task_service import TaskService
 from .task_poll_service import TaskPollService
 from .task_report_service import TaskReportService
+from .converter_service import ConverterService
 from .file_service import FileService
 from .folder_service import FolderService
 from .invoice_service import InvoiceService
@@ -144,7 +145,13 @@ class EngineService:
 
         # Initialize department service
         self.department_service = DepartmentService(self.department_storage, self.user_storage)
-        self.content_type_service = ContentTypeService(self.content_type_storage)
+        self.content_type_service = ContentTypeService(
+            self.content_type_storage,
+            embedding_model=Config.EMBEDDING_MODEL,
+            llm_base_url=Config.LLM_BASE_URL,
+            llm_api_key=Config.LLM_API_KEY,
+            vector_dim=Config.RAG_VECTOR_DIM,
+        )
 
         # Kafka producer — event bus to NestJS (chat.events) + internal queue (agent.requests).
         self.kafka_producer = KafkaProducerService()
@@ -222,11 +229,15 @@ class EngineService:
             user_storage=self.user_storage,
         )
 
+        # Initialize converter service (shared aiohttp session for unoserver calls)
+        self.converter_service = ConverterService(unoserver_url=Config.UNOSERVER_URL)
+
         # Initialize file service with StorageAdapter
         self.storage_adapter = LocalStorageAdapter(base_dir=Config.STORAGE_LOCAL_DIR)
         self.file_service = FileService(
             file_storage=self.user_file_storage,
             storage_adapter=self.storage_adapter,
+            converter_service=self.converter_service,
             max_file_size=Config.FILE_MAX_SIZE_MB * 1024 * 1024,
             allowed_types=set(Config.FILE_ALLOWED_TYPES.split(",")),
             content_type_storage=self.content_type_storage,
@@ -251,6 +262,7 @@ class EngineService:
             chunk_overlap=Config.RAG_CHUNK_OVERLAP,
             summary_input_max_tokens=Config.RAG_SUMMARY_INPUT_MAX_TOKENS,
             file_storage=self.user_file_storage,  # для обновления rag_status при индексации
+            content_type_storage=self.content_type_storage,
         )
 
         # Folder service — depends on folder storage, file storage, rag_service, storage_adapter.
@@ -298,6 +310,7 @@ class EngineService:
         from ..agents.tools.web_tool import web_search
         from ..agents.tools.role_call_tool import role_call
         from ..agents.tools.list_documents import list_documents, list_own_documents
+        from ..agents.tools.list_categories import list_categories, init_list_categories_storage
         from ..agents.tools.user_tool import create_user_tools
         from ..agents.tools.analyze_image import create_analyze_image_tool
 
@@ -331,6 +344,7 @@ class EngineService:
         self.tool_registry.register("role_call", role_call)
         self.tool_registry.register("list_documents", list_documents)
         self.tool_registry.register("list_own_documents", list_own_documents)
+        self.tool_registry.register("list_categories", list_categories)
         self.tool_registry.register("analyze_image", analyze_image_tool)
 
         (user_search_tool,) = create_user_tools(
@@ -394,6 +408,7 @@ class EngineService:
             task_poll_storage=self.task_poll_storage,
             task_storage=self.task_storage,
             storage_adapter=self.storage_adapter,
+            org_storage=self.org_storage,
         )
 
         # support_ticket_service is constructed before ai_service; wire the AI
@@ -462,6 +477,8 @@ class EngineService:
 
         logger.info("Initializing EngineService...")
 
+        await self.converter_service.startup()
+
         # Initialize all storages
         await self.org_storage.init()
         await self.user_storage.init()
@@ -510,7 +527,9 @@ class EngineService:
 
         # Wire the shared UserFileStorage into the document tool
         from ..agents.tools.list_documents import init_document_service
-        init_document_service(self.user_file_storage, self.rag_service, self.user_storage, self.chat_storage)
+        from ..agents.tools.list_categories import init_list_categories_storage
+        init_document_service(self.user_file_storage, self.rag_service, self.user_storage, self.chat_storage, self.content_type_storage)
+        init_list_categories_storage(self.content_type_storage)
 
         # Start Kafka producer. Kafka is a mandatory dependency: crash at startup
         # if the broker is unavailable, so agent requests never go to a dead producer.
@@ -588,6 +607,7 @@ class EngineService:
         await self.nonce_store.close()
         await self.rag_store.close()
         await self.scheduler_service.stop()
+        await self.converter_service.shutdown()
         await self.notification_service.close()
         await self.ai_service.close()
         try:

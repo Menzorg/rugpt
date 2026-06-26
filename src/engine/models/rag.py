@@ -44,6 +44,10 @@ class RelatedDoc:
     user_id: Optional[UUID]
     doc_title: str
     summary: str
+    comment: Optional[str]
+    content_type_id: Optional[UUID]
+    content_type_name: Optional[str]
+    content_type_description: Optional[str]
     uploaded_at: Optional[datetime]
     created_at: Optional[date]
     vec_dist: Optional[float]
@@ -58,6 +62,10 @@ class RelatedDoc:
             "user_id": str(self.user_id) if self.user_id else None,
             "doc_title": self.doc_title,
             "summary": self.summary,
+            "comment": self.comment,
+            "content_type_id": str(self.content_type_id) if self.content_type_id else None,
+            "content_type_name": self.content_type_name,
+            "content_type_description": self.content_type_description,
             "uploaded_at": self.uploaded_at.isoformat() if self.uploaded_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "vec_dist": self.vec_dist,
@@ -74,6 +82,10 @@ class RelatedDoc:
             user_id=_parse_optional_uuid(data.get("user_id")),
             doc_title=data.get("doc_title", ""),
             summary=data.get("summary") or "",
+            comment=data.get("comment"),
+            content_type_id=_parse_optional_uuid(data.get("content_type_id")),
+            content_type_name=data.get("content_type_name"),
+            content_type_description=data.get("content_type_description"),
             uploaded_at=_parse_datetime(data.get("uploaded_at")),
             created_at=_parse_date(data.get("created_at")),
             vec_dist=data.get("vec_dist"),

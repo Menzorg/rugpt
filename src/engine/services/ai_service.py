@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from src.engine.unified_logger import get_logger
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
+
+import zoneinfo
 
 from ..config import Config
 from ..constants import IMAGE_TYPES
@@ -29,6 +31,7 @@ from ..storage.user_storage import UserStorage
 from ..storage.message_storage import MessageStorage
 from ..storage.chat_storage import ChatStorage
 from ..storage.agent_run_storage import AgentRunStorage
+from ..storage.org_storage import OrgStorage
 from ..utils.image_parser import image_bytes_to_data_url
 from .prompt_cache import PromptCache
 
@@ -70,6 +73,7 @@ class AIService:
         task_poll_storage: Optional["TaskPollStorage"] = None,
         task_storage: Optional["TaskStorage"] = None,
         storage_adapter: Optional["StorageAdapter"] = None,
+        org_storage: Optional[OrgStorage] = None,
     ):
         self.role_storage = role_storage
         self.user_storage = user_storage
@@ -92,6 +96,7 @@ class AIService:
         self.task_poll_storage = task_poll_storage
         self.task_storage = task_storage
         self.storage_adapter = storage_adapter
+        self.org_storage = org_storage
 
     def _is_support_aware(self) -> bool:
         """True iff both support storages are wired. Gates the support hook so
@@ -505,6 +510,8 @@ class AIService:
 
         history = await self.message_storage.list_by_chat(message.chat_id, limit=limit)
 
+        org_tz = await self._resolve_org_timezone(message.chat_id)
+
         # Cache agent names to avoid redundant DB hits per unique sender.
         agent_name_cache: dict[UUID, str] = {}
 
@@ -513,10 +520,10 @@ class AIService:
                 continue
             role_name = "assistant" if msg.sender_type == SenderType.AI_ROLE else "user"
             content = self._with_attachment_ids(msg)
-        
+
             if msg.sender_id not in agent_name_cache:
                 agent_name_cache[msg.sender_id] = await self._resolve_user_name(msg.sender_id)
-            content = self._wrap_agent_content(agent_name_cache[msg.sender_id], content, msg.created_at)
+            content = self._wrap_agent_content(agent_name_cache[msg.sender_id], content, self._to_org_time(msg.created_at, org_tz))
             messages.append({"role": role_name, "content": content})
 
         # Current message
@@ -525,9 +532,36 @@ class AIService:
             content = self._strip_mention(content, strip_username)
         content = self._with_attachment_ids(message, content)
         content = await self._with_image_attachments(message, content)
-        messages.append({"role": "user", "content": self._wrap_agent_content("", content, message.created_at)})
+        current_ts = self._to_org_time(message.created_at, org_tz)
+        if isinstance(content, list):
+            # Multimodal: wrap only the text part, leave image parts untouched.
+            wrapped = [
+                {"type": "text", "text": self._wrap_agent_content("", content[0]["text"], current_ts)},
+                *content[1:],
+            ]
+            messages.append({"role": "user", "content": wrapped})
+        else:
+            messages.append({"role": "user", "content": self._wrap_agent_content("", content, current_ts)})
 
         return messages
+
+    async def _resolve_org_timezone(self, chat_id: UUID) -> zoneinfo.ZoneInfo:
+        """Return the org's ZoneInfo for a given chat, falling back to UTC."""
+        try:
+            if self.org_storage:
+                chat = await self.chat_storage.get_by_id(chat_id)
+                if chat:
+                    org = await self.org_storage.get_by_id(chat.org_id)
+                    if org and org.timezone:
+                        return zoneinfo.ZoneInfo(org.timezone)
+        except Exception:
+            pass
+        return zoneinfo.ZoneInfo("UTC")
+
+    @staticmethod
+    def _to_org_time(dt: datetime, tz: zoneinfo.ZoneInfo) -> datetime:
+        """Convert a naive UTC datetime to an org-timezone-aware datetime."""
+        return dt.replace(tzinfo=timezone.utc).astimezone(tz)
 
     def _with_attachment_ids(self, message: Message, content: Optional[str] = None) -> str:
         """Append non-image attached file IDs to message content for agent context."""

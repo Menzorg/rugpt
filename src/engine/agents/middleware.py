@@ -74,6 +74,16 @@ def _count_tokens_messages_with_api_fallback(messages: Sequence[Any]) -> tuple[i
 
 _COMPACTION_PROMPT = (Path(__file__).parent.parent / "prompts" / "agent_compaction_summary.md").read_text(encoding="utf-8")
 
+# Tool names whose ToolMessages must never be dropped from the summarizer prompt.
+# These are write/action tools — dropping their output would erase evidence of
+# side-effects (created tasks, calendar events, modals) from the summary.
+COMPACTION_IMMUNE_TOOLS: frozenset[str] = frozenset({
+    "task_create",
+    "task_update",
+    "calendar_create",
+    "show_modal",
+})
+
 logger = logging.getLogger("rugpt.agents.middleware")
 
 MAX_CONTEXT_TOKENS = 30_000
@@ -212,28 +222,81 @@ class TokenBudgetToolBlockMiddleware(AgentMiddleware):
         return await handler(request)
 
 
+class BudgetSyncMiddleware(AgentMiddleware):
+    """
+    Sync RuntimeContext.total_tokens_spent from API-reported usage_metadata before
+    each model call.
+
+    When the last AIMessage carries usage_metadata (source == "api+tail"), the
+    API's input_tokens is ground truth and replaces the tiktoken-based accumulator.
+    When no usage_metadata is present yet (source == "estimator"), the accumulator
+    is left untouched so the tiktoken prefill estimate still guards early turns.
+    """
+
+    def __init__(self, runtime_context: RuntimeContext) -> None:
+        self._runtime_context = runtime_context
+
+    def _sync(self, messages: Sequence[Any]) -> None:
+        for m in reversed(messages):
+            if isinstance(m, AIMessage):
+                meta = getattr(m, "usage_metadata", None) or {}
+                input_tokens = meta.get("input_tokens", 0)
+                if input_tokens:
+                    self._runtime_context.total_tokens_spent = input_tokens
+                    logger.debug("budget-sync middleware: total_tokens_spent synced to %d [usage_metadata]", input_tokens)
+                    return
+
+    def wrap_model_call(self, request, handler):
+        self._sync(request.messages)
+        return handler(request)
+
+    async def awrap_model_call(self, request, handler):
+        self._sync(request.messages)
+        return await handler(request)
+
+
 class HistoryCompactionMiddleware(AgentMiddleware):
     """
     Summarise old messages when the context grows too large.
 
-    When token count of state["messages"] exceeds *trigger_tokens*, keeps the
-    last *keep_last* messages intact and replaces everything before them with a
-    single HumanMessage containing a structured LLM-generated summary (user
-    intent, facts, constraints, output format, all document IDs found).
+    Normal flow (summarization succeeds):
+      When token count of state["messages"] exceeds *trigger_tokens*, keeps the
+      last *keep_last* messages intact and replaces everything before them with a
+      single HumanMessage containing an LLM-generated summary (user intent, facts,
+      constraints, output format, all document IDs found). Does not interfere with
+      the subsequent model call — the agent continues normally with a compacted history.
 
-    If total messages <= keep_last, keeps floor(keep_last / 2) so compaction
-    always has something to summarise.
+    Fallback flow (summarization fails):
+      If the summarizer LLM call raises (e.g. its own prompt exceeds the model's
+      context window), the middleware falls back to hard truncation: keeps only
+      the tail of loop messages that fits within *hard_truncation_cap* (defaults to
+      *trigger_tokens* if not set), respecting COMPACTION_IMMUNE_TOOLS, then appends
+      a system instruction telling the model to give a final answer without tools.
+      It also sets RuntimeContext.compaction_failed = True.
+
+      On the very next awrap_model_call / wrap_model_call the flag is read once,
+      reset to False, tools are stripped from the request.
+      Removing tool schemas saves 5–15 k tokens; capping output ensures the
+      truncated context + output stays well within the model's 70 k limit. The model
+      is forced to produce a final textual answer from the available context. Since
+      the flag is one-shot, any subsequent model call in the same agent run (there
+      should be none after a tool-less response) proceeds normally.
     """
 
     def __init__(
         self,
         llm: ChatOpenAI,
-        trigger_tokens: int = 20_000,
+        trigger_tokens: int = 50_000,
         keep_last: int = 8,
+        max_tokens: int | None = None,
+        summarizer_token_cap: int | None = None,
+        hard_truncation_cap: int | None = None,
     ) -> None:
-        self._llm = llm
+        self._llm = llm.bind(max_tokens=max_tokens) if max_tokens is not None else llm
         self._trigger_tokens = trigger_tokens
         self._keep_last = keep_last
+        self._summarizer_token_cap = summarizer_token_cap
+        self._hard_truncation_cap = hard_truncation_cap
 
     def _ensure_ids(self, messages: list) -> None:
         for m in messages:
@@ -253,6 +316,84 @@ class HistoryCompactionMiddleware(AgentMiddleware):
             content = _content_text(m.content)
             parts.append(f"{role}: {content}")
         return _COMPACTION_PROMPT.replace("{messages}", "\n\n".join(parts))
+
+    @staticmethod
+    def _is_immune(message: BaseMessage) -> bool:
+        """Return True if *message* must not be dropped during trimming."""
+        if isinstance(message, ToolMessage):
+            return getattr(message, "name", None) in COMPACTION_IMMUNE_TOOLS
+        if isinstance(message, AIMessage):
+            for tc in getattr(message, "tool_calls", None) or []:
+                if tc.get("name") in COMPACTION_IMMUNE_TOOLS:
+                    return True
+        return False
+
+    def _trim_messages(
+        self,
+        messages: list[BaseMessage],
+        cap: int,
+        count_fn: Any,
+        label: str = "messages",
+    ) -> list[BaseMessage]:
+        """Drop non-immune messages from the tail of *messages* until
+        count_fn(messages) <= cap. Always keeps at least one message.
+        """
+        trimmed = list(messages)
+        if count_fn(trimmed) <= cap:
+            return trimmed
+
+        # Trimming latest messages lets preserve oldest context of what is done so far.
+        # If we trimmed from the front, summarizer wouldn't see first messages where it all started from 
+        # (and it could remove previous summary if this is second summary in loop which could loss of whole history between summaries) 
+        i = len(trimmed) - 1
+        while i > 0:
+            if not self._is_immune(trimmed[i]):
+                trimmed.pop(i)
+                if count_fn(trimmed) <= cap:
+                    break
+            i -= 1
+
+        dropped = len(messages) - len(trimmed)
+        if dropped:
+            logger.info(
+                "compaction middleware: trimmed %d %s to fit cap=%d (remaining=%d)",
+                dropped, label, cap, len(trimmed),
+            )
+        return trimmed
+
+    def _trim_to_summarize(
+        self,
+        to_summarize: list[BaseMessage],
+        cap: int,
+    ) -> list[BaseMessage]:
+        """Drop messages from the tail of *to_summarize* until the formatted
+        summarizer prompt fits within *cap* tokens.
+
+        Measures count_tokens(_format_for_summary(to_summarize)) — the actual
+        payload the summarizer LLM will receive — not the raw message list, which
+        would miss the compaction prompt template overhead.
+        """
+        return self._trim_messages(
+            to_summarize,
+            cap,
+            lambda msgs: count_tokens(self._format_for_summary(msgs)),
+            label="message(s) from to_summarize",
+        )
+
+    def _trim_loop_messages(
+        self,
+        loop_messages: list[BaseMessage],
+        cap: int,
+    ) -> list[BaseMessage]:
+        """Drop non-immune messages from the tail of *loop_messages* until their
+        token count fits within *cap*. Used as fallback when summarization fails.
+        """
+        return self._trim_messages(
+            loop_messages,
+            cap,
+            lambda msgs: _count_tokens_messages_with_api_fallback(msgs)[0],
+            label="message(s) from loop (hard truncation fallback)",
+        )
 
     async def _acreate_summary(self, messages: list[BaseMessage]) -> str:
         prompt = self._format_for_summary(messages)
@@ -280,38 +421,69 @@ class HistoryCompactionMiddleware(AgentMiddleware):
 
         return to_keep
 
+    def _log_prompt_parts(self, messages: list) -> None:
+        system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
+        non_system_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
+
+        if system_msgs:
+            system_tokens = sum(count_tokens(_content_text(m.content)) for m in system_msgs)
+            logger.debug(
+                "compaction middleware: system prompt tokens=%d (%d message(s))",
+                system_tokens, len(system_msgs),
+            )
+
+        total_non_system = 0
+        for m in non_system_msgs:
+            role = getattr(m, "type", "message")
+            tokens = count_tokens(_content_text(m.content))
+            total_non_system += tokens
+            logger.debug(
+                "compaction middleware: message role=%s tokens=%d",
+                role, tokens,
+            )
+        logger.debug(
+            "compaction middleware: prompt parts total — system=%d messages=%d",
+            sum(count_tokens(_content_text(m.content)) for m in system_msgs),
+            total_non_system,
+        )
+
     async def abefore_model(self, state, runtime) -> dict[str, Any] | None:
         messages: list = state["messages"]
         loop_messages = [m for m in messages if not isinstance(m, SystemMessage)]
+
+        self._log_prompt_parts(messages)
 
         token_count, token_source = _count_tokens_messages_with_api_fallback(loop_messages)
         if token_count < self._trigger_tokens:
             return None
 
         keep = self._keep_last
-        to_summarise = loop_messages[:-keep]
+        to_summarize = loop_messages[:-keep]
         to_keep = self._prepend_latest_human_if_missing(loop_messages, loop_messages[-keep:])
 
-        if not to_summarise:
+        if not to_summarize:
             return None
 
         self._ensure_ids(messages)
 
+        if self._summarizer_token_cap is not None:
+            to_summarize = self._trim_to_summarize(to_summarize, self._summarizer_token_cap)
+
         logger.info(
-            "compaction middleware: %d tokens [source=%s] >= %d, summarising %d messages, keeping %d",
-            token_count, token_source, self._trigger_tokens, len(to_summarise), len(to_keep),
+            "compaction middleware: %d tokens [source=%s] >= %d, summarizing %d messages, keeping %d",
+            token_count, token_source, self._trigger_tokens, len(to_summarize), len(to_keep),
         )
         try:
-            summary_text = await self._acreate_summary(to_summarise)
+            summary_text = await self._acreate_summary(to_summarize)
             
             if "qwen" in getattr(self._llm, "model", "").lower():
                 summary_msg = HumanMessage(
-                    content=f"[CONVERSATION SUMMARY]\n{summary_text}",
+                    content=f"<CONVERSATION SUMMARY>\n{summary_text}\n</CONVERSATION SUMMARY>",
                     id=str(uuid.uuid4()),
                 )
             else:
                 summary_msg = AIMessage(
-                    content=f"[CONVERSATION SUMMARY]\n{summary_text}",
+                    content=f"<CONVERSATION SUMMARY>\n{summary_text}\n</CONVERSATION SUMMARY>",
                     id=str(uuid.uuid4()),
                 )
                 
@@ -332,8 +504,45 @@ class HistoryCompactionMiddleware(AgentMiddleware):
                 "messages": [
                     RemoveMessage(id=REMOVE_ALL_MESSAGES),
                     *replacement_messages,
+                    HumanMessage(content="<system>Continue from above conversation and don't tell user about that system message</system>", id=str(uuid.uuid4())),
                 ]
             }
         except Exception:
-            logger.exception("compaction middleware: summarisation failed, skipping compaction")
-            return None
+            logger.exception("compaction middleware: summarization failed, falling back to hard truncation")
+            self._ensure_ids(messages)
+            cap = self._hard_truncation_cap if self._hard_truncation_cap is not None else self._trigger_tokens
+            truncated = self._trim_loop_messages(loop_messages, cap)
+            if hasattr(runtime, "context") and isinstance(runtime.context, RuntimeContext):
+                # Signal wrap_model_call (fired in the same cycle, after abefore_model
+                # applies its state update) to strip tool schemas from the request.
+                # abefore_model injects the "tools blocked" message into the conversation;
+                # wrap_model_call removes the actual tool definitions so the model can't
+                # call them. Both halves happen in the same model-call cycle — not the next one.
+                runtime.context.compaction_failed = True
+            return {
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    *truncated,
+                    HumanMessage(
+                        content=("<system>Your tools are blocked by the system. In case of RAG search: Give the best possible final answer now using only the information already present in the conversation and tool outputs.\n"
+                        "In other cases: if the task is incomplete, tell user where you've stopped, why you was forced to stop and what remains undone, ask the user if you can continue.</system>"),
+                        id=str(uuid.uuid4()),
+                    ),
+                ]
+            }
+
+    def wrap_model_call(self, request, handler):
+        # Pair with abefore_model fallback path: if summarization failed this cycle,
+        # strip tool schemas so the model is forced to produce a final text answer.
+        ctx = getattr(getattr(request, "runtime", None), "context", None)
+        if isinstance(ctx, RuntimeContext) and ctx.compaction_failed:
+            ctx.compaction_failed = False
+            request = request.override(tools=[])
+        return handler(request)
+
+    async def awrap_model_call(self, request, handler):
+        ctx = getattr(getattr(request, "runtime", None), "context", None)
+        if isinstance(ctx, RuntimeContext) and ctx.compaction_failed:
+            ctx.compaction_failed = False
+            request = request.override(tools=[])
+        return await handler(request)

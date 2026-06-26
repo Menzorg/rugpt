@@ -43,12 +43,23 @@ class _SubagentInputWrapper:
     def _input_from_state(state: dict) -> dict:
         return {"messages": state.get("subagent_messages") or []}
 
+    def _error_result(self, exc: Exception) -> dict:
+        from langchain_core.messages import AIMessage
+        logger.error("Subagent %r failed: %s", self.name, exc, exc_info=True)
+        return {"messages": [AIMessage(content=f"[Subagent error: {exc}]")]}
+
     def invoke(self, state: dict, config: Optional[RunnableConfig] = None) -> dict:
-        return self._agent.invoke(self._input_from_state(state), config)
+        try:
+            return self._agent.invoke(self._input_from_state(state), config)
+        except Exception as exc:
+            return self._error_result(exc)
 
     async def ainvoke(self, state: dict, config: Optional[RunnableConfig] = None) -> dict:
         logger.debug("Subagent %r ainvoke config is not None: %s", self.name, config is not None)
-        return await self._agent.ainvoke(self._input_from_state(state), config)
+        try:
+            return await self._agent.ainvoke(self._input_from_state(state), config)
+        except Exception as exc:
+            return self._error_result(exc)
 
 
 async def run_supervisor_agent(
@@ -136,6 +147,7 @@ async def _supervisor_agent_call(
             litellm_session_id=litellm_session_id,
             chat_id=chat_id,
             supervisor_name=supervisor_name,
+            middleware=extra_middleware,
         )
         handoff_tools = [
             _create_task_handoff_tool(
@@ -246,6 +258,7 @@ async def _build_subagents(
     litellm_session_id: str,
     chat_id: Optional[Any] = None,
     supervisor_name: Optional[str] = None,
+    middleware: Optional[List[Any]] = None,
 ) -> tuple[list, dict[str, str]]:
     """Build allowed subagents for a supervisor role."""
     from ...services.engine_service import get_engine_service
@@ -307,6 +320,7 @@ async def _build_subagents(
             model=subagent_llm,
             tools=role_tools,
             system_prompt=subagent_prompt,
+            middleware=middleware or [],
             context_schema=RuntimeContext,
             name=agent_name,
         )
