@@ -186,7 +186,7 @@ def format_related_doc_created_date(doc: RelatedDoc) -> str:
 
 
 def format_single_related_doc(doc: RelatedDoc, owner_cache: dict[UUID, str] | None = None) -> str:
-    """Format one search result without summary budget truncation."""
+    """Format one search result row."""
     summary_part = f'summary: "{doc.summary}"' if doc.summary else "summary: -"
     owner = related_doc_owner_label(doc, owner_cache or {})
     comment_part = f", comment={doc.comment!r}" if doc.comment else ""
