@@ -73,7 +73,7 @@ BEGIN
     lex AS (
       SELECT
         uf.id AS doc_id,
-        ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], uf.tsv, v_tsquery, 1) AS tsv_score
+        ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], uf.tsv, v_tsquery) AS tsv_score
       FROM user_files uf
       WHERE uf.org_id    = p_org_id
         AND (p_filter_user_id IS NULL OR uf.user_id = p_filter_user_id)
@@ -88,7 +88,7 @@ BEGIN
         )
         AND uf.is_active = true
         AND uf.tsv @@ v_tsquery
-      ORDER BY ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], uf.tsv, v_tsquery, 1) DESC
+      ORDER BY ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], uf.tsv, v_tsquery) DESC
       LIMIT v_pool
     )
     SELECT
@@ -225,7 +225,7 @@ BEGIN
       SELECT
         dv.*,
         CASE
-          WHEN dv.tsv @@ v_tsquery THEN ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], dv.tsv, v_tsquery, 1)
+          WHEN dv.tsv @@ v_tsquery THEN ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], dv.tsv, v_tsquery)
           ELSE 0
         END AS tsv_score,
         dv.vec_dist - COALESCE(dv.context_score * 0.1, 0::double precision) AS final_score
