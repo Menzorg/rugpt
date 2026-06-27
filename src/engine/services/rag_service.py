@@ -589,17 +589,7 @@ class RAGService:
 
         except Exception as exc:
             logger.error(f"[{fid}] ingest failed at stage={stage}: {exc}", exc_info=True)
-            # Mark file as failed and surface the stage name in the error message
-            update_rag_status = getattr(self._file_storage, "update_rag_status", None)
-            if update_rag_status:
-                await update_rag_status(
-                    file_id=file_id,
-                    rag_status="failed",
-                    rag_error=f"{stage}: {exc}",
-                    indexed_at=None,
-                )
-            else:
-                await self.set_status(file_id, "failed")
+            await self.set_status(file_id, "failed")
             raise ValueError(f"{stage}: {exc}") from exc
 
         await self.set_status(file_id, "indexed")

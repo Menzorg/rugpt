@@ -245,6 +245,8 @@ async def _get_single_document(file_id: str, scope: DocumentToolScope, chat_atta
         return f"Document {file_id} not found."
     if f.id in chat_attachment_ids:
         visible = True
+    elif f.org_id != scope.org_id:
+        visible = False
     elif scope.own_only:
         visible = (
             f.user_id == scope.owner_user_id
