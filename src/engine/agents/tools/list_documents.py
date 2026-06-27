@@ -118,7 +118,7 @@ class BaseListDocumentsInput(BaseModel):
     )
     page: int = Field(
         default=1,
-        description="Page number for paginated listing (default 1). Page size is 30. Ignored when file_id or search queries are provided.",
+        description="Page number for paginated listing or search results (default 1). Page size is 30. Ignored when file_id is provided.",
     )
 
 

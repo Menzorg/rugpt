@@ -173,17 +173,16 @@ class RAGService:
         file_bytes: bytes,
         file_name: str | None,
     ) -> tuple[list[str], list[dict], list[dict]]:
-        """Parse an xlsx file with pylightxl and emit one dict per data row.
+        """Parse an xlsx file with openpyxl and emit one dict per data row.
 
         Stage 1 — read workbook.
-            pylightxl.readxl() returns a Workbook; ws.rows is a property that
-            returns an iterator of rows as lists of raw cell values (strings/ints/floats).
+            openpyxl.load_workbook(..., read_only=True, data_only=True) streams
+            row values from the workbook without loading the full file into memory.
 
         Stage 2 — per-sheet scan.
-            enumerate(ws.row) yields (0-based index, row).  We add 1 so
-            `excel_row` matches what the user sees in Excel (row 1 = header row,
-            row 2 = first data row, etc.).  Blank rows are skipped; the first
-            non-blank row is treated as the header.
+            enumerate(ws.iter_rows(...), start=1) yields Excel row numbers
+            matching what the user sees in Excel. Blank rows are skipped; the
+            first non-blank row is treated as the header.
 
         Stage 3 — build output.
             row_index stored in the DB == Excel row number (1-based).
@@ -202,51 +201,123 @@ class RAGService:
                              for the data rows of that sheet
         """
         import io
-        import pylightxl as xl
+        from openpyxl import load_workbook
 
-        # Stage 1: read workbook from bytes — no temp file needed
-        db = xl.readxl(fn=io.BytesIO(file_bytes))
         summary_headers: list[str] = []
         rows_with_meta: list[dict] = []
         sheet_infos: list[dict] = []
+        sheet_diagnostics: list[dict] = []
 
-        for ws_name in db.ws_names:
-            ws = db.ws(ws=ws_name)
+        def _trim_trailing_blank_cells(row: tuple[Any, ...]) -> list[Any]:
+            # openpyxl can pad rows to the worksheet width; pylightxl effectively
+            # gave us compact trailing cells. Trim only the right edge so fake
+            # empty headers are not created, while middle blanks keep alignment.
+            cells = list(row)
+            while cells and not _normalize_cell(cells[-1]):
+                cells.pop()
+            return cells
 
-            # Stage 2: collect non-blank rows with their real Excel row numbers.
-            # enumerate gives 0-based index; +1 converts to 1-based Excel row.
-            data_rows = [
-                (i + 1, row)
-                for i, row in enumerate(ws.rows)
-                if any(str(c).strip() for c in row)
-            ]
-            if not data_rows:
-                continue
+        workbook = load_workbook(
+            io.BytesIO(file_bytes),
+            read_only=True,
+            data_only=True,
+        )
+        try:
+            logger.info(
+                "table parser start: parser=openpyxl file=%r size=%dB sheets=%d sheet_names=%s",
+                file_name,
+                len(file_bytes),
+                len(workbook.worksheets),
+                workbook.sheetnames,
+            )
 
-            # First non-blank row is the header (Excel row N, typically row 1).
-            header_excel_row, header_row = data_rows[0]
-            header_cells = [_normalize_cell(c) for c in header_row]
-            headers = [v if v else f"Column{i + 1}" for i, v in enumerate(header_cells)]
-            summary_headers.extend([f"{ws_name}.{h}" for h in headers])
+            for ws in workbook.worksheets:
+                ws_name = ws.title
+                scanned_rows = 0
 
-            # Stage 3: remaining non-blank rows are data rows.
-            # row_index == excel_row so the LLM and the user share the same coordinates.
-            sheet_data_rows = data_rows[1:]
-            for excel_row, row in sheet_data_rows:
-                padded = [_normalize_cell(c) for c in row] + [""] * (len(headers) - len(row))
-                text = _format_row(headers, padded[: len(headers)], sheet_name=ws_name)
-                rows_with_meta.append({
-                    "text": text,
-                    "sheet_name": ws_name,
-                    "row_index": excel_row,  # 1-based Excel row number
-                })
+                # Stage 2: collect non-blank rows with their real Excel row numbers.
+                data_rows: list[tuple[int, list[Any]]] = []
+                for excel_row, row in enumerate(ws.iter_rows(values_only=True), start=1):
+                    scanned_rows += 1
+                    trimmed_row = _trim_trailing_blank_cells(row)
+                    if any(_normalize_cell(c) for c in trimmed_row):
+                        data_rows.append((excel_row, trimmed_row))
 
-            if sheet_data_rows:
-                sheet_infos.append({
+                if not data_rows:
+                    sheet_diagnostics.append({
+                        "sheet": ws_name,
+                        "scanned_rows": scanned_rows,
+                        "nonblank_rows": 0,
+                        "header_row": None,
+                        "header_count": 0,
+                        "data_rows": 0,
+                    })
+                    logger.info(
+                        "table parser sheet: file=%r sheet=%r scanned_rows=%d nonblank_rows=0",
+                        file_name,
+                        ws_name,
+                        scanned_rows,
+                    )
+                    continue
+
+                # First non-blank row is the header (Excel row N, typically row 1).
+                header_excel_row, header_row = data_rows[0]
+                header_cells = [_normalize_cell(c) for c in header_row]
+                headers = [v if v else f"Column{i + 1}" for i, v in enumerate(header_cells)]
+                summary_headers.extend([f"{ws_name}.{h}" for h in headers])
+
+                # Stage 3: remaining non-blank rows are data rows.
+                # row_index == excel_row so the LLM and the user share the same coordinates.
+                sheet_data_rows = data_rows[1:]
+                for excel_row, row in sheet_data_rows:
+                    padded = [_normalize_cell(c) for c in row] + [""] * (len(headers) - len(row))
+                    text = _format_row(headers, padded[: len(headers)], sheet_name=ws_name)
+                    rows_with_meta.append({
+                        "text": text,
+                        "sheet_name": ws_name,
+                        "row_index": excel_row,  # 1-based Excel row number
+                    })
+
+                sheet_diagnostics.append({
                     "sheet": ws_name,
-                    "min_row": sheet_data_rows[0][0],   # Excel row of first data row
-                    "max_row": sheet_data_rows[-1][0],  # Excel row of last data row
+                    "scanned_rows": scanned_rows,
+                    "nonblank_rows": len(data_rows),
+                    "header_row": header_excel_row,
+                    "header_count": len(headers),
+                    "data_rows": len(sheet_data_rows),
                 })
+                logger.info(
+                    "table parser sheet: file=%r sheet=%r scanned_rows=%d nonblank_rows=%d "
+                    "header_row=%s header_count=%d data_rows=%d headers_sample=%s",
+                    file_name,
+                    ws_name,
+                    scanned_rows,
+                    len(data_rows),
+                    header_excel_row,
+                    len(headers),
+                    len(sheet_data_rows),
+                    headers[:5],
+                )
+
+                if sheet_data_rows:
+                    sheet_infos.append({
+                        "sheet": ws_name,
+                        "min_row": sheet_data_rows[0][0],   # Excel row of first data row
+                        "max_row": sheet_data_rows[-1][0],  # Excel row of last data row
+                    })
+        finally:
+            workbook.close()
+
+        if not rows_with_meta:
+            logger.warning(
+                "table parser extracted no data rows: file=%r sheets=%d sheets_with_nonblank=%d "
+                "headers_found=%d diagnostics=%s",
+                file_name,
+                len(sheet_diagnostics),
+                sum(1 for d in sheet_diagnostics if d["nonblank_rows"] > 0),
+                len(summary_headers),
+                sheet_diagnostics,
+            )
 
         return summary_headers, rows_with_meta, sheet_infos
 
@@ -517,9 +588,18 @@ class RAGService:
             await self._update_manual_comment_embedding(file_id, file_record)
 
         except Exception as exc:
-            logger.error(f"[{fid}] ingest failed at stage={stage}: {exc}")
+            logger.error(f"[{fid}] ingest failed at stage={stage}: {exc}", exc_info=True)
             # Mark file as failed and surface the stage name in the error message
-            await self.set_status(file_id, "failed")
+            update_rag_status = getattr(self._file_storage, "update_rag_status", None)
+            if update_rag_status:
+                await update_rag_status(
+                    file_id=file_id,
+                    rag_status="failed",
+                    rag_error=f"{stage}: {exc}",
+                    indexed_at=None,
+                )
+            else:
+                await self.set_status(file_id, "failed")
             raise ValueError(f"{stage}: {exc}") from exc
 
         await self.set_status(file_id, "indexed")
