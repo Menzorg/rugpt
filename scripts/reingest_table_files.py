@@ -11,7 +11,7 @@ import time
 import traceback
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -86,7 +86,7 @@ def setup_logging(execute: bool) -> tuple[logging.Logger, Path]:
     log_dir = PROJECT_ROOT / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     suffix = "execute" if execute else "dry_run"
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     log_path = log_dir / f"table_reingest_{timestamp}_{suffix}.log"
 
     logger = logging.getLogger(LOGGER_NAME)
@@ -595,11 +595,17 @@ async def async_main() -> int:
     stats = RunStats()
 
     logger.info("Table reingest script started")
-    logger.info("  timestamp=%s", datetime.utcnow().isoformat() + "Z")
+    logger.info("  timestamp=%s", datetime.now(UTC).isoformat())
     logger.info("  pid=%s", os.getpid())
     logger.info("  cwd=%s", Path.cwd())
     logger.info("  mode=%s", "execute" if args.execute else "dry-run")
     logger.info("  log file=%s", log_path)
+    if not args.execute:
+        logger.warning("")
+        logger.warning(
+            "DRY RUN: no storage writes, DB updates, chunk deletion, or RAG reingestion will run."
+        )
+        logger.warning("DRY RUN: use --execute to perform real conversion and reingestion.")
 
     logger.info("")
     logger.info("Preflight config")
@@ -616,7 +622,7 @@ async def async_main() -> int:
         # Stage 1: preflight.
         ctx = await init_minimal_services(logger)
 
-        if confirm("Continue to scan files?"):
+        if not confirm("Continue to scan files?"):
             logger.info("Operator declined after preflight")
             return 0
 
@@ -635,7 +641,7 @@ async def async_main() -> int:
             logger.info("No indexed table files selected. Nothing to do.")
             return 0
 
-        if confirm("Continue with conversion/storage updates?"):
+        if not confirm("Continue with conversion/storage updates?"):
             logger.info("Operator declined before storage normalization")
             return 0
 
@@ -651,7 +657,7 @@ async def async_main() -> int:
         stats.unchanged_groups = unchanged
         stats.orphan_candidate_keys = orphan_candidates
 
-        if confirm("Continue with per-file RAG rebuild?"):
+        if not confirm("Continue with per-file RAG rebuild?"):
             logger.info("Operator declined before RAG rebuild")
             return 0
 
