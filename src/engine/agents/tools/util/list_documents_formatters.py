@@ -176,6 +176,8 @@ def format_single_doc(
 def format_search_score(doc: RelatedDoc) -> str:
     """Format SQL search mode and scores."""
     parts = [f"mode={doc.mode_used or 'search'}"]
+    if doc.rank_score is not None:
+        parts.append(f"rank_score={doc.rank_score:.4f}")
     if doc.vec_dist is not None:
         parts.append(f"vec_dist={doc.vec_dist:.4f}")
     if doc.tsv_score is not None:

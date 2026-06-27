@@ -53,6 +53,7 @@ class RelatedDoc:
     vec_dist: Optional[float]
     tsv_score: Optional[float]
     mode_used: Optional[str]
+    rank_score: Optional[float] = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for API response."""
@@ -71,6 +72,7 @@ class RelatedDoc:
             "vec_dist": self.vec_dist,
             "tsv_score": self.tsv_score,
             "mode_used": self.mode_used,
+            "rank_score": self.rank_score,
         }
 
     @classmethod
@@ -91,6 +93,7 @@ class RelatedDoc:
             vec_dist=data.get("vec_dist"),
             tsv_score=data.get("tsv_score"),
             mode_used=data.get("mode_used"),
+            rank_score=data.get("rank_score"),
         )
 
 

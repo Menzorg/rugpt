@@ -9,7 +9,9 @@
 -- to p_query before building v_tsquery. Category distances are cached raw; the
 -- 1 - distance context score is computed only in the ranking queries.
 
-CREATE OR REPLACE FUNCTION search_related_docs(
+DROP FUNCTION IF EXISTS search_related_docs(uuid, uuid, text, vector, integer, boolean, uuid, boolean, text, uuid);
+
+CREATE FUNCTION search_related_docs(
   p_org_id                 uuid,
   p_user_id                uuid,
   p_query                  text,
@@ -35,7 +37,8 @@ RETURNS TABLE (
   created_at               date,
   vec_dist                 double precision,
   tsv_score                real,
-  mode_used                text
+  mode_used                text,
+  rank_score               double precision
 )
 LANGUAGE plpgsql
 STABLE
@@ -102,7 +105,19 @@ BEGIN
       uf.created_at::date                    AS created_at,
       (uf.summary_embedding <=> p_query_emb) AS vec_dist,
       l.tsv_score                            AS tsv_score,
-      'concrete'::text                       AS mode_used
+      'concrete'::text                       AS mode_used,
+      (
+        (uf.summary_embedding <=> p_query_emb) - COALESCE(
+          (
+            CASE
+              WHEN uf.content_type_id IS NOT NULL THEN (1 - cd.cat_dist)
+              WHEN uf.comment_embedding IS NOT NULL THEN (1 - (uf.comment_embedding <=> p_query_emb))
+              ELSE NULL::double precision
+            END
+          ) * 0.15,
+          0::double precision
+        )
+      )::double precision                    AS rank_score
     FROM lex l
     JOIN user_files uf ON uf.id = l.doc_id
     LEFT JOIN _category_dists cd ON cd.content_type_id = uf.content_type_id
@@ -210,7 +225,7 @@ BEGIN
       SELECT
         dv.*,
         CASE
-          WHEN dv.tsv @@ v_tsquery THEN ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], dv.tsv, v_tsquery)
+          WHEN dv.tsv @@ v_tsquery THEN ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], dv.tsv, v_tsquery, 1)
           ELSE 0
         END AS tsv_score,
         dv.vec_dist - COALESCE(dv.context_score * 0.15, 0::double precision) AS final_score
@@ -230,7 +245,8 @@ BEGIN
       s.created_at               AS created_at,
       s.vec_dist                 AS vec_dist,
       s.tsv_score                AS tsv_score,
-      'abstract'::text           AS mode_used
+      'abstract'::text           AS mode_used,
+      s.final_score              AS rank_score
     FROM scored s
     WHERE s.vec_dist < 0.65 OR s.context_score > 0.35
     ORDER BY s.final_score ASC, s.tsv_score DESC
@@ -244,6 +260,7 @@ COMMENT ON FUNCTION search_related_docs(uuid, uuid, text, vector, integer, boole
   'Query punctuation is normalized before tsquery generation to match filename TSV normalization. '
   'Both modes compute per-category/manual-comment context score as 1 - cosine distance and apply '
   'context score as vec_dist - context_score * 0.15 when context exists. '
+  'rank_score is the lower-is-better adjusted distance used by abstract ordering and concrete tiebreaking. '
   'Abstract mode builds candidates from summary, category, and manual-comment embeddings; '
   'concrete mode uses TSV rank first, then context-adjusted vec_dist as tiebreaker. '
   'Files without category/manual-comment context rank by vec_dist only. '

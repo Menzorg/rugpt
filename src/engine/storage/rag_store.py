@@ -282,7 +282,8 @@ class RAG_store(BaseStorage):
                 created_at,
                 vec_dist,
                 tsv_score,
-                mode_used
+                mode_used,
+                rank_score
             FROM search_related_docs(
                 $1::uuid,
                 $2::uuid,
@@ -325,6 +326,7 @@ class RAG_store(BaseStorage):
                 vec_dist=row["vec_dist"],
                 tsv_score=row["tsv_score"],
                 mode_used=row["mode_used"],
+                rank_score=row["rank_score"],
             )
             for row in rows
         ]
