@@ -176,11 +176,11 @@ BEGIN
       LIMIT v_pool
     ),
     candidates AS (
-      SELECT doc_id FROM summary_candidates
+      SELECT sc.doc_id FROM summary_candidates sc
       UNION
-      SELECT doc_id FROM category_candidates
+      SELECT cc.doc_id FROM category_candidates cc
       UNION
-      SELECT doc_id FROM manual_comment_candidates
+      SELECT mcc.doc_id FROM manual_comment_candidates mcc
     ),
     doc_vectors AS (
       SELECT
