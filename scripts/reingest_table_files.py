@@ -616,7 +616,7 @@ async def async_main() -> int:
         # Stage 1: preflight.
         ctx = await init_minimal_services(logger)
 
-        if args.execute and not confirm("Continue to scan files?"):
+        if confirm("Continue to scan files?"):
             logger.info("Operator declined after preflight")
             return 0
 
@@ -635,7 +635,7 @@ async def async_main() -> int:
             logger.info("No indexed table files selected. Nothing to do.")
             return 0
 
-        if args.execute and not confirm("Continue with conversion/storage updates?"):
+        if confirm("Continue with conversion/storage updates?"):
             logger.info("Operator declined before storage normalization")
             return 0
 
@@ -651,7 +651,7 @@ async def async_main() -> int:
         stats.unchanged_groups = unchanged
         stats.orphan_candidate_keys = orphan_candidates
 
-        if args.execute and not confirm("Continue with per-file RAG rebuild?"):
+        if confirm("Continue with per-file RAG rebuild?"):
             logger.info("Operator declined before RAG rebuild")
             return 0
 
