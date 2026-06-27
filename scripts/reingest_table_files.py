@@ -33,6 +33,13 @@ from src.engine.storage.user_file_storage import UserFileStorage
 LOGGER_NAME = "table_reingest"
 
 
+class ConsoleFilter(logging.Filter):
+    """Hide file-only records from terminal output while keeping them in log file."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not getattr(record, "file_only", False)
+
+
 @dataclass
 class ScriptRuntimeContext:
     file_storage: UserFileStorage
@@ -108,9 +115,15 @@ def setup_logging(execute: bool) -> tuple[logging.Logger, Path]:
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(logging.Formatter("%(message)s"))
+    console_handler.addFilter(ConsoleFilter())
     logger.addHandler(console_handler)
 
     return logger, log_path
+
+
+def log_file_only(logger: logging.Logger, message: str, *args: Any) -> None:
+    """Write detailed record only to log file, not terminal."""
+    logger.info(message, *args, extra={"file_only": True})
 
 
 def redact_dsn(dsn: str) -> str:
@@ -274,23 +287,15 @@ def log_inventory(
     skip_reasons: Counter[str],
 ) -> None:
     """Log scan totals, skip reasons, group counts, and selected file details."""
-    # Logging inventory summary.
     xlsx_groups = sum(1 for rows in candidate_groups.values() if is_xlsx_group(rows))
     convert_groups = len(candidate_groups) - xlsx_groups
 
-    logger.info("")
-    logger.info("Inventory summary")
-    logger.info("  active files: %d", len(active_files))
-    logger.info("  selected indexed table files: %d", len(candidates))
-    logger.info("  distinct selected storage keys: %d", len(candidate_groups))
-    logger.info("  .xlsx groups: %d", xlsx_groups)
-    logger.info("  non-.xlsx groups requiring conversion: %d", convert_groups)
-    logger.info("  skipped active files by reason: %s", dict(skip_reasons))
-
-    logger.info("")
-    logger.info("Selected files")
+    # Logging selected files into the file log only.
+    log_file_only(logger, "")
+    log_file_only(logger, "Selected files")
     for file in candidates:
-        logger.info(
+        log_file_only(
+            logger,
             "  id=%s org_id=%s user_id=%s filename=%r file_type=%s "
             "storage_key=%r size=%s indexed_at=%s",
             file.id,
@@ -302,6 +307,16 @@ def log_inventory(
             file.file_size,
             file.indexed_at,
         )
+
+    # Logging inventory summary.
+    logger.info("")
+    logger.info("Inventory summary")
+    logger.info("  active files: %d", len(active_files))
+    logger.info("  selected indexed table files: %d", len(candidates))
+    logger.info("  distinct selected storage keys: %d", len(candidate_groups))
+    logger.info("  .xlsx groups: %d", xlsx_groups)
+    logger.info("  non-.xlsx groups requiring conversion: %d", convert_groups)
+    logger.info("  skipped active files by reason: %s", dict(skip_reasons))
 
 
 async def update_storage_key_rows(
@@ -563,21 +578,31 @@ def log_final_report(
     logger.info("")
     logger.info("Final report")
     logger.info("  selected file count=%d", len(stats.selected_file_ids))
-    logger.info(
-        "  converted storage groups=%s",
+    logger.info("  converted storage groups=%d", len(stats.converted_groups))
+    logger.info("  unchanged .xlsx groups=%d", len(stats.unchanged_groups))
+    logger.info("  successfully rebuilt files=%d", len(stats.rebuilt_file_ids))
+    logger.info("  skipped files=%d", len(stats.skipped_file_ids))
+    logger.info("  failed files=%d", len(stats.failed_file_ids))
+    logger.info("  orphan candidate keys=%d", len(stats.orphan_candidate_keys))
+    log_file_only(
+        logger,
+        "  converted storage group details=%s",
         [
             {"old_key": item.old_key, "new_key": item.new_key, "rows": item.row_ids}
             for item in stats.converted_groups
         ],
     )
-    logger.info(
-        "  unchanged .xlsx groups=%s",
+    log_file_only(
+        logger,
+        "  unchanged .xlsx group details=%s",
         [{"old_key": item.old_key, "rows": item.row_ids} for item in stats.unchanged_groups],
     )
-    logger.info("  successfully rebuilt file ids=%s", stats.rebuilt_file_ids)
-    logger.info("  skipped file ids=%s", stats.skipped_file_ids)
-    logger.info("  failed file ids=%s", stats.failed_file_ids)
-    logger.info(
+    log_file_only(logger, "  selected file ids=%s", stats.selected_file_ids)
+    log_file_only(logger, "  successfully rebuilt file ids=%s", stats.rebuilt_file_ids)
+    log_file_only(logger, "  skipped file ids=%s", stats.skipped_file_ids)
+    log_file_only(logger, "  failed file ids=%s", stats.failed_file_ids)
+    log_file_only(
+        logger,
         "  old converted storage keys left as orphan candidates=%s",
         stats.orphan_candidate_keys,
     )
