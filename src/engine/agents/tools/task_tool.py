@@ -39,6 +39,7 @@ class TaskCreateInput(BaseModel):
     description: str = Field(default="", description="Task description")
     assignee_user_id: str = Field(description="UUID of the employee to assign the task to")
     deadline: str = Field(default="", description="Deadline in ISO format (e.g. 2025-03-15T18:00:00)")
+    priority: Optional[int] = Field(default=None, description="Task priority: 1 (Обычно), 2 (Важно), 3 (Срочно). ALWAYS ask the user before creating the task.")
     participant_user_ids: Optional[List[str]] = Field(default=None, description="Optional UUIDs of additional task participants")
 
 

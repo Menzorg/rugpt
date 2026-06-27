@@ -601,11 +601,12 @@ async def _list_own_documents_async(
     summary_query: str = "",
     file_id: Optional[str] = None,
     page: int = 1,
+    category_id: Optional[str] = None,
 ) -> str:
     """LangChain coroutine wrapper for own/mentioned-owner document listing."""
     return await _list_documents_impl(config, runtime, own_only=True,
                                       name_query=name_query, summary_query=summary_query,
-                                      file_id=file_id, page=page)
+                                      file_id=file_id, page=page, category_id=category_id)
 
 
 # =================================================================
