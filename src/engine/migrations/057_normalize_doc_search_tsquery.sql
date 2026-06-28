@@ -48,10 +48,7 @@ DECLARE
   v_pool    integer;
 BEGIN
   v_pool := GREATEST(p_top_k * 10, 50);
-  v_tsquery := plainto_tsquery(
-    'russian',
-    regexp_replace(COALESCE(p_query, ''), '[^A-Za-z0-9А-ЯЁа-яё]', ' ', 'g')
-  );
+  v_tsquery := plainto_tsquery('russian', normalize_doc_search_text(p_query));
 
   IF p_search_mode NOT IN ('concrete', 'abstract') THEN
     RAISE EXCEPTION 'search_related_docs p_search_mode must be concrete or abstract, got %', p_search_mode;
