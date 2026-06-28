@@ -44,8 +44,9 @@ LANGUAGE plpgsql
 STABLE
 AS $$
 DECLARE
-  v_tsquery tsquery;
-  v_pool    integer;
+  v_tsquery              tsquery;
+  v_pool                 integer;
+  v_context_score_weight double precision := 0.1;
 BEGIN
   v_pool := GREATEST(p_top_k * 10, 50);
   v_tsquery := plainto_tsquery('russian', normalize_doc_search_text(p_query));
@@ -111,7 +112,7 @@ BEGIN
               WHEN uf.comment_embedding IS NOT NULL THEN (1 - (uf.comment_embedding <=> p_query_emb))
               ELSE NULL::double precision
             END
-          ) * 0.1,
+          ) * v_context_score_weight,
           0::double precision
         )
       )::double precision                    AS rank_score
@@ -127,7 +128,7 @@ BEGIN
                    WHEN uf.comment_embedding IS NOT NULL THEN (1 - (uf.comment_embedding <=> p_query_emb))
                    ELSE NULL::double precision
                  END
-               ) * 0.1,
+               ) * v_context_score_weight,
                0::double precision
              ) ASC
     LIMIT p_top_k;
@@ -225,7 +226,7 @@ BEGIN
           WHEN dv.tsv @@ v_tsquery THEN ts_rank(ARRAY[0.1, 0.3, 0.6, 1.0]::real[], dv.tsv, v_tsquery)
           ELSE 0
         END AS tsv_score,
-        dv.vec_dist - COALESCE(dv.context_score * 0.1, 0::double precision) AS final_score
+        dv.vec_dist - COALESCE(dv.context_score * v_context_score_weight, 0::double precision) AS final_score
       FROM doc_vectors dv
     )
     SELECT
@@ -256,7 +257,7 @@ COMMENT ON FUNCTION search_related_docs(uuid, uuid, text, vector, integer, boole
   'p_search_mode chooses concrete TSV-first or abstract vector-first search. '
   'Query punctuation is normalized before tsquery generation to match filename TSV normalization. '
   'Both modes compute per-category/manual-comment context score as 1 - cosine distance and apply '
-  'context score as vec_dist - context_score * 0.1 when context exists. '
+  'the function-level context score weight when context exists. '
   'rank_score is the lower-is-better adjusted distance used by abstract ordering and concrete tiebreaking. '
   'Abstract mode builds candidates from summary, category, and manual-comment embeddings; '
   'concrete mode uses TSV rank first, then context-adjusted vec_dist as tiebreaker. '
