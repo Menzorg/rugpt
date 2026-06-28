@@ -51,6 +51,7 @@ python-multipart>=0.0.20
 Pillow>=10.0.0
 bs4>=0.0.2
 tika>=2.6.0
+openpyxl>=3.1.5
 
 # Development
 pytest>=7.4.0

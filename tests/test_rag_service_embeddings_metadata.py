@@ -12,11 +12,11 @@ class FakeEmbeddings:
         self.query_calls = []
         self.document_calls = []
 
-    def embed_query(self, text, **kwargs):
+    async def aembed_query(self, text, **kwargs):
         self.query_calls.append((text, kwargs))
         return [1.0, 2.0, 3.0]
 
-    def embed_documents(self, documents, **kwargs):
+    async def aembed_documents(self, documents, **kwargs):
         self.document_calls.append((documents, kwargs))
         return [[1.0, 2.0, 3.0] for _ in documents]
 
@@ -30,13 +30,14 @@ class FakeRagStore:
         return []
 
 
-def test_rag_embed_query_passes_correlation_id_as_litellm_session_id():
+@pytest.mark.asyncio
+async def test_rag_embed_query_passes_correlation_id_as_litellm_session_id():
     service = RAGService.__new__(RAGService)
     service._embeddings = FakeEmbeddings()
 
     token = bind_correlation_id("corr-rag-1")
     try:
-        assert service._embed_query("query") == [1.0, 2.0, 3.0]
+        assert await service._embed_query("query") == [1.0, 2.0, 3.0]
     finally:
         correlation_id_var.reset(token)
 
@@ -56,11 +57,12 @@ def test_rag_embed_query_passes_correlation_id_as_litellm_session_id():
     ]
 
 
-def test_rag_embed_query_prefixes_optional_instruct():
+@pytest.mark.asyncio
+async def test_rag_embed_query_prefixes_optional_instruct():
     service = RAGService.__new__(RAGService)
     service._embeddings = FakeEmbeddings()
 
-    assert service._embed_query("query", instruct="Use matching parameters") == [1.0, 2.0, 3.0]
+    assert await service._embed_query("query", instruct="Use matching parameters") == [1.0, 2.0, 3.0]
 
     assert service._embeddings.query_calls[0][0] == (
         "Instruct: Use matching parameters\nQuery:query"
@@ -101,7 +103,8 @@ def test_summary_embedding_text_is_summary_only():
     assert service._build_embedding_text("short summary", file_record) == "short summary"
 
 
-def test_manual_comment_embedding_skips_category_backed_files():
+@pytest.mark.asyncio
+async def test_manual_comment_embedding_skips_category_backed_files():
     service = RAGService.__new__(RAGService)
     service._embeddings = FakeEmbeddings()
 
@@ -110,11 +113,12 @@ def test_manual_comment_embedding_skips_category_backed_files():
         content_type_id=uuid4(),
     )
 
-    assert service._build_manual_comment_embedding(file_record) is None
+    assert await service._build_manual_comment_embedding(file_record) is None
     assert service._embeddings.query_calls == []
 
 
-def test_manual_comment_embedding_embeds_uncategorized_comment():
+@pytest.mark.asyncio
+async def test_manual_comment_embedding_embeds_uncategorized_comment():
     service = RAGService.__new__(RAGService)
     service._embeddings = FakeEmbeddings()
 
@@ -123,7 +127,7 @@ def test_manual_comment_embedding_embeds_uncategorized_comment():
         content_type_id=None,
     )
 
-    assert service._build_manual_comment_embedding(file_record) == [1.0, 2.0, 3.0]
+    assert await service._build_manual_comment_embedding(file_record) == [1.0, 2.0, 3.0]
     assert service._embeddings.query_calls[0][0] == "manual comment"
 
 
@@ -156,13 +160,14 @@ async def test_ingest_comment_embedding_is_persisted_separately_from_summary_sto
     ]
 
 
-def test_rag_embed_documents_passes_correlation_id_as_litellm_session_id():
+@pytest.mark.asyncio
+async def test_rag_embed_documents_passes_correlation_id_as_litellm_session_id():
     service = RAGService.__new__(RAGService)
     service._embeddings = FakeEmbeddings()
 
     token = bind_correlation_id("corr-rag-2")
     try:
-        assert service._embed_documents(["a", "b"]) == [
+        assert await service._embed_documents(["a", "b"]) == [
             [1.0, 2.0, 3.0],
             [1.0, 2.0, 3.0],
         ]

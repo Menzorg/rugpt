@@ -118,7 +118,7 @@ class BaseListDocumentsInput(BaseModel):
     )
     page: int = Field(
         default=1,
-        description="Page number for paginated listing (default 1). Page size is 30. Ignored when file_id or search queries are provided.",
+        description="Page number for paginated listing or search results (default 1). Page size is 30. Ignored when file_id is provided.",
     )
 
 
@@ -245,6 +245,8 @@ async def _get_single_document(file_id: str, scope: DocumentToolScope, chat_atta
         return f"Document {file_id} not found."
     if f.id in chat_attachment_ids:
         visible = True
+    elif f.org_id != scope.org_id:
+        visible = False
     elif scope.own_only:
         visible = (
             f.user_id == scope.owner_user_id
@@ -622,6 +624,7 @@ list_documents = StructuredTool.from_function(
         "Use file_id to fetch full info for a single document bypassing all budgets. "
         "Use category_id to filter documents by content type; use list_categories to find category IDs. "
         "Use page to navigate pages (30 items per page, ordered by creation date). "
+        "Search results include rank_score where lower is better and tsv_score where higher is better. "
         "Results may include comment, the user's direct upload description, and category, "
         "the admin-defined organization-wide document class. Category is optional but, "
         "when present, its meaning is a very high-priority signal and outranks summary meaning."
@@ -638,6 +641,7 @@ list_own_documents = StructuredTool.from_function(
         "Use name_query or summary_query to search; omit both for paginated listing. "
         "Use file_id to fetch full info for a single document bypassing all budgets. "
         "Use page to navigate pages (30 items per page, ordered by creation date). "
+        "Search results include rank_score where lower is better and tsv_score where higher is better. "
         "Results may include comment, the user's direct upload description, and category, "
         "the admin-defined organization-wide document class. Category is optional but, "
         "when present, its meaning is a very high-priority signal and outranks summary meaning."

@@ -15,6 +15,18 @@
 --   comment                 -> B  (user/category-provided business context)
 --   summary                 -> C  (broader generated context)
 
+CREATE OR REPLACE FUNCTION normalize_doc_search_text(p_text text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+    SELECT regexp_replace(COALESCE(p_text, ''), '[^A-Za-z0-9А-ЯЁа-яё]', ' ', 'g');
+$$;
+
+COMMENT ON FUNCTION normalize_doc_search_text(text) IS
+    'Normalizes document-search text by replacing non-letter/digit separators with spaces.';
+
 DROP INDEX IF EXISTS user_files_tsv_gin_idx;
 
 ALTER TABLE user_files
@@ -23,7 +35,7 @@ ALTER TABLE user_files
 ALTER TABLE user_files
     ADD COLUMN tsv tsvector
         GENERATED ALWAYS AS (
-            setweight(to_tsvector('russian', regexp_replace(coalesce(original_filename, ''), '[^A-Za-z0-9А-ЯЁа-яё]', ' ', 'g')), 'A') ||
+            setweight(to_tsvector('russian', normalize_doc_search_text(original_filename)), 'A') ||
             setweight(to_tsvector('russian', coalesce(comment, '')), 'B') ||
             setweight(to_tsvector('russian', coalesce(summary, '')), 'C')
         ) STORED;
