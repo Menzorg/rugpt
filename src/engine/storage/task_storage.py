@@ -56,6 +56,7 @@ class TaskStorage(BaseStorage):
                 t.*,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
+                u.department_id AS creator_department_id,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
@@ -109,6 +110,7 @@ class TaskStorage(BaseStorage):
                 a.is_head AS assignee_is_head,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
+                u.department_id AS creator_department_id,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
@@ -150,6 +152,7 @@ class TaskStorage(BaseStorage):
                 a.is_head AS assignee_is_head,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
+                u.department_id AS creator_department_id,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
@@ -318,6 +321,16 @@ class TaskStorage(BaseStorage):
         )
         return "UPDATE 1" in result
 
+    async def set_merged_into(self, task_id: UUID, into_task_id: UUID) -> bool:
+        """Mark a still-active task as merged into another (audit/redirect link).
+        Guarded by is_active so a retry/race can't relink an already-closed task."""
+        result = await self.execute(
+            "UPDATE tasks SET merged_into_task_id = $2, updated_at = $3 "
+            "WHERE id = $1 AND is_active = true",
+            task_id, into_task_id, datetime.utcnow(),
+        )
+        return "UPDATE 1" in result
+
     async def list_archived_for_user(
         self, user_id: UUID, org_id: UUID, limit: int = 200,
     ) -> List[dict]:
@@ -335,6 +348,7 @@ class TaskStorage(BaseStorage):
                 a.is_head AS assignee_is_head,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
+                u.department_id AS creator_department_id,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
@@ -412,6 +426,7 @@ class TaskStorage(BaseStorage):
                 a.is_head AS assignee_is_head,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
+                u.department_id AS creator_department_id,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
@@ -453,6 +468,7 @@ class TaskStorage(BaseStorage):
                 a.is_head AS assignee_is_head,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
+                u.department_id AS creator_department_id,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
@@ -550,5 +566,6 @@ class TaskStorage(BaseStorage):
                 "name": row["creator_name"],
                 "is_admin": row["creator_is_admin"],
                 "is_head": row["creator_is_head"],
+                "department_id": row["creator_department_id"],
             }
         return {"task": task, "creator": creator}
