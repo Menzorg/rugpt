@@ -321,6 +321,14 @@ class TaskStorage(BaseStorage):
         )
         return "UPDATE 1" in result
 
+    async def set_merged_into(self, task_id: UUID, into_task_id: UUID) -> bool:
+        """Mark a task as merged into another (audit/redirect link)."""
+        result = await self.execute(
+            "UPDATE tasks SET merged_into_task_id = $2, updated_at = $3 WHERE id = $1",
+            task_id, into_task_id, datetime.utcnow(),
+        )
+        return "UPDATE 1" in result
+
     async def list_archived_for_user(
         self, user_id: UUID, org_id: UUID, limit: int = 200,
     ) -> List[dict]:

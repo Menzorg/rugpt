@@ -34,6 +34,7 @@ from ..storage.content_type_storage import ContentTypeStorage
 from ..storage.project_storage import ProjectStorage
 from ..storage.task_event_storage import TaskEventStorage
 from ..storage.agent_run_storage import AgentRunStorage
+from ..storage.task_merge_request_storage import TaskMergeRequestStorage
 from ..storage.support_ticket_storage import SupportTicketStorage
 from ..storage.support_ticket_event_storage import SupportTicketEventStorage
 from ..storage.memory_snapshot_storage import MemorySnapshotStorage
@@ -54,6 +55,7 @@ from .scheduler_service import SchedulerService
 from .notification_service import NotificationService
 from .in_app_notification_service import InAppNotificationService
 from .task_service import TaskService
+from .task_merge_service import TaskMergeService
 from .task_poll_service import TaskPollService
 from .task_report_service import TaskReportService
 from .converter_service import ConverterService
@@ -121,6 +123,7 @@ class EngineService:
         self.project_storage = ProjectStorage(self.postgres_dsn)
         self.task_event_storage = TaskEventStorage(self.postgres_dsn)
         self.agent_run_storage = AgentRunStorage(self.postgres_dsn)
+        self.task_merge_request_storage = TaskMergeRequestStorage(self.postgres_dsn)
         self.support_ticket_storage = SupportTicketStorage(self.postgres_dsn)
         self.support_ticket_event_storage = SupportTicketEventStorage(self.postgres_dsn)
         self.memory_snapshot_storage = MemorySnapshotStorage(self.postgres_dsn)
@@ -372,6 +375,21 @@ class EngineService:
         )
         self.agent_executor.memory_service = self.memory_service
         self.task_report_service.agent_executor = self.agent_executor
+
+        # Task merge service — needs the agent_executor (preview formulation).
+        self.task_merge_service = TaskMergeService(
+            task_storage=self.task_storage,
+            task_service=self.task_service,
+            chat_service=self.chat_service,
+            message_storage=self.message_storage,
+            chat_storage=self.chat_storage,
+            task_event_service=self.task_event_service,
+            task_participant_storage=self.task_participant_storage,
+            role_storage=self.role_storage,
+            agent_executor=self.agent_executor,
+            merge_request_storage=self.task_merge_request_storage,
+            user_storage=self.user_storage,
+        )
         # Wire chat/message storage so TaskReportService can fall back to raw
         # transcript when an expired poll has no AI-generated summary.
         self.task_report_service.chat_storage = self.chat_storage

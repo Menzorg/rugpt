@@ -7,7 +7,7 @@ Item 9: ownership, prioritization, status transitions, deadline negotiation.
 
 from src.engine.unified_logger import get_logger
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Depends, Query
@@ -51,6 +51,17 @@ class ProposeDeadlineRequest(BaseModel):
 
 class RejectRequest(BaseModel):
     comment: Optional[str] = None
+
+class MergePreviewRequest(BaseModel):
+    source_task_ids: List[str]
+
+class MergeApplyRequest(BaseModel):
+    merge_request_id: str
+    title: str
+    description: Optional[str] = None
+    assignee_user_id: str
+    project_id: Optional[str] = None
+    deadline: Optional[str] = None  # ISO 8601
 
 def _serialize_entry(entry: dict) -> dict:
     """Serialize a {task, creator?, assignee?} entry to dict for API response."""
@@ -298,6 +309,134 @@ async def create_task(
         return task.to_dict()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+# ============================================
+# Merge (declared before /{task_id} so static paths win)
+# ============================================
+
+async def _load_mergeable_sources(engine, raw_ids: List[str], current_user: dict) -> list:
+    """Resolve + authorize source tasks for a merge. Each must exist, be in the
+    actor's org and pass _can_manage_task (creator / dept head / org admin)."""
+    ids: List[UUID] = []
+    seen = set()
+    for raw in raw_ids:
+        try:
+            tid = UUID(raw)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail=f"Invalid task id: {raw}")
+        if tid not in seen:
+            seen.add(tid)
+            ids.append(tid)
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="Need at least two distinct tasks to merge")
+
+    tasks = []
+    for tid in ids:
+        task = await engine.task_service.get(tid)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"Task not found: {tid}")
+        if task.org_id != current_user["org_id"]:
+            raise HTTPException(status_code=403, detail="Access denied")
+        if not await _can_manage_task(engine, current_user, task):
+            raise HTTPException(status_code=403, detail=f"Not allowed to merge task {tid}")
+        tasks.append(task)
+    return tasks
+
+
+@router.post("/merge/preview")
+async def merge_preview(
+    request: MergePreviewRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Formulate a merged task from >=2 source tasks via the task_merger agent.
+    No mutation — persists a preview (+snapshot) the human verifies before apply."""
+    engine = get_engine_service()
+    source_tasks = await _load_mergeable_sources(engine, request.source_task_ids, current_user)
+    actor = await _load_user(engine, current_user["user_id"])
+    if actor is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    try:
+        req = await engine.task_merge_service.preview(actor, source_tasks)
+    except Exception as e:
+        logger.error(f"merge preview failed: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Merge preview failed")
+    return {
+        "merge_request_id": str(req.id),
+        "source_task_ids": [str(t) for t in req.source_task_ids],
+        "proposed_title": req.proposed_title,
+        "proposed_description": req.proposed_description,
+        "proposed_summary": req.proposed_summary,
+    }
+
+
+@router.post("/merge/apply")
+async def merge_apply(
+    request: MergeApplyRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Apply a previewed merge: create the new task and close the sources.
+    Deterministic — no LLM. Re-authorizes on every source task."""
+    engine = get_engine_service()
+    try:
+        mr_id = UUID(request.merge_request_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid merge_request_id")
+
+    merge_request = await engine.task_merge_request_storage.get(mr_id)
+    if merge_request is None:
+        raise HTTPException(status_code=404, detail="Merge request not found")
+    if merge_request.org_id != current_user["org_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if merge_request.status == "applied":
+        raise HTTPException(status_code=409, detail="Merge already applied")
+
+    # Re-authorize against the live source tasks.
+    await _load_mergeable_sources(
+        engine, [str(t) for t in merge_request.source_task_ids], current_user
+    )
+
+    actor = await _load_user(engine, current_user["user_id"])
+    if actor is None:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    if not request.title.strip():
+        raise HTTPException(status_code=400, detail="Title required")
+    try:
+        assignee_uuid = UUID(request.assignee_user_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid assignee_user_id")
+    project_uuid = None
+    if request.project_id:
+        try:
+            project_uuid = UUID(request.project_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid project_id")
+    deadline = None
+    if request.deadline:
+        try:
+            deadline = datetime.fromisoformat(request.deadline.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid deadline")
+
+    if not await engine.department_service.check_visible(
+        current_user["user_id"], assignee_uuid, current_user["org_id"],
+    ):
+        raise HTTPException(status_code=403, detail="Assignee not visible")
+
+    try:
+        new_task = await engine.task_merge_service.apply(
+            actor,
+            merge_request,
+            title=request.title.strip(),
+            description=request.description,
+            assignee_user_id=assignee_uuid,
+            project_id=project_uuid,
+            deadline=deadline,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return new_task.to_dict()
+
 
 @router.get("/{task_id}")
 async def get_task(task_id: str, current_user: dict = Depends(get_current_user)):
