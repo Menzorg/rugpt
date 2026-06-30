@@ -56,11 +56,13 @@ def _serialize_entry(entry: dict) -> dict:
     """Serialize a {task, creator?, assignee?} entry to dict for API response."""
     out = entry["task"].to_dict()
     if entry.get("creator"):
+        _cdept = entry["creator"].get("department_id")
         out["creator"] = {
             "id": str(entry["creator"]["id"]),
             "name": entry["creator"]["name"],
             "is_admin": entry["creator"]["is_admin"],
             "is_head": entry["creator"]["is_head"],
+            "department_id": str(_cdept) if _cdept else None,
         }
     if entry.get("assignee"):
         out["assignee"] = {
@@ -76,6 +78,34 @@ def _serialize_entry(entry: dict) -> dict:
 async def _load_user(engine, user_id: UUID):
     """Helper: load user object from storage (for permission checks)."""
     return await engine.user_storage.get_by_id(user_id)
+
+
+async def _can_manage_task(engine, current_user: dict, task) -> bool:
+    """Whether the acting user may delete or merge this task.
+
+    Allowed: org admin (org match is enforced separately by callers), the task
+    creator, or the department head of the task creator's department. Shared by
+    task deletion and task merge so both use the same rule.
+    """
+    # Org head — any task in their organization.
+    if current_user.get("is_admin"):
+        return True
+    # Creator.
+    if (
+        task.created_by_user_id is not None
+        and task.created_by_user_id == current_user["user_id"]
+    ):
+        return True
+    # Department head of the task creator's department.
+    if (
+        current_user.get("is_head")
+        and current_user.get("department_id") is not None
+        and task.created_by_user_id is not None
+    ):
+        creator = await _load_user(engine, task.created_by_user_id)
+        if creator is not None and creator.department_id == current_user["department_id"]:
+            return True
+    return False
 
 async def _hydrate_participants(engine, entries: list) -> list:
     """Bulk-fetch active participants for entries and attach as entry['participants']."""
@@ -379,7 +409,8 @@ async def update_task(
 
 @router.delete("/{task_id}")
 async def deactivate_task(task_id: str, current_user: dict = Depends(get_current_user)):
-    """Soft-delete a task (only creator)."""
+    """Soft-delete a task. Allowed for the creator, the department head of the
+    creator's department, or an org admin."""
     engine = get_engine_service()
     try:
         task_uuid = UUID(task_id)
@@ -391,10 +422,8 @@ async def deactivate_task(task_id: str, current_user: dict = Depends(get_current
         raise HTTPException(status_code=404, detail="Task not found")
     if task.org_id != current_user["org_id"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    if task.created_by_user_id is None:
-        raise HTTPException(status_code=403, detail="Legacy task without creator cannot be deleted")
-    if task.created_by_user_id != current_user["user_id"]:
-        raise HTTPException(status_code=403, detail="Only creator can delete task")
+    if not await _can_manage_task(engine, current_user, task):
+        raise HTTPException(status_code=403, detail="Not allowed to delete this task")
 
     user = await _load_user(engine, current_user["user_id"])
     await engine.task_service.deactivate(task_uuid, user=user)

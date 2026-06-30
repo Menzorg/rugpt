@@ -56,6 +56,7 @@ class TaskStorage(BaseStorage):
                 t.*,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
+                u.department_id AS creator_department_id,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
@@ -109,6 +110,7 @@ class TaskStorage(BaseStorage):
                 a.is_head AS assignee_is_head,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
+                u.department_id AS creator_department_id,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
@@ -150,6 +152,7 @@ class TaskStorage(BaseStorage):
                 a.is_head AS assignee_is_head,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
+                u.department_id AS creator_department_id,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
@@ -335,6 +338,7 @@ class TaskStorage(BaseStorage):
                 a.is_head AS assignee_is_head,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
+                u.department_id AS creator_department_id,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
@@ -412,6 +416,7 @@ class TaskStorage(BaseStorage):
                 a.is_head AS assignee_is_head,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
+                u.department_id AS creator_department_id,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
@@ -453,6 +458,7 @@ class TaskStorage(BaseStorage):
                 a.is_head AS assignee_is_head,
                 u.is_admin AS creator_is_admin,
                 u.is_head AS creator_is_head,
+                u.department_id AS creator_department_id,
                 u.id AS creator_id,
                 u.name AS creator_name
             FROM tasks t
@@ -550,5 +556,6 @@ class TaskStorage(BaseStorage):
                 "name": row["creator_name"],
                 "is_admin": row["creator_is_admin"],
                 "is_head": row["creator_is_head"],
+                "department_id": row["creator_department_id"],
             }
         return {"task": task, "creator": creator}
