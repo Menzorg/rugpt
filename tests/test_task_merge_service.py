@@ -210,3 +210,57 @@ def test_apply_rejects_when_fewer_than_two_live_sources():
             pass
 
     asyncio.run(go())
+
+
+def test_apply_dedups_duplicate_source_ids():
+    """A request with the same id twice must not become a degenerate self-merge."""
+    async def go():
+        svc, deps = _make_service()
+        actor = _user()
+        t1 = _task("A")
+        deps["task_storage"].get_by_id = AsyncMock(side_effect=lambda tid: t1 if tid == t1.id else None)
+        mr = TaskMergeRequest(
+            org_id=actor.org_id, actor_user_id=actor.id,
+            source_task_ids=[t1.id, t1.id],  # duplicate
+        )
+        try:
+            await svc.apply(actor, mr, title="X", description=None, assignee_user_id=uuid4())
+            assert False, "expected ValueError (only one distinct source)"
+        except ValueError:
+            pass
+        deps["task_service"].create.assert_not_awaited()
+
+    asyncio.run(go())
+
+
+def test_apply_tolerates_source_close_failure():
+    """If closing one source fails, the merge still creates the new task and
+    finalizes the request (never stuck 'previewed'); the failure is swallowed."""
+    async def go():
+        svc, deps = _make_service()
+        actor = _user()
+        t1, t2 = _task("A"), _task("B")
+        new_task = _task("Merged")
+        by_id = {t1.id: t1, t2.id: t2}
+        deps["task_storage"].get_by_id = AsyncMock(side_effect=lambda tid: by_id.get(tid))
+        deps["task_storage"].set_merged_into = AsyncMock(return_value=True)
+        deps["task_participant_storage"].list_user_ids = AsyncMock(return_value=[])
+        deps["task_service"].create = AsyncMock(return_value=new_task)
+        # First source fails to deactivate, second succeeds.
+        deps["task_service"].deactivate = AsyncMock(side_effect=[RuntimeError("db hiccup"), True])
+        deps["chat_service"].get_task_chat = AsyncMock(return_value=SimpleNamespace(id=uuid4()))
+        deps["task_event_service"].record = AsyncMock()
+        deps["merge_request_storage"].mark_applied = AsyncMock()
+
+        mr = TaskMergeRequest(
+            org_id=actor.org_id, actor_user_id=actor.id,
+            source_task_ids=[t1.id, t2.id], proposed_summary="итог",
+        )
+        result = await svc.apply(actor, mr, title="Merged", description=None, assignee_user_id=uuid4())
+
+        assert result is new_task
+        assert deps["task_service"].deactivate.await_count == 2  # both attempted
+        # finalized despite the partial failure
+        deps["merge_request_storage"].mark_applied.assert_awaited_once_with(mr.id, new_task.id)
+
+    asyncio.run(go())

@@ -122,19 +122,35 @@ class TaskMergeService:
         deadline: Optional[datetime] = None,
         participant_user_ids: Optional[List[UUID]] = None,
     ):
-        """Create the merged task and close the sources. Returns the new Task."""
+        """Create the merged task and close the sources. Returns the new Task.
+
+        No cross-storage DB transaction is available (each storage owns its own
+        pool), so we order operations to fail safe: create the new task FIRST
+        (if that fails nothing is closed and the still-'previewed' request can be
+        retried cleanly), then close sources best-effort. Once the new task
+        exists we ALWAYS mark the request applied — never leave it stuck
+        'previewed' (which the apply re-auth could no longer satisfy once a
+        source is closed). Sources that fail to close are logged and left active
+        for manual cleanup rather than aborting the whole merge mid-way."""
+        # De-dupe source ids (defense-in-depth; the route also de-dupes) and
+        # load the still-active sources.
+        seen = set()
         source_tasks = []
         for tid in merge_request.source_task_ids:
+            if tid in seen:
+                continue
+            seen.add(tid)
             t = await self.task_storage.get_by_id(tid)
             if t is not None:
                 source_tasks.append(t)
         if len(source_tasks) < 2:
-            raise ValueError("Need at least two active source tasks to merge")
+            raise ValueError("Need at least two distinct active source tasks to merge")
 
         participants = await self._collect_participants(source_tasks)
         if participant_user_ids:
             participants = list({*participants, *participant_user_ids})
 
+        # 1) Create the new task first.
         new_task = await self.task_service.create(
             org_id=actor.org_id,
             title=title,
@@ -146,34 +162,53 @@ class TaskMergeService:
             participant_user_ids=participants or None,
         )
 
-        # Summary message in the new task chat.
-        new_chat = await self.chat_service.get_task_chat(new_task.id)
-        if new_chat is not None and merge_request.proposed_summary:
-            src_list = ", ".join(str(t.id) for t in source_tasks)
-            await self._post_message(
-                new_chat.id, actor.id,
-                f"🔀 Объединено из задач: {src_list}\n\n{merge_request.proposed_summary}",
-            )
-
-        # Close each source task: note -> link -> event -> deactivate.
-        for st in source_tasks:
-            src_chat = await self.chat_service.get_task_chat(st.id)
-            if src_chat is not None:
+        # 2) Summary message in the new task chat (best-effort).
+        try:
+            new_chat = await self.chat_service.get_task_chat(new_task.id)
+            if new_chat is not None and merge_request.proposed_summary:
+                src_list = ", ".join(str(t.id) for t in source_tasks)
                 await self._post_message(
-                    src_chat.id, actor.id,
-                    f"🔀 Задача объединена в «{title}» ({new_task.id}).",
+                    new_chat.id, actor.id,
+                    f"🔀 Объединено из задач: {src_list}\n\n{merge_request.proposed_summary}",
                 )
-            await self.task_storage.set_merged_into(st.id, new_task.id)
-            if self.task_event_service is not None:
-                await self.task_event_service.record(
-                    task_id=st.id,
-                    actor_user_id=actor.id,
-                    event_type="merged",
-                    payload={"into_task_id": str(new_task.id)},
-                )
-            await self.task_service.deactivate(st.id, user=actor)
+        except Exception as e:
+            logger.warning(f"merge {merge_request.id}: failed to post summary: {e}")
 
+        # 3) Close each source: note -> link -> event -> deactivate. Best-effort
+        #    per source so one failure doesn't abort the rest or the finalize.
+        failed_sources = []
+        for st in source_tasks:
+            try:
+                src_chat = await self.chat_service.get_task_chat(st.id)
+                if src_chat is not None:
+                    await self._post_message(
+                        src_chat.id, actor.id,
+                        f"🔀 Задача объединена в «{title}» ({new_task.id}).",
+                    )
+                await self.task_storage.set_merged_into(st.id, new_task.id)
+                if self.task_event_service is not None:
+                    await self.task_event_service.record(
+                        task_id=st.id,
+                        actor_user_id=actor.id,
+                        event_type="merged",
+                        payload={"into_task_id": str(new_task.id)},
+                    )
+                await self.task_service.deactivate(st.id, user=actor)
+            except Exception as e:
+                logger.error(
+                    f"merge {merge_request.id}: failed to close source {st.id}: {e}",
+                    exc_info=True,
+                )
+                failed_sources.append(st.id)
+
+        # 4) New task exists → finalize unconditionally so the request is never
+        #    stuck/retried. Leftover open sources are surfaced via logs.
         await self.merge_request_storage.mark_applied(merge_request.id, new_task.id)
+        if failed_sources:
+            logger.warning(
+                f"merge {merge_request.id}: new task {new_task.id} created but "
+                f"{len(failed_sources)} source(s) not closed (left active): {failed_sources}"
+            )
         return new_task
 
     # --- Helpers --------------------------------------------------------------
@@ -261,7 +296,7 @@ class TaskMergeService:
                 "chat_id": str(chat.id) if chat else None,
                 "messages": [
                     {
-                        "sender_id": str(m.sender_id),
+                        "sender_id": str(m.sender_id) if m.sender_id else None,
                         "sender_type": getattr(m.sender_type, "value", str(m.sender_type)),
                         "content": m.content,
                         "created_at": m.created_at.isoformat() if m.created_at else None,

@@ -387,8 +387,11 @@ async def merge_apply(
         raise HTTPException(status_code=404, detail="Merge request not found")
     if merge_request.org_id != current_user["org_id"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    if merge_request.status == "applied":
-        raise HTTPException(status_code=409, detail="Merge already applied")
+    if merge_request.status != "previewed":
+        # Already applied or previously failed — never re-run a non-pending
+        # request (would create a duplicate merged task from sources a prior
+        # partial run may have closed).
+        raise HTTPException(status_code=409, detail=f"Merge request is '{merge_request.status}', not pending")
 
     # Re-authorize against the live source tasks.
     await _load_mergeable_sources(

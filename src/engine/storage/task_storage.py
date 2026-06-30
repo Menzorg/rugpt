@@ -322,9 +322,11 @@ class TaskStorage(BaseStorage):
         return "UPDATE 1" in result
 
     async def set_merged_into(self, task_id: UUID, into_task_id: UUID) -> bool:
-        """Mark a task as merged into another (audit/redirect link)."""
+        """Mark a still-active task as merged into another (audit/redirect link).
+        Guarded by is_active so a retry/race can't relink an already-closed task."""
         result = await self.execute(
-            "UPDATE tasks SET merged_into_task_id = $2, updated_at = $3 WHERE id = $1",
+            "UPDATE tasks SET merged_into_task_id = $2, updated_at = $3 "
+            "WHERE id = $1 AND is_active = true",
             task_id, into_task_id, datetime.utcnow(),
         )
         return "UPDATE 1" in result
