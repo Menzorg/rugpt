@@ -522,6 +522,7 @@ class EngineService:
         await self.project_storage.init()
         await self.task_event_storage.init()
         await self.agent_run_storage.init()
+        await self.task_merge_request_storage.init()
         await self.support_ticket_storage.init()
         await self.support_ticket_event_storage.init()
         await self.memory_snapshot_storage.init()
