@@ -555,12 +555,6 @@ def create_task_tools(
                                 task_uuid, existing_task.status, status)
                     return err
 
-            # Self-assigned tasks (creator == assignee) may reschedule even when overdue.
-            is_self_assigned = is_creator and is_assignee
-            if deadline_dt and existing_task.status == "overdue" and not is_self_assigned:
-                logger.info("task_update denied: task=%s reason=overdue_deadline", task_uuid)
-                return "Cannot change the deadline of an overdue task."
-
             if deadline_dt and not is_creator and not is_admin and not is_assignee:
                 logger.info("task_update denied: task=%s reason=deadline_permission", task_uuid)
                 return "Only the task creator, admin, or assignee can change the deadline."
@@ -792,7 +786,7 @@ def create_task_tools(
                     if t.status == "done":
                         excluded_done += 1
                         continue
-                    if t.status == "overdue":
+                    if t.is_overdue:
                         if t.deadline is None:
                             excluded_overdue_no_deadline += 1
                             continue

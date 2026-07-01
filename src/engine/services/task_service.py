@@ -803,6 +803,29 @@ class TaskService:
             return
         raise PermissionError("Only creator, head, or admin can perform this action")
 
+    async def _check_can_manage(self, task: Task, user: User):
+        """Deadline/status management rule (same as delete/merge): allowed for the
+        org admin, the task creator, or the department head of the task creator's
+        department. Employees (assignees who aren't managers) cannot shift their
+        own deadlines. Raises PermissionError otherwise."""
+        if user.is_admin:
+            return
+        if task.created_by_user_id is not None and task.created_by_user_id == user.id:
+            return
+        if (
+            getattr(user, "is_head", False)
+            and getattr(user, "department_id", None) is not None
+            and task.created_by_user_id is not None
+            and self.user_storage is not None
+        ):
+            creator = await self.user_storage.get_by_id(task.created_by_user_id)
+            if creator is not None and getattr(creator, "department_id", None) == user.department_id:
+                return
+        raise PermissionError(
+            "Only the task creator, the creator's department head, or an org admin "
+            "can manage the deadline/status of this task"
+        )
+
     # ============================================
     # Status transitions
     # ============================================
@@ -921,14 +944,18 @@ class TaskService:
         task = await self.storage.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
-        self._check_creator(task, user)
-        is_self_assigned = task.created_by_user_id == task.assignee_user_id == user.id
-        if task.status == "done" or (task.status == "overdue" and not is_self_assigned):
-            raise ValueError(f"Cannot set deadline on task in status '{task.status}'")
+        await self._check_can_manage(task, user)
+        if task.status == "done":
+            raise ValueError("Cannot set deadline on a done task")
         old_deadline = task.deadline
         task.deadline = deadline
         task.proposed_deadline = None
         task.proposed_deadline_by = None
+        # Rescheduling to a future date clears the overdue overlay; if the new
+        # deadline is still in the past the scheduler will re-flag it.
+        dl = deadline if deadline.tzinfo is not None else deadline.replace(tzinfo=timezone.utc)
+        if dl > datetime.now(timezone.utc):
+            task.is_overdue = False
         updated = await self.storage.update(task)
         await self._record_event(
             task_id=task_id, actor_user_id=user.id,
@@ -982,7 +1009,7 @@ class TaskService:
         task = await self.storage.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
-        self._check_creator(task, user)
+        await self._check_can_manage(task, user)
         if task.proposed_deadline is None:
             raise ValueError("No pending deadline proposal")
         old_deadline = task.deadline
@@ -990,6 +1017,9 @@ class TaskService:
         task.deadline = proposed
         task.proposed_deadline = None
         task.proposed_deadline_by = None
+        dl = proposed if proposed.tzinfo is not None else proposed.replace(tzinfo=timezone.utc)
+        if dl > datetime.now(timezone.utc):
+            task.is_overdue = False
         updated = await self.storage.update(task)
         await self._record_event(
             task_id=task_id, actor_user_id=user.id,
@@ -1013,7 +1043,7 @@ class TaskService:
         task = await self.storage.get_by_id(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
-        self._check_creator(task, user)
+        await self._check_can_manage(task, user)
         if task.proposed_deadline is None:
             raise ValueError("No pending deadline proposal")
         rejected = task.proposed_deadline
@@ -1044,18 +1074,19 @@ class TaskService:
         overdue_tasks = []
 
         for task in tasks:
-            if task.deadline and task.deadline <= now:
-                old_status = task.status
-                task.status = "overdue"
+            if task.deadline and task.deadline <= now and task.status != "done" and not task.is_overdue:
+                # Overdue is an overlay flag now — the work status is preserved so
+                # the assignee can keep working past the deadline.
+                task.is_overdue = True
                 await self.storage.update(task)
                 overdue_tasks.append(task)
-                logger.info(f"Task {task.id} marked as overdue: '{task.title}'")
+                logger.info(f"Task {task.id} flagged overdue: '{task.title}' (status={task.status})")
 
                 await self._record_event(
                     task_id=task.id,
                     actor_user_id=None,  # scheduler-driven
                     event_type="overdue",
-                    payload={"from_status": old_status},
+                    payload={"status": task.status},
                 )
                 # Bell всем involved (creator + assignee + participants).
                 # actor_user_id=None — overdue scheduler-driven, исключать некого.

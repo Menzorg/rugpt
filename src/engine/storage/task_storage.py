@@ -24,8 +24,8 @@ class TaskStorage(BaseStorage):
                  assignee_user_id, created_by_user_id, deadline,
                  awaiting_review_at, proposed_deadline, proposed_deadline_by,
                  project_id, priority,
-                 is_active, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                 is_active, is_overdue, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             RETURNING *
         """
         row = await self.fetchrow(
@@ -34,7 +34,7 @@ class TaskStorage(BaseStorage):
             task.assignee_user_id, task.created_by_user_id, task.deadline,
             task.awaiting_review_at, task.proposed_deadline, task.proposed_deadline_by,
             task.project_id, task.priority,
-            task.is_active, task.created_at, task.updated_at,
+            task.is_active, task.is_overdue, task.created_at, task.updated_at,
         )
         return self._row_to_task(row)
 
@@ -247,12 +247,15 @@ class TaskStorage(BaseStorage):
         return [self._row_to_task(r) for r in rows]
 
     async def list_active_with_deadline(self) -> List[Task]:
-        """List active tasks with deadlines for overdue checking"""
+        """List active, not-yet-overdue, non-done tasks with deadlines for the
+        overdue check. Overdue is an overlay flag now, so already-flagged tasks
+        are skipped here rather than by status."""
         query = """
             SELECT * FROM tasks
             WHERE is_active = true
               AND deadline IS NOT NULL
-              AND status NOT IN ('done', 'overdue')
+              AND status != 'done'
+              AND is_overdue = false
             ORDER BY deadline ASC
         """
         rows = await self.fetch(query)
@@ -299,7 +302,8 @@ class TaskStorage(BaseStorage):
                 proposed_deadline_by = $9,
                 project_id = $10,
                 priority = $11,
-                updated_at = $12
+                is_overdue = $12,
+                updated_at = $13
             WHERE id = $1 AND is_active = true
             RETURNING *
         """
@@ -309,6 +313,7 @@ class TaskStorage(BaseStorage):
             task.assignee_user_id, task.deadline,
             task.awaiting_review_at, task.proposed_deadline, task.proposed_deadline_by,
             task.project_id, task.priority,
+            task.is_overdue,
             task.updated_at,
         )
         return self._row_to_task(row)
@@ -537,6 +542,7 @@ class TaskStorage(BaseStorage):
         keys = set(row.keys())
         project_id = row["project_id"] if "project_id" in keys else None
         priority = row["priority"] if "priority" in keys else 1
+        is_overdue = row["is_overdue"] if "is_overdue" in keys else False
         return Task(
             id=row["id"],
             org_id=row["org_id"],
@@ -552,6 +558,7 @@ class TaskStorage(BaseStorage):
             project_id=project_id,
             priority=priority,
             is_active=row["is_active"],
+            is_overdue=is_overdue,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

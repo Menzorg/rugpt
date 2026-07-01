@@ -10,7 +10,7 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 
-VALID_STATUSES = {"created", "in_progress", "awaiting_review", "done", "overdue"}
+VALID_STATUSES = {"created", "in_progress", "awaiting_review", "done"}
 
 
 @dataclass
@@ -18,7 +18,11 @@ class Task:
     """
     Employee task.
 
-    Statuses: created, in_progress, awaiting_review, done, overdue.
+    Statuses: created, in_progress, awaiting_review, done.
+    Overdue is NOT a status — it's an overlay flag (`is_overdue`) set by the
+    scheduler when the deadline passes, so the work status is preserved and the
+    assignee can keep working past the deadline. Only managers (creator / the
+    creator's department head / org admin) may shift the deadline.
     """
     id: UUID = field(default_factory=uuid4)
     org_id: UUID = field(default_factory=uuid4)
@@ -34,6 +38,7 @@ class Task:
     project_id: Optional[UUID] = None
     priority: int = 1
     is_active: bool = True
+    is_overdue: bool = False
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -54,6 +59,7 @@ class Task:
             "project_id": str(self.project_id) if self.project_id else None,
             "priority": self.priority,
             "is_active": self.is_active,
+            "is_overdue": self.is_overdue,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
